@@ -1,6 +1,7 @@
 /*
 
 !/config/
+/config/api_config.json
 /data/*
 !/data/pdf_pngs/
 !/data/LongDocURL.jsonl

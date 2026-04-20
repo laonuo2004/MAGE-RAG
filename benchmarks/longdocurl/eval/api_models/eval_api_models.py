@@ -20,24 +20,24 @@ from openai import OpenAI
 
 from eval.utils_api import *
 from utils.utils_score_v3 import *
-from model import Gemini15ProInferencer, GPT4oInferencer, QwenVLMaxInferencer, O1PreviewInferencer, QwenMaxInferencer, Gemini31ProInferencer, GPT54Inferencer, ClaudeSonnet46Inferencer
+from model import Gemini15ProInferencer, GPT4oInferencer, QwenVLMaxInferencer, O1PreviewInferencer, QwenMaxInferencer, Gemini31ProInferencer, GPT54Inferencer, ClaudeSonnet46Inferencer, Gemma3ProInferencer
 from pure_ocr_utils import *
 
 system_prompt = "You are an expert in visual document question-answering, please answer our questions based on the given images.\n"
 
 # TODO
-project_prefix = "/home/dataset-local/Projects/CodeLib/LongDocURL/"
+project_prefix = "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/"
 
 config_file = os.path.join(project_prefix, "config/api_config.json")
 extractor_prompt_path = os.path.join(project_prefix, "eval/prompt_for_answer_extraction.md")
 
 with open(config_file, "r", encoding="utf-8") as rf:
     config = json.load(rf)
-client = OpenAI(api_key=config["gpt4o"]["access_key"], base_url=config["gpt4o"]["base_url"])
+client = OpenAI(api_key=config["api_model"]["access_key"], base_url=config["api_model"]["base_url"])
 
 model_name2inferencer = {"gpt4o": "GPT4oInferencer", "gemini15_pro": "Gemini15ProInferencer", "qwen_vl_max": "QwenVLMaxInferencer", \
     "o1_preview": "O1PreviewInferencer", "qwen_max": "QwenMaxInferencer", "gemini-3.1-pro-preview": "Gemini31ProInferencer", \
-    "gpt-5.4": "GPT54Inferencer", "claude-sonnet-4-6": "ClaudeSonnet46Inferencer"}
+    "gpt-5.4": "GPT54Inferencer", "claude-sonnet-4-6": "ClaudeSonnet46Inferencer", "google/gemma-3-27b-it": "Gemma3ProInferencer"}
 
 prompt_sign = True
 
@@ -68,7 +68,7 @@ def read_jsonl_file(file_path):
             data.append(data_dict)
     return data
 
-def call_llm(prompt, urls, temperature=0.1, seed=42, max_tokens=4096):
+def call_llm(model_name, prompt, urls, temperature=0.1, seed=42, max_tokens=4096):
     msgs = get_msg_format(prompt, urls)
     response = None
     max_try = 2
@@ -76,7 +76,7 @@ def call_llm(prompt, urls, temperature=0.1, seed=42, max_tokens=4096):
         try:
             # TODO
             # completion = client.chat.completions.create(model="gpt-4o-0513", messages=msgs, temperature=0.)
-            completion = client.chat.completions.create(model="gpt-4o", messages=msgs, temperature=0.)
+            completion = client.chat.completions.create(model=model_name, messages=msgs, temperature=0.)
             response = completion.choices[0].message.content
         except Exception as e:
             print(f"error with {e}, response = {response}")
@@ -108,7 +108,7 @@ def eval_per_record(args):
     with open(extractor_prompt_path) as f:
         extractor_prompt = f.read()
     prompt = system_prompt + extractor_prompt + "\nQuestion: " + question + "\nAnalysis: " + result
-    extractor_result = call_llm(prompt, None)
+    extractor_result = call_llm(model_name, prompt, None)
     try:
         import re
         concise_answer = re.findall(r"<concise_answer>(.*?)</concise_answer>", extractor_result, re.DOTALL)[0]
@@ -177,12 +177,13 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial"
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--qa_file', type=str, default="data/LongDocURL.jsonl")
-    parser.add_argument('--results_file', type=str, default="evaluation_results/api_models/results_gpt4o.jsonl") 
+    parser.add_argument('--qa_file', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl")
+    # parser.add_argument('--results_file', type=str, default="evaluation_results/api_models/results_gpt4o.jsonl") 
     parser.add_argument('--process_mode', type=str, default="serial") # serial/parallel
     # parser.add_argument('--input_format', type=str, default="e2e") # e2e/ocr
-    parser.add_argument('--image_prefix', type=str, default="/mnt/achao/Downloads/pdf_pngs/4000-4999")
-    parser.add_argument('--model_name', type=str, default="gpt4o") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
+    parser.add_argument('--image_prefix', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999")
+    parser.add_argument('--model_name', type=str, default="google/gemma-3-27b-it") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
+    parser.add_argument('--results_file', type=str, default=f"/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/evaluation_results/api_models/results_{parser.parse_args().model_name.replace('/', '_')}.jsonl")
 
     args = parser.parse_args()
 

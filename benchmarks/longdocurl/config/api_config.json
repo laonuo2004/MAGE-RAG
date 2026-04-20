@@ -1,7 +1,7 @@
 {
-    "gpt4o": {
-        "access_key": "<api_key>",
-        "base_url": "<base_url>"
+    "api_model": {
+        "access_key": "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",
+        "base_url": "https://integrate.api.nvidia.com/v1"
     },
     "qwen": {
         "access_key": "<qwen_api_key>",

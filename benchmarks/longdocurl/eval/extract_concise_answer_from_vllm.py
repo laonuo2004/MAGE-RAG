@@ -23,7 +23,7 @@ from utils.utils_score_v3 import *
 system_prompt = "You are an expert in visual document question-answering, please answer our questions based on the given images.\n"
 
 # TODO
-project_prefix = "/root_dir/LongDocURL/"
+project_prefix = "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/"
 config_file = os.path.join(project_prefix, "config/api_config.json")
 extractor_prompt_path = os.path.join(project_prefix, "eval/prompt_for_answer_extraction.md")
 
@@ -131,5 +131,4 @@ if __name__ == "__main__":
     extract_answers(records, args.results_file)
 
     # run_test()
-
 

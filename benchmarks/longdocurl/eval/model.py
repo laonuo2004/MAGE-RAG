@@ -12,7 +12,7 @@ import oss2
 import json
 
 # TODO
-project_prefix = "/home/dataset-local/Projects/CodeLib/LongDocURL/"
+project_prefix = "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/"
 config_file = os.path.join(project_prefix, "config/api_config.json")
 
 class APIInferencer(ABC):
@@ -267,8 +267,8 @@ class Qwen2VLInferencer(OpenLVLMsInferencer):
     def __init__(self, model_name):
         self.model_name = model_name
         self.ckpt_paths = {
-            "qwen2-vl-7b": "/home/dataset-local/model/Qwen/Qwen2-VL-7B-Instruct",
-            "qwen25-vl-7b": "/home/dataset-local/model/Qwen/Qwen2.5-VL-7B-Instruct"
+            "qwen2-vl-7b": "/root/autodl-tmp/ylz/NeurIPS_2026/experiment/Benchmark/models/Qwen2-VL-7B-Instruct",
+            "qwen25-vl-7b": "/root/autodl-tmp/scliu/huggingface/Qwen2.5-VL-7B-Instruct"
         }
     def infer(self, prompt: str, image_path: str, **kwargs) -> str:
         if self.model_name in self.ckpt_paths:

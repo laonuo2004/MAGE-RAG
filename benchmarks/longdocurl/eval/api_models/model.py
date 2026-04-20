@@ -12,7 +12,7 @@ import oss2
 import json
 
 # TODO
-project_prefix = "/home/dataset-local/Projects/CodeLib/LongDocURL/"
+project_prefix = "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/"
 config_file = os.path.join(project_prefix, "config/api_config.json")
 
 
@@ -38,7 +38,7 @@ class APIInferencer(ABC):
     def load_client(self):
         with open(config_file, "r", encoding="utf-8") as rf:
             config = json.load(rf)
-        return OpenAI(api_key=config["gpt4o"]["access_key"], base_url=config["gpt4o"]["base_url"])
+        return OpenAI(api_key=config["api_model"]["access_key"], base_url=config["api_model"]["base_url"])
 
     def cleanup(self):
         if hasattr(self, 'client'):
@@ -141,4 +141,9 @@ class Gemini31ProInferencer(APIInferencer):
 class QwenVLMaxInferencer(APIInferencer):
     def infer(self, prompt: str, image_path: str) -> str:
         response = self.get_correct_response('qwen-vl-max', prompt, image_path)
+        return response
+
+class Gemma3ProInferencer(APIInferencer):
+    def infer(self, prompt: str, image_path: str) -> str:
+        response = self.get_correct_response('google/gemma-3-27b-it', prompt, image_path)
         return response

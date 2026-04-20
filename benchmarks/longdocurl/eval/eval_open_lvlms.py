@@ -32,7 +32,7 @@ import torch
 system_prompt = "You are an expert in visual document question-answering, please answer our questions based on the given images.\n"
 
 # TODO
-project_prefix = "/home/dataset-local/Projects/CodeLib/LongDocURL/"
+project_prefix = "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/"
 
 config_file = os.path.join(project_prefix, "config/api_config.json")
 extractor_prompt_path = os.path.join(project_prefix, "eval/prompt_for_answer_extraction.md")
@@ -271,11 +271,11 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", num_gpus=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--qa_file', type=str, default="LongDocURL_public.jsonl")
+    parser.add_argument('--qa_file', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl")
     parser.add_argument('--results_file', type=str, default="evaluation_results/open_lvlms/results_qwen2vl_7b.jsonl")
     parser.add_argument('--process_mode', type=str, default="serial") # No longer used for open models, kept for compatibility if needed
     # parser.add_argument('--input_format', type=str, default="e2e") # e2e/ocr
-    parser.add_argument('--image_prefix', type=str, default="/data/data/LongDocURL/pdf_pngs/4000-4999")
+    parser.add_argument('--image_prefix', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999")
     parser.add_argument('--model_name', type=str, default="qwen2-vl-7b") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
 
     args = parser.parse_args()

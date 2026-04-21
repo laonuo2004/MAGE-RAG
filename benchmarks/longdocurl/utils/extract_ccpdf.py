@@ -1,6 +1,6 @@
 import os
 import json
-import fitz
+import pymupdf as fitz
 from PIL import Image
 import sys 
 from tqdm import tqdm
@@ -91,9 +91,9 @@ def extracts(pdf_path, img_save_dir, json_dir):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--pdf_dir", type=str, default="/mnt/achao/Downloads/ccpdf_zip/")
-    parser.add_argument("--img_save_dir", type=str, default="/mnt/achao/Downloads/pdf_pngs/")
-    parser.add_argument("--json_dir", type=str, default="/mnt/achao/Downloads/pdf_jsons/")
+    parser.add_argument("--pdf_dir", type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs/4000-4999/")
+    parser.add_argument("--img_save_dir", type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999/")
+    parser.add_argument("--json_dir", type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_jsons/4000-4999/")
     args = parser.parse_args()
 
     pdf_dir = args.pdf_dir

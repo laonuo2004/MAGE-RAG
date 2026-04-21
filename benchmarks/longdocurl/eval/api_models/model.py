@@ -143,7 +143,12 @@ class QwenVLMaxInferencer(APIInferencer):
         response = self.get_correct_response('qwen-vl-max', prompt, image_path)
         return response
 
-class Gemma3ProInferencer(APIInferencer):
+class Gemma3_27BInferencer(APIInferencer):
     def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('google/gemma-3-27b-it', prompt, image_path)
+        response = self.get_correct_response('google/gemma-3-27b-it:free', prompt, image_path)
+        return response
+    
+class Gemma4_26B_A4BInferencer(APIInferencer):
+    def infer(self, prompt: str, image_path: str) -> str:
+        response = self.get_correct_response('google/gemma-4-26b-a4b-it:free', prompt, image_path)
         return response

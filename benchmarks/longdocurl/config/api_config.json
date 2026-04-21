@@ -1,7 +1,7 @@
 {
     "api_model": {
-        "access_key": "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",
-        "base_url": "https://integrate.api.nvidia.com/v1"
+        "access_key": "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",
+        "base_url": "https://openrouter.ai/api/v1"
     },
     "qwen": {
         "access_key": "<qwen_api_key>",

@@ -1,5 +1,6 @@
 import argparse
 import json
+from pathlib import Path
 
 import sys
 import pathlib
@@ -104,6 +105,13 @@ if __name__ == "__main__":
                 score_dict[key] /= sample_cnt_dict[key]
 
     generalize_score_dict(score_dict, sample_cnt_dict)
+
+    output_dir = Path(args.results_file).with_suffix("")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / "metrics_fine_grained.json"
+
+    with open(output_file, "w", encoding="utf-8") as wf:
+        json.dump(score_dict, wf, ensure_ascii=False, indent=2)
 
     print("--------------------------------------------------------------")
     print(score_dict)

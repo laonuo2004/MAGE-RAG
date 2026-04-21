@@ -20,7 +20,8 @@ from openai import OpenAI
 
 from eval.utils_api import *
 from utils.utils_score_v3 import *
-from model import Gemini15ProInferencer, GPT4oInferencer, QwenVLMaxInferencer, O1PreviewInferencer, QwenMaxInferencer, Gemini31ProInferencer, GPT54Inferencer, ClaudeSonnet46Inferencer, Gemma3_27BInferencer, Gemma4_26B_A4BInferencer
+# from model import Gemini15ProInferencer, GPT4oInferencer, QwenVLMaxInferencer, O1PreviewInferencer, QwenMaxInferencer, Gemini31ProInferencer, GPT54Inferencer, ClaudeSonnet46Inferencer
+from model import Inferencer
 from pure_ocr_utils import *
 
 system_prompt = "You are an expert in visual document question-answering, please answer our questions based on the given images.\n"
@@ -35,10 +36,10 @@ with open(config_file, "r", encoding="utf-8") as rf:
     config = json.load(rf)
 client = OpenAI(api_key=config["api_model"]["access_key"], base_url=config["api_model"]["base_url"])
 
-model_name2inferencer = {"gpt4o": "GPT4oInferencer", "gemini15_pro": "Gemini15ProInferencer", "qwen_vl_max": "QwenVLMaxInferencer", \
-    "o1_preview": "O1PreviewInferencer", "qwen_max": "QwenMaxInferencer", "gemini-3.1-pro-preview": "Gemini31ProInferencer", \
-    "gpt-5.4": "GPT54Inferencer", "claude-sonnet-4-6": "ClaudeSonnet46Inferencer", "google/gemma-3-27b-it:free": "Gemma3_27BInferencer", \
-    "google/gemma-4-26b-a4b-it:free": "Gemma4_26B_A4BInferencer"}
+# model_name2inferencer = {"gpt4o": "GPT4oInferencer", "gemini15_pro": "Gemini15ProInferencer", "qwen_vl_max": "QwenVLMaxInferencer", \
+#     "o1_preview": "O1PreviewInferencer", "qwen_max": "QwenMaxInferencer", "gemini-3.1-pro-preview": "Gemini31ProInferencer", \
+#     "gpt-5.4": "GPT54Inferencer", "claude-sonnet-4-6": "ClaudeSonnet46Inferencer", "google/gemma-3-27b-it:free": "OpenRouterInferencer", \
+#     "google/gemma-4-26b-a4b-it:free": "OpenRouterInferencer", "google/gemma-4-26b-a4b-it": "OpenRouterInferencer"}
 
 prompt_sign = True
 
@@ -95,12 +96,13 @@ def eval_per_record(args):
     print("--------------------------------------")
     case, output_datapath, model_name = args
 
-    inferencer = eval(model_name2inferencer[model_name])()
+    # inferencer = eval(model_name2inferencer[model_name])()
+    inferencer = eval("Inferencer")()
 
     question = case["question"]
     prompt = system_prompt + "Following is our question: \n" + f"<question>{question}</question>" + "\n"
 
-    result = inferencer.infer(prompt, case["images"])
+    result = inferencer.infer(prompt, case["images"], model_name)
 
     if result is None:
         return
@@ -184,7 +186,7 @@ if __name__ == "__main__":
     # parser.add_argument('--input_format', type=str, default="e2e") # e2e/ocr
     parser.add_argument('--image_prefix', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999")
     parser.add_argument('--model_name', type=str, default="google/gemma-4-26b-a4b-it:free") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
-    parser.add_argument('--results_file', type=str, default=f"/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/evaluation_results/api_models/results_{parser.parse_args().model_name.replace('/', '_').replace(':', '_').replace('-', '_')}.jsonl")
+    parser.add_argument('--results_file', type=str, default=f"/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/evaluation_results/api_models/results_{parser.parse_args().model_name.replace('/', '_').replace(':free', '').replace('-', '_')}.jsonl")
 
     args = parser.parse_args()
 

@@ -100,55 +100,60 @@ class APIInferencer(ABC):
             ]
         return content
 
-class QwenMaxInferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('qwen_max', prompt, image_path)
-        return response
+# class QwenMaxInferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name='qwen_max') -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
 
 
-class O1PreviewInferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('o1-preview-0912', prompt, image_path)
-        return response
+# class O1PreviewInferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name='o1-preview-0912') -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
 
-class GPT4oInferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('gpt-4o-0513', prompt, image_path)
-        # response = self.get_correct_response('gpt-4o', prompt, image_path)
-        return response
+# class GPT4oInferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name='gpt-4o-0513') -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         # response = self.get_correct_response('gpt-4o', prompt, image_path)
+#         return response
 
-class GPT54Inferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('gpt-5.4', prompt, image_path)
-        return response
+# class GPT54Inferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name='gpt-5.4') -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
 
-class ClaudeSonnet46Inferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('claude-sonnet-4-6', prompt, image_path)
-        return response
+# class ClaudeSonnet46Inferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name='claude-sonnet-4-6') -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
 
-class Gemini15ProInferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('gemini-1.5-pro', prompt, image_path)
-        return response
+# class Gemini15ProInferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name='gemini-1.5-pro') -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
 
-class Gemini31ProInferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('gemini-3.1-pro-preview', prompt, image_path)
-        return response
+# class Gemini31ProInferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name='gemini-3.1-pro-preview') -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
 
 
-class QwenVLMaxInferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('qwen-vl-max', prompt, image_path)
-        return response
+# class QwenVLMaxInferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name='qwen-vl-max') -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
 
-class Gemma3_27BInferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('google/gemma-3-27b-it:free', prompt, image_path)
-        return response
+# class Gemma3_27BInferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name: str) -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
     
-class Gemma4_26B_A4BInferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str) -> str:
-        response = self.get_correct_response('google/gemma-4-26b-a4b-it:free', prompt, image_path)
+# class Gemma4_26B_A4BInferencer(APIInferencer):
+#     def infer(self, prompt: str, image_path: str, model_name: str) -> str:
+#         response = self.get_correct_response(model_name, prompt, image_path)
+#         return response
+
+class Inferencer(APIInferencer):
+    def infer(self, prompt: str, image_path: str, model_name: str) -> str:
+        response = self.get_correct_response(model_name, prompt, image_path)
         return response

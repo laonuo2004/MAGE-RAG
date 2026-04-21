@@ -1,5 +1,6 @@
 import argparse
 import json
+from pathlib import Path
 
 import sys
 import pathlib
@@ -41,6 +42,18 @@ if __name__ == "__main__":
 
     generalized_score = calculate_accuracy(answers, annotations, answer_formats) # calculate on size of successful samples
     rectified_generalized_score = generalized_score * len(answers) / 2325 # calculate on size of 2325
+
+    output_dir = Path(args.results_file).with_suffix("")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / "metrics.json"
+
+    metrics = {
+        "avg_acc": generalized_score,
+        "rectified_avg_acc": rectified_generalized_score,
+    }
+
+    with open(output_file, "w", encoding="utf-8") as wf:
+        json.dump(metrics, wf, ensure_ascii=False, indent=2)
 
     print("--------------------------------------")
     print("Avg. acc: {}".format(generalized_score))

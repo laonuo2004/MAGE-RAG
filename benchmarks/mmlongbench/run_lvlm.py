@@ -80,7 +80,12 @@ def load_questions(args):
 
     model, get_response_concat = load_model(args.model_name, args.model_cached_path)
 
-    for sample in tqdm(samples):
+    # 计算已完成和待完成样本
+    completed_count = sum(1 for s in samples if "score" in s)
+    total_count = len(samples)
+    print(f"进度: {completed_count}/{total_count} 已完成")
+
+    for idx, sample in enumerate(tqdm(samples, desc="Processing")):
         if "score" in sample:
             score = sample["score"]
         else:
@@ -115,6 +120,7 @@ def load_questions(args):
         print("Avg acc: {}".format(acc))
         print("Avg f1: {}".format(f1))
         
+        # 每处理完一个样本就保存，确保断电不丢失进度
         with open(args.output_path, 'w') as f:
             json.dump(samples, f)
     

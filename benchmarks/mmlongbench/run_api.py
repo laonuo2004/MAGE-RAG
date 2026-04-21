@@ -131,8 +131,13 @@ if __name__=="__main__":
     else:
         with open(args.input_path, 'r') as f:
             samples = json.load(f)
+    
+    # 计算已完成和待完成样本
+    completed_count = sum(1 for s in samples if "score" in s)
+    total_count = len(samples)
+    print(f"进度: {completed_count}/{total_count} 已完成")
 
-    for sample in tqdm(samples):
+    for idx, sample in enumerate(tqdm(samples, desc="Processing")):
         if "score" in sample:
             score = sample["score"]
         else:
@@ -189,6 +194,7 @@ if __name__=="__main__":
         print("Avg acc: {}".format(acc))
         print("Avg f1: {}".format(f1))
         
+        # 每处理完一个样本就保存，确保断电不丢失进度
         with open(args.output_path, 'w') as f:
             json.dump(samples, f)
     

@@ -1,6 +1,7 @@
 # Data files
-data/documents/
-data/*.json
+
+
+data/*
 !data/samples.json
 
 # Python cache

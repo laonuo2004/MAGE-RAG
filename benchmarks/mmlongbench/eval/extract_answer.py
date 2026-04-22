@@ -3,8 +3,12 @@ from openai import OpenAI
 
 def build_client(api_key=None, base_url=None):
     kwargs = {}
+    # The OpenAI SDK requires a non-empty api_key even for local OpenAI-compatible
+    # servers such as vLLM that ignore authentication.
     if api_key:
         kwargs["api_key"] = api_key
+    elif base_url:
+        kwargs["api_key"] = "EMPTY"
     if base_url:
         kwargs["base_url"] = base_url
     return OpenAI(**kwargs)

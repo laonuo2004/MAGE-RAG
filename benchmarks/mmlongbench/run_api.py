@@ -17,6 +17,15 @@ from eval.eval_score import eval_score, eval_acc_and_f1, show_results
 cached_image_list = dict()
 
 
+def sample_key(sample):
+    return (
+        sample.get("doc_id"),
+        sample.get("question"),
+        sample.get("answer"),
+        sample.get("answer_format"),
+    )
+
+
 def encode_image_to_base64(img):
     if img.mode in ('RGBA', 'P'):
         img = img.convert('RGB')
@@ -96,13 +105,26 @@ def process_sample(sample, args, mode="png"):
 
 
 def load_samples(args):
-    if os.path.exists(args.output_path):
-        with open(args.output_path, "r", encoding="utf-8") as f:
-            return json.load(f)
     with open(args.input_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
     if args.limit is not None:
         samples = samples[: args.limit]
+
+    if os.path.exists(args.output_path):
+        with open(args.output_path, "r", encoding="utf-8") as f:
+            existing_samples = json.load(f)
+        existing_by_key = {sample_key(sample): sample for sample in existing_samples}
+        merged_samples = []
+        for sample in samples:
+            existing = existing_by_key.get(sample_key(sample))
+            if existing is not None:
+                merged = dict(sample)
+                merged.update(existing)
+                merged_samples.append(merged)
+            else:
+                merged_samples.append(sample)
+        return merged_samples
+
     return samples
 
 

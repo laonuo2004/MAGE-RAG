@@ -11,6 +11,15 @@ from eval.extract_answer import build_client, extract_answer
 from eval.eval_score import eval_acc_and_f1, eval_score, show_results
 
 
+def sample_key(sample):
+    return (
+        sample.get("doc_id"),
+        sample.get("question"),
+        sample.get("answer"),
+        sample.get("answer_format"),
+    )
+
+
 def build_text_prompt(sample, args):
     question = sample["question"]
     pdf_path = os.path.join(args.document_path, sample["doc_id"])
@@ -35,13 +44,26 @@ def build_text_prompt(sample, args):
 
 
 def load_samples(args):
-    if os.path.exists(args.output_path):
-        with open(args.output_path, "r", encoding="utf-8") as f:
-            return json.load(f)
     with open(args.input_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
     if args.limit is not None:
         samples = samples[: args.limit]
+
+    if os.path.exists(args.output_path):
+        with open(args.output_path, "r", encoding="utf-8") as f:
+            existing_samples = json.load(f)
+        existing_by_key = {sample_key(sample): sample for sample in existing_samples}
+        merged_samples = []
+        for sample in samples:
+            existing = existing_by_key.get(sample_key(sample))
+            if existing is not None:
+                merged = dict(sample)
+                merged.update(existing)
+                merged_samples.append(merged)
+            else:
+                merged_samples.append(sample)
+        return merged_samples
+
     return samples
 
 

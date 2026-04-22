@@ -185,7 +185,7 @@ if __name__ == "__main__":
     parser.add_argument('--process_mode', type=str, default="serial") # serial/parallel
     # parser.add_argument('--input_format', type=str, default="e2e") # e2e/ocr
     parser.add_argument('--image_prefix', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999")
-    parser.add_argument('--model_name', type=str, default="google/gemma-4-26b-a4b-it") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
+    parser.add_argument('--model_name', type=str, default="gemma-4-26b-a4b-it") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
     parser.add_argument('--results_file', type=str, default=f"/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/evaluation_results/api_models/results_{parser.parse_args().model_name.replace('/', '_').replace(':free', '').replace('-', '_')}.jsonl")
 
     args = parser.parse_args()

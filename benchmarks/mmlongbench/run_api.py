@@ -26,6 +26,15 @@ def sample_key(sample):
     )
 
 
+def is_failed_response(sample):
+    response = str(sample.get("response", ""))
+    return response == "Failed" or response.startswith("Failed:")
+
+
+def should_skip_sample(sample):
+    return "score" in sample and not is_failed_response(sample)
+
+
 def encode_image_to_base64(img):
     if img.mode in ('RGBA', 'P'):
         img = img.convert('RGB')
@@ -202,14 +211,18 @@ if __name__=="__main__":
     samples = load_samples(args)
     
     # 计算已完成和待完成样本
-    completed_count = sum(1 for s in samples if "score" in s)
+    completed_count = sum(1 for s in samples if should_skip_sample(s))
     total_count = len(samples)
     print(f"进度: {completed_count}/{total_count} 已完成")
 
     for idx, sample in enumerate(tqdm(samples, desc="Processing")):
-        if "score" in sample:
+        if should_skip_sample(sample):
             score = sample["score"]
         else:
+            sample.pop("score", None)
+            sample.pop("pred", None)
+            sample.pop("extracted_res", None)
+            sample.pop("error", None)
             messages = process_sample(sample, args)
             
             try_cnt = 0
@@ -236,9 +249,12 @@ if __name__=="__main__":
                     else:
                         pass
                     is_success = True
-                except:
+                    sample.pop("error", None)
+                except Exception as exc:
                     try_cnt += 1
-                    response = "Failed"
+                    response = f"Failed: {exc}"
+                    sample["error"] = repr(exc)
+                    print(f"[Attempt {try_cnt}/{args.max_try}] request failed: {exc}")
                 if is_success or try_cnt>args.max_try:
                     break
                 

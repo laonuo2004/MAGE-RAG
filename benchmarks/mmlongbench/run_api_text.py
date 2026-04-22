@@ -20,6 +20,15 @@ def sample_key(sample):
     )
 
 
+def is_failed_response(sample):
+    response = str(sample.get("response", ""))
+    return response == "Failed" or response.startswith("Failed:")
+
+
+def should_skip_sample(sample):
+    return "score" in sample and not is_failed_response(sample)
+
+
 def build_text_prompt(sample, args):
     question = sample["question"]
     pdf_path = os.path.join(args.document_path, sample["doc_id"])
@@ -127,12 +136,12 @@ if __name__ == "__main__":
         prompt = f.read()
 
     samples = load_samples(args)
-    completed_count = sum(1 for s in samples if "score" in s)
+    completed_count = sum(1 for s in samples if should_skip_sample(s))
     total_count = len(samples)
     print(f"Progress: {completed_count}/{total_count} completed")
 
     for sample in tqdm(samples, desc="Processing OCR/Text route"):
-        if "score" in sample:
+        if should_skip_sample(sample):
             acc, f1 = eval_acc_and_f1(samples)
             print("--------------------------------------")
             print("Question: {}".format(sample.get("question")))
@@ -142,6 +151,10 @@ if __name__ == "__main__":
             print("Avg f1: {}".format(f1))
             continue
 
+        sample.pop("score", None)
+        sample.pop("pred", None)
+        sample.pop("extracted_res", None)
+        sample.pop("error", None)
         messages = build_text_prompt(sample, args)
 
         try_cnt = 0
@@ -155,10 +168,13 @@ if __name__ == "__main__":
                     temperature=args.temperature,
                 )
                 response = completion.choices[0].message.content
+                sample.pop("error", None)
                 break
             except Exception as exc:
                 try_cnt += 1
                 response = f"Failed: {exc}"
+                sample["error"] = repr(exc)
+                print(f"[Attempt {try_cnt}/{args.max_try}] request failed: {exc}")
 
         sample["response"] = response
         extracted_res = extract_answer(

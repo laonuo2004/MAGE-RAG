@@ -30,7 +30,6 @@ extractor_prompt_path = os.path.join(project_prefix, "eval/prompt_for_answer_ext
 
 with open(config_file, "r", encoding="utf-8") as rf:
     config = json.load(rf)
-client = OpenAI(api_key=config["api_model"]["access_key"], base_url=config["api_model"]["base_url"])
 
 # model_name2inferencer = {"gpt4o": "GPT4oInferencer", "gemini15_pro": "Gemini15ProInferencer", "qwen_vl_max": "QwenVLMaxInferencer", \
 #     "o1_preview": "O1PreviewInferencer", "qwen_max": "QwenMaxInferencer", "gemini-3.1-pro-preview": "Gemini31ProInferencer", \
@@ -38,6 +37,23 @@ client = OpenAI(api_key=config["api_model"]["access_key"], base_url=config["api_
 #     "google/gemma-4-26b-a4b-it:free": "OpenRouterInferencer", "google/gemma-4-26b-a4b-it": "OpenRouterInferencer"}
 
 prompt_sign = True
+client = None
+_worker_client = None
+
+
+def build_client(llm_provider):
+    if llm_provider == "openrouter":
+        return OpenAI(api_key=config["api_model"]["access_key"], base_url=config["api_model"]["base_url"])
+    if llm_provider == "local":
+        return OpenAI(api_key=config["local_model"]["access_key"], base_url=config["local_model"]["base_url"])
+    raise ValueError(f"Unsupported llm_provider: {llm_provider}")
+
+
+def get_worker_client(llm_provider):
+    global _worker_client
+    if _worker_client is None:
+        _worker_client = build_client(llm_provider)
+    return _worker_client
 
 def preprocess(input_datapath, output_datapath, image_prefix=None):
     dataset = read_jsonl_file(input_datapath)
@@ -66,7 +82,7 @@ def read_jsonl_file(file_path):
             data.append(data_dict)
     return data
 
-def call_llm(model_name, prompt, urls, temperature=0.1, seed=42, max_tokens=4096):
+def call_llm(model_name, prompt, urls, client_obj, temperature=0.1, seed=42, max_tokens=4096):
     msgs = get_msg_format(prompt, urls)
     response = None
     max_try = 2
@@ -74,7 +90,7 @@ def call_llm(model_name, prompt, urls, temperature=0.1, seed=42, max_tokens=4096
         try:
             # TODO
             # completion = client.chat.completions.create(model="gpt-4o-0513", messages=msgs, temperature=0.)
-            completion = client.chat.completions.create(model=model_name, messages=msgs, temperature=0.)
+            completion = client_obj.chat.completions.create(model=model_name, messages=msgs, temperature=0.)
             response = completion.choices[0].message.content
         except Exception as e:
             print(f"error with {e}, response = {response}")
@@ -97,7 +113,8 @@ def build_default_results_file(model_name, input_format, ocr_backend):
 
 def eval_per_record(args):
     print("--------------------------------------")
-    case, output_datapath, model_name, input_format, ocr_backend, ocr_json_dir = args
+    case, output_datapath, model_name, input_format, ocr_backend, ocr_json_dir, llm_provider = args
+    record_client = get_worker_client(llm_provider)
 
     # inferencer = eval(model_name2inferencer[model_name])()
     inferencer = eval("Inferencer")()
@@ -108,7 +125,7 @@ def eval_per_record(args):
     if input_format == "e2e":
         system_prompt = vision_system_prompt
         prompt = system_prompt + "Following is our question: \n" + f"<question>{question}</question>" + "\n"
-        result = inferencer.infer(prompt, case["images"], model_name)
+        result = inferencer.infer(prompt, case["images"], model_name, record_client)
     elif input_format == "ocr" and ocr_backend == "pymupdf":
         ocr_prompt, ocr_pages_used = get_pure_ocr_prompt_pymupdf(
             case["doc_no"],
@@ -125,7 +142,7 @@ def eval_per_record(args):
             + "Following are the extracted texts from the selected document pages:\n"
             + ocr_prompt
         )
-        result = inferencer.infer(prompt, None, model_name)
+        result = inferencer.infer(prompt, None, model_name, record_client)
     else:
         raise ValueError(f"Unsupported input format/backend combination: {input_format}/{ocr_backend}")
 
@@ -136,7 +153,7 @@ def eval_per_record(args):
     with open(extractor_prompt_path) as f:
         extractor_prompt = f.read()
     prompt = system_prompt + extractor_prompt + "\nQuestion: " + question + "\nAnalysis: " + result
-    extractor_result = call_llm(model_name, prompt, None)
+    extractor_result = call_llm(model_name, prompt, None, record_client)
     try:
         import re
         concise_answer = re.findall(r"<concise_answer>(.*?)</concise_answer>", extractor_result, re.DOTALL)[0]
@@ -179,7 +196,7 @@ def eval_per_record(args):
         print("error")
 
 
-def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial", input_format="e2e", ocr_backend="pymupdf", ocr_json_dir=None, extra_infos=None):
+def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial", input_format="e2e", ocr_backend="pymupdf", ocr_json_dir=None, extra_infos=None, llm_provider="openrouter"):
 
     if os.path.exists(output_datapath):
         output_dataset = read_jsonl_file(output_datapath)
@@ -191,7 +208,7 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial"
 
     args_list = []
     for case in dataset:
-        args_list.append((case, output_datapath, model_name, input_format, ocr_backend, ocr_json_dir))
+        args_list.append((case, output_datapath, model_name, input_format, ocr_backend, ocr_json_dir, llm_provider))
 
     start_time = datetime.datetime.now()
     print("job start time:", start_time)
@@ -210,6 +227,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--qa_file', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl")
     parser.add_argument('--process_mode', type=str, default="serial") # serial/parallel
+    parser.add_argument('--llm_provider', type=str, default="openrouter") # openrouter/local
     parser.add_argument('--input_format', type=str, choices=["e2e", "ocr"], default="e2e")
     parser.add_argument('--ocr_backend', type=str, choices=["pymupdf"], default="pymupdf")
     parser.add_argument('--ocr_json_dir', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_jsons/4000-4999")
@@ -221,6 +239,8 @@ if __name__ == "__main__":
 
     input_datapath = args.qa_file
     output_datapath = args.results_file
+    
+    client = build_client(args.llm_provider)
 
     # load data
     # dataset = preprocess(input_datapath, output_datapath)
@@ -239,11 +259,16 @@ if __name__ == "__main__":
                 input_format=args.input_format,
                 ocr_backend=args.ocr_backend,
                 ocr_json_dir=args.ocr_json_dir,
+                llm_provider=args.llm_provider,
             )
         except Exception as e:
             print(f"An error occurred: {e}")
             print("Restarting script...")
             time.sleep(1)
+
+    if not os.path.exists(output_datapath):
+        print(f"No results generated at: {output_datapath}")
+        sys.exit(1)
 
     acc, f1, = calculate_acc_and_f1(output_datapath)
     print("--------------------------------------")

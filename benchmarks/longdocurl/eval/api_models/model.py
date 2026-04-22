@@ -2,6 +2,7 @@ import base64
 from io import BytesIO
 from abc import ABC, abstractmethod
 from openai import OpenAI
+import openai
 import requests
 import os
 from typing import Optional, Sequence, Union
@@ -46,12 +47,12 @@ class APIInferencer(ABC):
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
 
-    def get_correct_response(self, model_name: str, prompt: str, image_path: Optional[Union[Sequence[str], str]]) -> str:
-        response = self.model_chat(model_name, prompt, image_path)
+    def get_correct_response(self, model_name: str, prompt: str, image_path: Optional[Union[Sequence[str], str]], client: openai.OpenAI) -> str:
+        response = self.model_chat(model_name, prompt, image_path, client)
         return response
 
-    def model_chat(self, model_name: str, prompt: str, image_path: Optional[Union[Sequence[str], str]]) -> str:
-        client = self.load_client()
+    def model_chat(self, model_name: str, prompt: str, image_path: Optional[Union[Sequence[str], str]], client: openai.OpenAI) -> str:
+        # client = self.load_client()
         messages = [
             {
                 "role": "user",
@@ -146,6 +147,6 @@ class APIInferencer(ABC):
 #         return response
 
 class Inferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: Optional[Union[Sequence[str], str]], model_name: str) -> str:
-        response = self.get_correct_response(model_name, prompt, image_path)
+    def infer(self, prompt: str, image_path: Optional[Union[Sequence[str], str]], model_name: str, client: openai.OpenAI) -> str:
+        response = self.get_correct_response(model_name, prompt, image_path, client)
         return response

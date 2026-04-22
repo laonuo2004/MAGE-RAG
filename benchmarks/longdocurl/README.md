@@ -48,6 +48,10 @@ Download PDFs and qa file (.jsonl) from [HuggingFace](https://huggingface.co/dat
 bash utils/run_extract_ccpdf.sh
 ```
 
+This extraction step produces both:
+- `data/pdf_pngs/...`: page images for the image-to-VLM baseline
+- `data/pdf_jsons/...`: PyMuPDF word-level JSON files for the OCR baseline
+
 Images will be organized in following ways:
 ```markdown
 ├── 4000
@@ -70,6 +74,12 @@ For api models:
 bash scripts/eval_api_models.sh
 ```
 
+For api models with the PyMuPDF OCR baseline:
+
+```bash
+INPUT_FORMAT=ocr OCR_BACKEND=pymupdf bash scripts/eval_api_models.sh
+```
+
 For open-source models (currently only support qwen2-vl and qwen2.5-vl series):
 
 ```bash
@@ -79,6 +89,9 @@ bash scripts/eval_open_lvlms.sh
 
 Options to note:
 - `process_mode`: default `serial`. Set `parallel` if parallel execution is needed. Default number of parallel processes is 8.
+- `input_format`: default `e2e`. Set `ocr` to evaluate with extracted page text instead of images.
+- `ocr_backend`: default `pymupdf`. Currently only the PyMuPDF JSON backend is supported for OCR mode.
+- `ocr_json_dir`: default `data/pdf_jsons/4000-4999`. The extracted JSON layout is `{ocr_json_dir}/{zip_no}/{doc_no}.json`, and `contents[].page_no` is 0-based.
 - `image_prefix`: default `None`. Add image prefix when needed in order to get proper image paths.
 - `model_name`: the model abbreviation is mapped to the actual model class defined in `eval/api_models/model.py`,
 

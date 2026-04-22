@@ -5,14 +5,9 @@ sys.path.append(str(pathlib.Path(__file__).absolute().parent.parent.parent))
 
 import argparse
 import os
-from io import BytesIO
 
-import oss2
-import base64
 import json
 from tqdm import tqdm
-import requests
-import re
 import time
 from multiprocessing import Pool
 import datetime
@@ -24,7 +19,8 @@ from utils.utils_score_v3 import *
 from model import Inferencer
 from pure_ocr_utils import *
 
-system_prompt = "You are an expert in visual document question-answering, please answer our questions based on the given images.\n"
+vision_system_prompt = "You are an expert in visual document question-answering, please answer our questions based on the given images.\n"
+text_system_prompt = "You are an expert in document question-answering, please answer our questions based on the extracted text from the given pages.\n"
 
 # TODO
 project_prefix = "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/"
@@ -92,17 +88,46 @@ def delete_generate_dataset(dataset, output_dataset):
     unfinished_dataset = [sample for sample in dataset if sample['question_id'] not in finished_question_id_set]
     return unfinished_dataset
 
+
+def build_default_results_file(model_name, input_format, ocr_backend):
+    model_key = model_name.replace("/", "_").replace(":free", "").replace("-", "_")
+    suffix = input_format if input_format == "e2e" else f"{input_format}_{ocr_backend}"
+    return os.path.join(project_prefix, f"evaluation_results/api_models/results_{model_key}_{suffix}.jsonl")
+
+
 def eval_per_record(args):
     print("--------------------------------------")
-    case, output_datapath, model_name = args
+    case, output_datapath, model_name, input_format, ocr_backend, ocr_json_dir = args
 
     # inferencer = eval(model_name2inferencer[model_name])()
     inferencer = eval("Inferencer")()
 
     question = case["question"]
-    prompt = system_prompt + "Following is our question: \n" + f"<question>{question}</question>" + "\n"
+    ocr_pages_used = []
 
-    result = inferencer.infer(prompt, case["images"], model_name)
+    if input_format == "e2e":
+        system_prompt = vision_system_prompt
+        prompt = system_prompt + "Following is our question: \n" + f"<question>{question}</question>" + "\n"
+        result = inferencer.infer(prompt, case["images"], model_name)
+    elif input_format == "ocr" and ocr_backend == "pymupdf":
+        ocr_prompt, ocr_pages_used = get_pure_ocr_prompt_pymupdf(
+            case["doc_no"],
+            images=case.get("images"),
+            ocr_json_dir=ocr_json_dir,
+            start_page=case["start_end_idx"][0],
+            end_page=case["start_end_idx"][1],
+        )
+        system_prompt = text_system_prompt
+        prompt = (
+            system_prompt
+            + "Following is our question: \n"
+            + f"<question>{question}</question>\n"            
+            + "Following are the extracted texts from the selected document pages:\n"
+            + ocr_prompt
+        )
+        result = inferencer.infer(prompt, None, model_name)
+    else:
+        raise ValueError(f"Unsupported input format/backend combination: {input_format}/{ocr_backend}")
 
     if result is None:
         return
@@ -134,6 +159,9 @@ def eval_per_record(args):
     case["detailed_response"] = result
     case["pred"] = pred_ans
     case["score_v3"] = score_v3
+    case["input_format"] = input_format
+    case["ocr_backend"] = ocr_backend if input_format == "ocr" else None
+    case["ocr_pages_used"] = ocr_pages_used
 
     print("\n\n")
     print("Question: {}".format(case["question"]))
@@ -151,7 +179,7 @@ def eval_per_record(args):
         print("error")
 
 
-def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial", extra_infos=None):
+def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial", input_format="e2e", ocr_backend="pymupdf", ocr_json_dir=None, extra_infos=None):
 
     if os.path.exists(output_datapath):
         output_dataset = read_jsonl_file(output_datapath)
@@ -163,7 +191,7 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial"
 
     args_list = []
     for case in dataset:
-        args_list.append((case, output_datapath, model_name))
+        args_list.append((case, output_datapath, model_name, input_format, ocr_backend, ocr_json_dir))
 
     start_time = datetime.datetime.now()
     print("job start time:", start_time)
@@ -181,9 +209,10 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial"
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--qa_file', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl")
-    # parser.add_argument('--results_file', type=str, default="evaluation_results/api_models/results_gpt4o.jsonl") 
     parser.add_argument('--process_mode', type=str, default="serial") # serial/parallel
-    parser.add_argument('--input_format', type=str, default="ocr") # e2e/ocr
+    parser.add_argument('--input_format', type=str, choices=["e2e", "ocr"], default="e2e")
+    parser.add_argument('--ocr_backend', type=str, choices=["pymupdf"], default="pymupdf")
+    parser.add_argument('--ocr_json_dir', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_jsons/4000-4999")
     parser.add_argument('--image_prefix', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999")
     parser.add_argument('--model_name', type=str, default="gemma-4-26b-a4b-it") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
     parser.add_argument('--results_file', type=str, default=f"/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/evaluation_results/api_models/results_{parser.parse_args().model_name.replace('/', '_').replace(':free', '').replace('-', '_')}_{parser.parse_args().input_format}.jsonl")
@@ -202,7 +231,15 @@ if __name__ == "__main__":
     while try_cnt:
         try_cnt -= 1
         try:
-            evaluate(dataset, output_datapath, model_name=args.model_name, process_mode=args.process_mode)
+            evaluate(
+                dataset,
+                output_datapath,
+                model_name=args.model_name,
+                process_mode=args.process_mode,
+                input_format=args.input_format,
+                ocr_backend=args.ocr_backend,
+                ocr_json_dir=args.ocr_json_dir,
+            )
         except Exception as e:
             print(f"An error occurred: {e}")
             print("Restarting script...")

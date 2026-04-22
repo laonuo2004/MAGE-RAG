@@ -1,20 +1,12 @@
 import os
 from io import BytesIO
-import oss2
 import base64
-import json
 import requests
-import re
-from typing import Union
+from typing import Optional, Sequence, Union
 
 # TODO
 def get_alimama_oss_bucket():
-    endpoint = ''
-    access_key_id = ''
-    access_key_secret = ''
-    bucket_name = ''
-    bucket = oss2.Bucket(oss2.Auth(access_key_id, access_key_secret), endpoint, bucket_name)
-    return bucket
+    raise NotImplementedError("OSS support is not configured.")
 
 # # uncomment if oss paths are used
 # bucket = get_alimama_oss_bucket()
@@ -33,13 +25,15 @@ def encode_image_to_base64(image_path):
         return base64.b64encode(image_file.read()).decode('utf-8')
 
         
-def get_msg_format(prompt, img_urls):
+def get_msg_format(prompt, img_urls: Optional[Union[Sequence[str], str]]):
     content = [{"type": "text", "text": prompt}]
     if img_urls is not None:
         if isinstance(img_urls, str):
             base64_images = [encode_image_to_base64(img_urls)]
-        elif isinstance(img_urls, Union[list, tuple]):
+        elif isinstance(img_urls, (list, tuple)):
             base64_images = [encode_image_to_base64(img_url) for img_url in img_urls]
+        else:
+            raise TypeError(f"Unsupported img_urls type: {type(img_urls)}")
         
         for i, base64_image in enumerate(base64_images):
             content += [
@@ -58,5 +52,4 @@ def get_msg_format(prompt, img_urls):
         }
     ]
     return messages
-
 

@@ -1,14 +1,10 @@
-import torch
 import base64
 from io import BytesIO
-from transformers import AutoModelForCausalLM, AutoTokenizer, Blip2Processor, Blip2ForConditionalGeneration, BitsAndBytesConfig
-from PIL import Image
 from abc import ABC, abstractmethod
 from openai import OpenAI
 import requests
 import os
-from typing import Union
-import oss2
+from typing import Optional, Sequence, Union
 import json
 
 # TODO
@@ -23,16 +19,10 @@ class APIInferencer(ABC):
         # self.bucket = self.get_alimama_oss_bucket()
 
     def get_alimama_oss_bucket(self):
-        # TODO
-        endpoint = ''
-        access_key_id = ''
-        access_key_secret = ''
-        bucket_name = ''
-        bucket = oss2.Bucket(oss2.Auth(access_key_id, access_key_secret), endpoint, bucket_name)
-        return bucket
+        raise NotImplementedError("OSS support is not configured for the API inferencer.")
 
     @abstractmethod
-    def infer(self, prompt: str, image_path: str) -> str:
+    def infer(self, prompt: str, image_path: Optional[Union[Sequence[str], str]]) -> str:
         pass
 
     def load_client(self):
@@ -56,11 +46,11 @@ class APIInferencer(ABC):
         with open(image_path, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode('utf-8')
 
-    def get_correct_response(self, model_name: str, prompt: str, image_path: Union[list, str]) -> str:
+    def get_correct_response(self, model_name: str, prompt: str, image_path: Optional[Union[Sequence[str], str]]) -> str:
         response = self.model_chat(model_name, prompt, image_path)
         return response
 
-    def model_chat(self, model_name: str, prompt: str, image_path: str) -> str:
+    def model_chat(self, model_name: str, prompt: str, image_path: Optional[Union[Sequence[str], str]]) -> str:
         client = self.load_client()
         messages = [
             {
@@ -79,14 +69,16 @@ class APIInferencer(ABC):
                 max_try -= 1
         return response
 
-    def build_message_content(self, prompt: str, image_path: str):
+    def build_message_content(self, prompt: str, image_path: Optional[Union[Sequence[str], str]]):
         content = [{"type": "text", "text": prompt}]
         if image_path is None:
             return content
         if isinstance(image_path, str):
             image_paths = [image_path]
-        elif isinstance(image_path, Union[list, tuple]):
+        elif isinstance(image_path, (list, tuple)):
             image_paths = image_path
+        else:
+            raise TypeError(f"Unsupported image_path type: {type(image_path)}")
         base64_images = [self.encode_image_to_base64(image_path) for image_path in image_paths]
         for i, base64_image in enumerate(base64_images):
             content += [
@@ -154,6 +146,6 @@ class APIInferencer(ABC):
 #         return response
 
 class Inferencer(APIInferencer):
-    def infer(self, prompt: str, image_path: str, model_name: str) -> str:
+    def infer(self, prompt: str, image_path: Optional[Union[Sequence[str], str]], model_name: str) -> str:
         response = self.get_correct_response(model_name, prompt, image_path)
         return response

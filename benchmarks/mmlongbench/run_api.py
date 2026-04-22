@@ -9,6 +9,7 @@ from io import BytesIO
 from PIL import Image
 from tqdm import tqdm
 
+from env_utils import get_config_value, load_local_env
 from eval.extract_answer import build_client, extract_answer
 from eval.eval_score import eval_score, eval_acc_and_f1, show_results
 
@@ -109,7 +110,7 @@ if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_path", type=str, default="./data/samples.json")
     parser.add_argument("--document_path", type=str, default="./data/documents")
-    parser.add_argument("--model_name", type=str, required=True)
+    parser.add_argument("--model_name", type=str, default=None)
     parser.add_argument("--api_style", type=str, default="openai", choices=["openai", "gemini"])
     parser.add_argument("--base_url", type=str, default=None)
     parser.add_argument("--api_key", type=str, default=None)
@@ -125,12 +126,35 @@ if __name__=="__main__":
     parser.add_argument("--output_path", type=str, default=None)
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
+    local_env = load_local_env()
+
+    args.model_name = get_config_value(args.model_name, "MODEL_NAME", local_env=local_env)
+    args.base_url = get_config_value(args.base_url, "OPENROUTER_BASE_URL", local_env=local_env)
+    args.api_key = get_config_value(args.api_key, "OPENROUTER_API_KEY", local_env=local_env)
+    args.extractor_model_name = get_config_value(
+        args.extractor_model_name,
+        "EXTRACTOR_MODEL_NAME",
+        local_env=local_env,
+        default=args.model_name,
+    )
+    args.extractor_base_url = get_config_value(
+        args.extractor_base_url,
+        "EXTRACTOR_BASE_URL",
+        local_env=local_env,
+        default=args.base_url,
+    )
+    args.extractor_api_key = get_config_value(
+        args.extractor_api_key,
+        "EXTRACTOR_API_KEY",
+        local_env=local_env,
+        default=args.api_key,
+    )
+
+    if not args.model_name:
+        raise ValueError("Missing model name. Set --model_name or MODEL_NAME in .env.mmlongbench/.env.")
 
     model_slug = re.sub(r"[^0-9a-zA-Z._-]+", "_", args.model_name)
     args.output_path = args.output_path or f'./results/res_{model_slug}.json'
-    args.extractor_model_name = args.extractor_model_name or args.model_name
-    args.extractor_base_url = args.extractor_base_url or args.base_url
-    args.extractor_api_key = args.extractor_api_key or args.api_key
     os.makedirs("./results", exist_ok=True)
     os.makedirs("./tmp", exist_ok=True)
 

@@ -29,6 +29,14 @@ def should_skip_sample(sample):
     return "score" in sample and not is_failed_response(sample)
 
 
+def parse_extracted_answer(extracted_res):
+    text = str(extracted_res or "")
+    match = re.search(r"Extracted answer:\s*(.*?)(?:\n+Answer format:|$)", text, flags=re.DOTALL)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
 def build_text_prompt(sample, args):
     question = sample["question"]
     pdf_path = os.path.join(args.document_path, sample["doc_id"])
@@ -185,8 +193,10 @@ if __name__ == "__main__":
             client=extractor_client,
         )
         sample["extracted_res"] = extracted_res
+        pred_ans = parse_extracted_answer(extracted_res)
         try:
-            pred_ans = extracted_res.split("Answer format:")[0].split("Extracted answer:")[1].strip()
+            if pred_ans is None:
+                raise ValueError("failed to parse extracted answer")
             score = eval_score(sample["answer"], pred_ans, sample["answer_format"])
         except Exception:
             pred_ans = "Failed to extract"

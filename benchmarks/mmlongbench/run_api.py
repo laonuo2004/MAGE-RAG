@@ -35,6 +35,14 @@ def should_skip_sample(sample):
     return "score" in sample and not is_failed_response(sample)
 
 
+def parse_extracted_answer(extracted_res):
+    text = str(extracted_res or "")
+    match = re.search(r"Extracted answer:\s*(.*?)(?:\n+Answer format:|$)", text, flags=re.DOTALL)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
 def encode_image_to_base64(img):
     if img.mode in ('RGBA', 'P'):
         img = img.convert('RGB')
@@ -267,13 +275,13 @@ if __name__=="__main__":
                 client=extractor_client,
             )
             sample["extracted_res"] = extracted_res
-            # try:
             print(extracted_res)
-            pred_ans = extracted_res.split("Answer format:")[0].split("Extracted answer:")[1].strip()
-            score = eval_score(sample["answer"], pred_ans, sample["answer_format"])
-            # except:
-            #     pred_ans = "Failed to extract"
-            #     score = 0.0
+            pred_ans = parse_extracted_answer(extracted_res)
+            if pred_ans is None:
+                pred_ans = "Failed to extract"
+                score = 0.0
+            else:
+                score = eval_score(sample["answer"], pred_ans, sample["answer_format"])
             sample["pred"] = pred_ans
             sample["score"] = score
 

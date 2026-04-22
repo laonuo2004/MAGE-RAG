@@ -30,3 +30,4 @@ results/
 logs/
 *.log
 .env.mmlongbench
+tmp/

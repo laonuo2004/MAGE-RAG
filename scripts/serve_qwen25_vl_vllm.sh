@@ -19,8 +19,6 @@
 # - `throughput` uses `--max-model-len 32768`, `--max-num-seqs 12`, and `--max-num-batched-tokens 24576`. This is the recommended default for mixed workloads.
 # - `longctx` uses `--max-model-len 65536`, `--max-num-seqs 4`, and `--max-num-batched-tokens 16384`. Use it when you need to rerun very long document requests.
 # - `maxctx` uses `--max-model-len 128000`, `--max-num-seqs 2`, and `--max-num-batched-tokens 8192`. Use it only for maximum-context reruns where throughput is secondary.
-# - `throughput` and `longctx` cap multimodal input to `4` images per prompt by default.
-# - `maxctx` caps multimodal input more aggressively at `2` images per prompt to preserve memory headroom.
 # - All presets enable chunked prefill.
 # - Override GPU or port when needed, for example: `CUDA_VISIBLE_DEVICES=1 PORT=8001 bash scripts/serve_qwen25_vl_vllm.sh throughput`.
 
@@ -49,7 +47,6 @@ case "${PROFILE}" in
       --max-num-seqs 12
       --max-num-batched-tokens 24576
       --enable-chunked-prefill
-      --limit-mm-per-prompt '{"image":4,"video":0}'
     )
     ;;
   longctx)
@@ -59,7 +56,6 @@ case "${PROFILE}" in
       --max-num-seqs 4
       --max-num-batched-tokens 16384
       --enable-chunked-prefill
-      --limit-mm-per-prompt '{"image":4,"video":0}'
     )
     ;;
   maxctx)
@@ -69,7 +65,6 @@ case "${PROFILE}" in
       --max-num-seqs 2
       --max-num-batched-tokens 8192
       --enable-chunked-prefill
-      --limit-mm-per-prompt '{"image":2,"video":0}'
     )
     ;;
   *)

@@ -109,37 +109,26 @@ logs/      # 运行日志
 
 - `--input_path`
   benchmark 题目文件，默认 `./data/samples.json`
-
 - `--document_path`
   PDF 所在目录，默认 `./data/documents`
-
 - `--model_name`
   主回答模型名
-
 - `--base_url`
   单一路由时用的 API 地址
-
 - `--api_key`
   单一路由时用的 key
-
 - `--extractor_model_name`
   二次抽取模型名
-
 - `--extractor_base_url`
   二次抽取模型接口
-
 - `--extractor_api_key`
   二次抽取 key
-
 - `--max_try`
   单题最大重试次数
-
 - `--num_workers`
   并发数
-
 - `--output_path`
   输出 JSON 文件
-
 - `--limit`
   只跑前几条，用于 smoke test
 
@@ -147,7 +136,6 @@ logs/      # 运行日志
 
 - `--max_pages`
   当前逻辑是“截 PDF 前 N 页”
-
 - `--resolution`
   PDF 转图片时的 DPI
 
@@ -258,7 +246,7 @@ ROUTE_MAX_MODEL_LENS=32768,32768,65536,65536,128000
 - `used_model_name`
 - `used_route_max_model_len`
 
-这几个字段组会时非常好讲，因为你能清楚说明这一题最终用了哪个上下文档。
+你能清楚说明这一题最终用了哪个模型。
 
 ---
 
@@ -305,10 +293,8 @@ ROUTE_MAX_MODEL_LENS=32768,32768,65536,65536,128000
 
 2. `generation`
    主模型生成耗时
-
 3. `extraction`
    二次抽取耗时
-
 4. `total`
    整题总耗时
 
@@ -317,6 +303,59 @@ ROUTE_MAX_MODEL_LENS=32768,32768,65536,65536,128000
 1. 是转图慢
 2. 还是主模型慢
 3. 还是 extractor 慢
+
+---
+
+## 8.5 如何只调试某一个样本
+
+现在脚本已经直接支持按样本过滤，可以用：
+
+1. `--sample_id`
+2. `--sample_doc_id`
+3. `--sample_question`
+
+这三个参数可以单独使用，也可以组合使用。
+
+### 方法 1：按 `doc_id + question` 调试单样本
+
+图片路线：
+
+```bash
+python -u ./run_api.py --sample_doc_id "52b3137455e7ca4df65021a200aef724.pdf" --sample_question "What is the title of module 1?" --debug_prompts --debug_dir ./debug_img_case --output_path ./results/debug_one_sample_img.json 2>&1 | tee ./logs/debug_one_sample_img.log
+```
+
+OCR/Text 路线：
+
+```bash
+python -u ./run_api_text.py --sample_doc_id "52b3137455e7ca4df65021a200aef724.pdf" --sample_question "What is the title of module 1?" --debug_prompts --debug_dir ./debug_text_case --output_path ./results/debug_one_sample_text.json 2>&1 | tee ./logs/debug_one_sample_text.log
+```
+
+### 方法 2：按 `sample_id` 调试单样本
+
+如果 `samples.json` 里已经有 `sample_id`，可以直接：
+
+```bash
+python -u ./run_api.py --sample_id "your_sample_id_here" --debug_prompts --output_path ./results/debug_one_sample_img.json 2>&1 | tee ./logs/debug_one_sample_img.log
+```
+
+### 方法 3：如果不知道 `sample_id`，先查
+
+```bash
+python - <<'PY'
+import json
+data = json.load(open('./data/samples.json', 'r', encoding='utf-8'))
+for x in data:
+    if x.get('doc_id') == '52b3137455e7ca4df65021a200aef724.pdf':
+        print(x.get('sample_id'), x.get('question'))
+PY
+```
+
+这样做的好处：
+
+1. 不用再单独切一个新的 JSON 文件
+2. 输入最小，跑得快
+3. debug 文件里只会有目标样本
+4. 特别适合定位离题回答、错误路由、错误送页等问题
 
 ---
 
@@ -360,7 +399,7 @@ ROUTE_MAX_MODEL_LENS=32768,32768,65536,65536,128000
 
 ## 11. 现在推荐的 `.env.mmlongbench` 配置
 
-## 11.1 方案 B：直连多端口，benchmark 自己切换（推荐）
+## 11.1 方案 B：直连多端口，benchmark 自己切换
 
 ```bash
 MODEL_NAME=/data2/jiangjiaqi/ylz/Qwen2.5-VL-7B-Instruct
@@ -480,8 +519,6 @@ python -u ./run_api_text.py --num_workers 2 --max_pages 5 --output_path ./result
 
 ## 14. 后面 baseline 应该怎么接
 
-这个部分是组会上最值得讲的。
-
 核心思想：
 
 **尽量不改后处理和评分，只替换“如何得到 response”这一层。**
@@ -545,7 +582,7 @@ python -u ./run_api_text.py --num_workers 2 --max_pages 5 --output_path ./result
 
 ---
 
-## 15. 组会怎么讲这套代码
+## 15. 这套代码
 
 最简单的一种讲法是把整套 benchmark 拆成四层：
 

@@ -7,6 +7,7 @@ import fitz
 from io import BytesIO
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+from time import perf_counter
 
 from PIL import Image
 from tqdm import tqdm
@@ -212,6 +213,7 @@ def request_with_fallback(messages, args, routes):
 
 
 def process_one_sample(sample, args, prompt, routes):
+    total_start = perf_counter()
     sample = dict(sample)
     sample.pop("score", None)
     sample.pop("pred", None)
@@ -220,13 +222,20 @@ def process_one_sample(sample, args, prompt, routes):
     sample.pop("failure_stage", None)
     sample.pop("status", None)
 
+    prep_start = perf_counter()
     messages = process_sample(sample, args)
+    prep_seconds = perf_counter() - prep_start
+
+    generation_start = perf_counter()
     response, used_route, request_error = request_with_fallback(messages, args, routes)
+    generation_seconds = perf_counter() - generation_start
     sample["response"] = response
     sample["used_base_url"] = used_route.base_url
     sample["used_model_name"] = used_route.model_name
     sample["used_route_label"] = used_route.label
     sample["used_route_max_model_len"] = used_route.max_model_len
+    sample["timing_prepare_seconds"] = round(prep_seconds, 3)
+    sample["timing_generation_seconds"] = round(generation_seconds, 3)
 
     if is_failed_response(sample):
         sample["error"] = repr(request_error) if request_error is not None else sample.get("error")
@@ -235,6 +244,8 @@ def process_one_sample(sample, args, prompt, routes):
         sample["pred"] = "Failed to extract"
         sample["score"] = 0.0
         sample["status"] = "failed_generation"
+        sample["timing_extraction_seconds"] = 0.0
+        sample["timing_total_seconds"] = round(perf_counter() - total_start, 3)
         return sample
 
     extractor_model_name = args.extractor_model_name or used_route.model_name
@@ -242,6 +253,7 @@ def process_one_sample(sample, args, prompt, routes):
         api_key=args.extractor_api_key if args.extractor_model_name else used_route.api_key,
         base_url=args.extractor_base_url if args.extractor_model_name else used_route.base_url,
     )
+    extraction_start = perf_counter()
     extracted_res = extract_answer(
         sample["question"],
         response,
@@ -249,6 +261,7 @@ def process_one_sample(sample, args, prompt, routes):
         model_name=extractor_model_name,
         client=extractor_client,
     )
+    extraction_seconds = perf_counter() - extraction_start
     sample["extracted_res"] = extracted_res
     pred_ans = parse_extracted_answer(extracted_res)
     if pred_ans is None:
@@ -260,6 +273,8 @@ def process_one_sample(sample, args, prompt, routes):
         sample["pred"] = pred_ans
         sample["score"] = eval_score(sample["answer"], pred_ans, sample["answer_format"])
         sample["status"] = "completed"
+    sample["timing_extraction_seconds"] = round(extraction_seconds, 3)
+    sample["timing_total_seconds"] = round(perf_counter() - total_start, 3)
     return sample
 
 
@@ -370,6 +385,14 @@ if __name__=="__main__":
             print("--------------------------------------")
             print("Question: {}".format(sample["question"]))
             print("Route: {} | {} | {}".format(sample.get("used_route_label"), sample.get("used_base_url"), sample.get("used_model_name")))
+            print(
+                "Timing: prepare={:.3f}s | generation={:.3f}s | extraction={:.3f}s | total={:.3f}s".format(
+                    sample.get("timing_prepare_seconds", 0.0),
+                    sample.get("timing_generation_seconds", 0.0),
+                    sample.get("timing_extraction_seconds", 0.0),
+                    sample.get("timing_total_seconds", 0.0),
+                )
+            )
             print("Response: {}".format(sample["response"]))
             print("Gt: {}\tPred: {}\tScore: {}".format(sample["answer"], sample["pred"], sample["score"]))
             print("Avg acc: {}".format(acc))

@@ -31,6 +31,13 @@ VLLM_BIN="${VLLM_BIN:-/root/autodl-tmp/conda/envs/logma-rag/bin/vllm}"
 MODEL_NAME="${MODEL_NAME:-Qwen/Qwen2.5-VL-7B-Instruct}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
+ENABLE_CHUNKED_PREFILL="${ENABLE_CHUNKED_PREFILL:-1}"
+LIMIT_MM_PER_PROMPT="${LIMIT_MM_PER_PROMPT:-}"
+EXTRA_VLLM_ARGS="${EXTRA_VLLM_ARGS:-}"
 
 COMMON_ARGS=(
   serve
@@ -41,31 +48,22 @@ COMMON_ARGS=(
 
 case "${PROFILE}" in
   throughput)
-    PROFILE_ARGS=(
-      --gpu-memory-utilization 0.92
-      --max-model-len 32768
-      --max-num-seqs 12
-      --max-num-batched-tokens 24576
-      --enable-chunked-prefill
-    )
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.92"
+    DEFAULT_MAX_MODEL_LEN="32768"
+    DEFAULT_MAX_NUM_SEQS="16"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="24576"
     ;;
   longctx)
-    PROFILE_ARGS=(
-      --gpu-memory-utilization 0.95
-      --max-model-len 65536
-      --max-num-seqs 4
-      --max-num-batched-tokens 16384
-      --enable-chunked-prefill
-    )
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.95"
+    DEFAULT_MAX_MODEL_LEN="65536"
+    DEFAULT_MAX_NUM_SEQS="12"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="16384"
     ;;
   maxctx)
-    PROFILE_ARGS=(
-      --gpu-memory-utilization 0.95
-      --max-model-len 128000
-      --max-num-seqs 2
-      --max-num-batched-tokens 8192
-      --enable-chunked-prefill
-    )
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.95"
+    DEFAULT_MAX_MODEL_LEN="128000"
+    DEFAULT_MAX_NUM_SEQS="8"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="8192"
     ;;
   *)
     echo "Unknown profile: ${PROFILE}" >&2
@@ -73,6 +71,32 @@ case "${PROFILE}" in
     exit 1
     ;;
 esac
+
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-${DEFAULT_GPU_MEMORY_UTILIZATION}}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-${DEFAULT_MAX_MODEL_LEN}}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-${DEFAULT_MAX_NUM_SEQS}}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-${DEFAULT_MAX_NUM_BATCHED_TOKENS}}"
+
+PROFILE_ARGS=(
+  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
+  --max-model-len "${MAX_MODEL_LEN}"
+  --max-num-seqs "${MAX_NUM_SEQS}"
+  --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
+)
+
+if [[ "${ENABLE_CHUNKED_PREFILL}" == "1" ]]; then
+  PROFILE_ARGS+=(--enable-chunked-prefill)
+fi
+
+if [[ -n "${LIMIT_MM_PER_PROMPT}" ]]; then
+  PROFILE_ARGS+=(--limit-mm-per-prompt "${LIMIT_MM_PER_PROMPT}")
+fi
+
+if [[ -n "${EXTRA_VLLM_ARGS}" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_ARGS_ARRAY=( ${EXTRA_VLLM_ARGS} )
+  PROFILE_ARGS+=("${EXTRA_ARGS_ARRAY[@]}")
+fi
 
 echo "Starting vLLM with profile=${PROFILE}, CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_VALUE}, port=${PORT}" >&2
 exec env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_VALUE}" \

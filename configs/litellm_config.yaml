@@ -1,20 +1,31 @@
+# 注意模型列表按上下文从短到长排序，因为路由器会优先选择列表前面的模型，以避免长上下文模型被短上下文请求占用
 model_list:
   - model_name: Qwen/Qwen2.5-VL-7B-Instruct
     litellm_params:
-      model: hosted_vllm/Qwen/Qwen2.5-VL-7B-Instruct
-      api_base: "http://localhost:8000/v1"  # 1. 本地 GPU 1
+      model: hosted_vllm//data2/jiangjiaqi/ylz/Qwen2.5-VL-7B-Instruct
+      api_base: "http://localhost:8001/v1"  # BeiHang GPU 4，throughput 实例
       api_key: "none"
-  # - model_name: Qwen/Qwen2.5-VL-7B-Instruct
-  #   litellm_params:
-  #     model: hosted_vllm/Qwen/Qwen2.5-VL-7B-Instruct
-  #     api_base: "http://localhost:8001/v1"  # 2. 北航 GPU 4,5
-  #     api_key: "none"
-  # - model_name: Qwen/Qwen2.5-VL-7B-Instruct
-  #   litellm_params:
-  #     model: hosted_vllm/Qwen/Qwen2.5-VL-7B-Instruct
-  #     api_base: "http://localhost:8002/v1"  # 3. 北航 GPU 6,7
-  #     api_key: "none"
+  - model_name: Qwen/Qwen2.5-VL-7B-Instruct
+    litellm_params:
+      model: hosted_vllm//data2/jiangjiaqi/ylz/Qwen2.5-VL-7B-Instruct
+      api_base: "http://localhost:8002/v1"  # BeiHang GPU 5，throughput 实例
+      api_key: "none"
+  - model_name: Qwen/Qwen2.5-VL-7B-Instruct
+    litellm_params:
+      model: hosted_vllm//data2/jiangjiaqi/ylz/Qwen2.5-VL-7B-Instruct
+      api_base: "http://localhost:8003/v1"  # BeiHang GPU 6，longctx 实例
+      api_key: "none"
+  - model_name: Qwen/Qwen2.5-VL-7B-Instruct
+    litellm_params:
+      model: hosted_vllm//data2/jiangjiaqi/ylz/Qwen2.5-VL-7B-Instruct
+      api_base: "http://localhost:8004/v1"  # BeiHang GPU 7，longctx 实例
+      api_key: "none"
+  - model_name: Qwen/Qwen2.5-VL-7B-Instruct
+    litellm_params:
+      model: hosted_vllm/Qwen/Qwen2.5-VL-7B-Instruct
+      api_base: "http://localhost:8000/v1"  # MM GPU 1, 128k 实例
+      api_key: "none"      
 
 router_settings:
-  routing_strategy: least-busy  # 关键：始终将新任务发给当前最闲的实例
-  num_retries: 3                # 如果某个实例挂了，自动重试其他实例
+  routing_strategy: least-busy
+  num_retries: 10

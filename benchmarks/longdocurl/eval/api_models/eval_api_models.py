@@ -217,7 +217,7 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial"
         for args in args_list:
             eval_per_record(args)
     elif process_mode == "parallel":
-        with Pool(processes=8) as pool:  # You can adjust the number of processes as needed
+        with Pool(processes=64) as pool:  # You can adjust the number of processes as needed
             list(tqdm(pool.imap(eval_per_record, args_list), total=len(args_list)))
     else:
         print("process mode error!")

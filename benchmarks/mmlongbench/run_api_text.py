@@ -105,11 +105,11 @@ def load_samples(args):
 
 def request_with_fallback(messages, args, routes):
     route_index = 0
-    attempts = 0
     last_error = None
     while route_index is not None and route_index < len(routes):
         route = routes[route_index]
         client = build_client(api_key=route.api_key, base_url=route.base_url)
+        attempts = 0
         while attempts < args.max_try:
             try:
                 completion = client.chat.completions.create(
@@ -129,14 +129,12 @@ def request_with_fallback(messages, args, routes):
                         return f"Failed: {exc}", route, exc
                     route_index = next_route_index
                     break
-                if attempts >= args.max_try:
-                    next_route_index = route_index + 1 if route_index + 1 < len(routes) else None
-                    if next_route_index is None:
-                        return f"Failed: {exc}", route, exc
-                    route_index = next_route_index
-                    break
         else:
-            break
+            next_route_index = route_index + 1 if route_index + 1 < len(routes) else None
+            if next_route_index is None:
+                return f"Failed: {last_error}", route, last_error
+            route_index = next_route_index
+            continue
     return f"Failed: {last_error}", routes[min(route_index or 0, len(routes) - 1)], last_error
 
 

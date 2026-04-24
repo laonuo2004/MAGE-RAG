@@ -1,4 +1,5 @@
 import re
+import ast
 from math import isclose
 from collections import defaultdict
 
@@ -112,6 +113,21 @@ def isfloat(num):
         return False
 
 
+def maybe_parse_literal(value):
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return value
+    if text[0] not in "[{(":
+        return value
+    try:
+        parsed = ast.literal_eval(text)
+        return parsed
+    except Exception:
+        return value
+
+
 def eval_score(gt, pred, answer_type):
     if answer_type=="Int":
         try:
@@ -134,12 +150,10 @@ def eval_score(gt, pred, answer_type):
         else:
             score = anls_compute(gt, pred)
     else:
-        if isinstance(gt, str) and gt.startswith("["):
-            gt = eval(gt)
+        gt = maybe_parse_literal(gt)
         if not isinstance(gt, list):
             gt = [gt]
-        if isinstance(pred, str) and pred.startswith("["):
-            pred = eval(pred)
+        pred = maybe_parse_literal(pred)
         if not isinstance(pred, list):
             pred = [pred]
         print(len(gt), len(pred))

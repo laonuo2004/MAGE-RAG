@@ -30,4 +30,5 @@ results/
 logs/
 *.log
 .env.mmlongbench
+.env.router
 tmp/

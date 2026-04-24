@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import fitz
 from tqdm import tqdm
@@ -9,6 +10,7 @@ from tqdm import tqdm
 from env_utils import get_config_value, load_local_env
 from eval.extract_answer import build_client, extract_answer
 from eval.eval_score import eval_acc_and_f1, eval_score, show_results
+from route_utils import build_routes, find_next_route_index, is_context_overflow_error, safe_load_existing_samples
 
 
 def sample_key(sample):
@@ -83,9 +85,8 @@ def load_samples(args):
     if args.limit is not None:
         samples = samples[: args.limit]
 
-    if os.path.exists(args.output_path):
-        with open(args.output_path, "r", encoding="utf-8") as f:
-            existing_samples = json.load(f)
+    existing_samples = safe_load_existing_samples(args.output_path)
+    if existing_samples is not None:
         existing_by_key = {sample_key(sample): sample for sample in existing_samples}
         merged_samples = []
         for sample in samples:
@@ -99,6 +100,98 @@ def load_samples(args):
         return merged_samples
 
     return samples
+
+
+def request_with_fallback(messages, args, routes):
+    route_index = 0
+    attempts = 0
+    last_error = None
+    while route_index is not None and route_index < len(routes):
+        route = routes[route_index]
+        client = build_client(api_key=route.api_key, base_url=route.base_url)
+        while attempts < args.max_try:
+            try:
+                completion = client.chat.completions.create(
+                    model=route.model_name,
+                    messages=messages,
+                    max_tokens=args.max_tokens,
+                    temperature=args.temperature,
+                )
+                return completion.choices[0].message.content, route, None
+            except Exception as exc:
+                attempts += 1
+                last_error = exc
+                message = str(exc)
+                if is_context_overflow_error(message):
+                    next_route_index = find_next_route_index(routes, route_index, message)
+                    if next_route_index is None:
+                        return f"Failed: {exc}", route, exc
+                    route_index = next_route_index
+                    break
+                if attempts >= args.max_try:
+                    next_route_index = route_index + 1 if route_index + 1 < len(routes) else None
+                    if next_route_index is None:
+                        return f"Failed: {exc}", route, exc
+                    route_index = next_route_index
+                    break
+        else:
+            break
+    return f"Failed: {last_error}", routes[min(route_index or 0, len(routes) - 1)], last_error
+
+
+def process_one_sample(sample, args, prompt, routes):
+    sample = dict(sample)
+    sample.pop("score", None)
+    sample.pop("pred", None)
+    sample.pop("extracted_res", None)
+    sample.pop("error", None)
+    sample.pop("failure_stage", None)
+    sample.pop("status", None)
+
+    messages = build_text_prompt(sample, args)
+    response, used_route, request_error = request_with_fallback(messages, args, routes)
+    sample["response"] = response
+    sample["used_base_url"] = used_route.base_url
+    sample["used_model_name"] = used_route.model_name
+    sample["used_route_label"] = used_route.label
+    sample["used_route_max_model_len"] = used_route.max_model_len
+
+    if is_failed_response(sample):
+        sample["error"] = repr(request_error) if request_error is not None else sample.get("error")
+        sample["failure_stage"] = "generation"
+        sample["extracted_res"] = "Failed"
+        sample["pred"] = "Failed to extract"
+        sample["score"] = 0.0
+        sample["status"] = "failed_generation"
+        return sample
+
+    extractor_model_name = args.extractor_model_name or used_route.model_name
+    extractor_client = build_client(
+        api_key=args.extractor_api_key if args.extractor_model_name else used_route.api_key,
+        base_url=args.extractor_base_url if args.extractor_model_name else used_route.base_url,
+    )
+    extracted_res = extract_answer(
+        sample["question"],
+        response,
+        prompt,
+        model_name=extractor_model_name,
+        client=extractor_client,
+    )
+    sample["extracted_res"] = extracted_res
+    pred_ans = parse_extracted_answer(extracted_res)
+    try:
+        if pred_ans is None:
+            raise ValueError("failed to parse extracted answer")
+        score = eval_score(sample["answer"], pred_ans, sample["answer_format"])
+        sample["status"] = "completed"
+    except Exception:
+        pred_ans = "Failed to extract"
+        score = 0.0
+        sample["status"] = "failed_extraction"
+        sample["failure_stage"] = "extraction"
+    sample["pred"] = pred_ans
+    sample["score"] = score
+    return sample
 
 
 if __name__ == "__main__":
@@ -118,6 +211,12 @@ if __name__ == "__main__":
     parser.add_argument("--extractor_prompt_path", type=str, default="./eval/prompt_for_answer_extraction.md")
     parser.add_argument("--output_path", type=str, default=None)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--num_workers", type=int, default=1)
+    parser.add_argument("--route_base_urls", type=str, default=None)
+    parser.add_argument("--route_model_names", type=str, default=None)
+    parser.add_argument("--route_api_keys", type=str, default=None)
+    parser.add_argument("--route_labels", type=str, default=None)
+    parser.add_argument("--route_max_model_lens", type=str, default=None)
     args = parser.parse_args()
     local_env = load_local_env()
 
@@ -142,6 +241,11 @@ if __name__ == "__main__":
         local_env=local_env,
         default=args.api_key,
     )
+    args.route_base_urls = get_config_value(args.route_base_urls, "ROUTE_BASE_URLS", local_env=local_env)
+    args.route_model_names = get_config_value(args.route_model_names, "ROUTE_MODEL_NAMES", local_env=local_env)
+    args.route_api_keys = get_config_value(args.route_api_keys, "ROUTE_API_KEYS", local_env=local_env)
+    args.route_labels = get_config_value(args.route_labels, "ROUTE_LABELS", local_env=local_env)
+    args.route_max_model_lens = get_config_value(args.route_max_model_lens, "ROUTE_MAX_MODEL_LENS", local_env=local_env)
 
     if not args.model_name:
         raise ValueError("Missing model name. Set --model_name or MODEL_NAME in .env.mmlongbench/.env.")
@@ -151,10 +255,15 @@ if __name__ == "__main__":
     os.makedirs("./results", exist_ok=True)
     os.makedirs("./tmp", exist_ok=True)
 
-    client = build_client(api_key=args.api_key, base_url=args.base_url)
-    extractor_client = build_client(
-        api_key=args.extractor_api_key,
-        base_url=args.extractor_base_url,
+    routes = build_routes(
+        model_name=args.model_name,
+        base_url=args.base_url,
+        api_key=args.api_key,
+        route_model_names=args.route_model_names,
+        route_base_urls=args.route_base_urls,
+        route_api_keys=args.route_api_keys,
+        route_labels=args.route_labels,
+        route_max_model_lens=args.route_max_model_lens,
     )
 
     with open(args.extractor_prompt_path, "r", encoding="utf-8") as f:
@@ -164,85 +273,24 @@ if __name__ == "__main__":
     completed_count = sum(1 for s in samples if should_skip_sample(s))
     total_count = len(samples)
     print(f"Progress: {completed_count}/{total_count} completed")
-
-    for sample in tqdm(samples, desc="Processing OCR/Text route"):
-        if should_skip_sample(sample):
+    pending_indices = [idx for idx, sample in enumerate(samples) if not should_skip_sample(sample)]
+    with ThreadPoolExecutor(max_workers=max(1, args.num_workers)) as executor:
+        future_to_index = {
+            executor.submit(process_one_sample, samples[idx], args, prompt, routes): idx for idx in pending_indices
+        }
+        for future in tqdm(as_completed(future_to_index), total=len(future_to_index), desc="Processing OCR/Text route"):
+            idx = future_to_index[future]
+            sample = future.result()
+            samples[idx] = sample
             acc, f1 = eval_acc_and_f1(samples)
             print("--------------------------------------")
-            print("Question: {}".format(sample.get("question")))
-            print("Response: {}".format(sample.get("response", "")))
-            print("Gt: {}\tPred: {}\tScore: {}".format(sample.get("answer"), sample.get("pred"), sample.get("score")))
+            print("Question: {}".format(sample["question"]))
+            print("Route: {} | {} | {}".format(sample.get("used_route_label"), sample.get("used_base_url"), sample.get("used_model_name")))
+            print("Response: {}".format(sample["response"]))
+            print("Gt: {}\tPred: {}\tScore: {}".format(sample["answer"], sample["pred"], sample["score"]))
             print("Avg acc: {}".format(acc))
             print("Avg f1: {}".format(f1))
-            continue
-
-        sample.pop("score", None)
-        sample.pop("pred", None)
-        sample.pop("extracted_res", None)
-        sample.pop("error", None)
-        sample.pop("failure_stage", None)
-        messages = build_text_prompt(sample, args)
-
-        try_cnt = 0
-        response = "Failed"
-        while try_cnt <= args.max_try:
-            try:
-                completion = client.chat.completions.create(
-                    model=args.model_name,
-                    messages=messages,
-                    max_tokens=args.max_tokens,
-                    temperature=args.temperature,
-                )
-                response = completion.choices[0].message.content
-                sample.pop("error", None)
-                sample.pop("failure_stage", None)
-                break
-            except Exception as exc:
-                try_cnt += 1
-                response = f"Failed: {exc}"
-                sample["error"] = repr(exc)
-                sample["failure_stage"] = "generation"
-                print(f"[Attempt {try_cnt}/{args.max_try}] request failed: {exc}")
-
-        sample["response"] = response
-        if is_failed_response(sample):
-            sample["extracted_res"] = "Failed"
-            sample["pred"] = "Failed to extract"
-            sample["score"] = 0.0
-            sample["status"] = "failed_generation"
-        else:
-            extracted_res = extract_answer(
-                sample["question"],
-                response,
-                prompt,
-                model_name=args.extractor_model_name,
-                client=extractor_client,
-            )
-            sample["extracted_res"] = extracted_res
-            pred_ans = parse_extracted_answer(extracted_res)
-            try:
-                if pred_ans is None:
-                    raise ValueError("failed to parse extracted answer")
-                score = eval_score(sample["answer"], pred_ans, sample["answer_format"])
-                sample["status"] = "completed"
-                sample.pop("failure_stage", None)
-            except Exception:
-                pred_ans = "Failed to extract"
-                score = 0.0
-                sample["status"] = "failed_extraction"
-                sample["failure_stage"] = "extraction"
-            sample["pred"] = pred_ans
-            sample["score"] = score
-
-        acc, f1 = eval_acc_and_f1(samples)
-        print("--------------------------------------")
-        print("Question: {}".format(sample["question"]))
-        print("Response: {}".format(sample["response"]))
-        print("Gt: {}\tPred: {}\tScore: {}".format(sample["answer"], sample["pred"], sample["score"]))
-        print("Avg acc: {}".format(acc))
-        print("Avg f1: {}".format(f1))
-
-        with open(args.output_path, "w", encoding="utf-8") as f:
-            json.dump(samples, f, ensure_ascii=False)
+            with open(args.output_path, "w", encoding="utf-8") as f:
+                json.dump(samples, f, ensure_ascii=False)
 
     show_results(samples, show_path=re.sub(r"\.json$", ".txt", args.output_path))

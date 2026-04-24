@@ -57,6 +57,11 @@ def parse_extracted_answer(extracted_res):
     return match.group(1).strip()
 
 
+def slugify_filename(text, max_len=80):
+    text = re.sub(r"[^0-9a-zA-Z._-]+", "_", str(text))
+    return text[:max_len].strip("_") or "sample"
+
+
 def build_text_prompt(sample, args):
     question = sample["question"]
     pdf_path = os.path.join(args.document_path, sample["doc_id"])
@@ -101,6 +106,28 @@ def load_samples(args):
         return merged_samples
 
     return samples
+
+
+def ensure_debug_dir(args):
+    if not args.debug_prompts:
+        return None
+    debug_dir = args.debug_dir or "./debug_prompts"
+    os.makedirs(debug_dir, exist_ok=True)
+    return debug_dir
+
+
+def write_debug_record(args, sample, payload):
+    debug_dir = ensure_debug_dir(args)
+    if debug_dir is None:
+        return
+
+    sample_id = sample.get("sample_id")
+    if sample_id is None:
+        sample_id = f"{sample.get('doc_id', 'doc')}__{slugify_filename(sample.get('question', 'question'), 60)}"
+
+    path = os.path.join(debug_dir, f"{slugify_filename(sample_id, 120)}.json")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
 def request_with_fallback(messages, args, routes):
@@ -151,6 +178,15 @@ def process_one_sample(sample, args, prompt, routes):
     prep_start = perf_counter()
     messages = build_text_prompt(sample, args)
     prep_seconds = perf_counter() - prep_start
+    debug_payload = {
+        "question": sample.get("question"),
+        "doc_id": sample.get("doc_id"),
+        "answer": sample.get("answer"),
+        "answer_format": sample.get("answer_format"),
+        "evidence_pages": sample.get("evidence_pages"),
+        "evidence_sources": sample.get("evidence_sources"),
+        "input_messages": messages,
+    }
 
     generation_start = perf_counter()
     response, used_route, request_error = request_with_fallback(messages, args, routes)
@@ -162,6 +198,13 @@ def process_one_sample(sample, args, prompt, routes):
     sample["used_route_max_model_len"] = used_route.max_model_len
     sample["timing_prepare_seconds"] = round(prep_seconds, 3)
     sample["timing_generation_seconds"] = round(generation_seconds, 3)
+    debug_payload["used_route"] = {
+        "label": used_route.label,
+        "base_url": used_route.base_url,
+        "model_name": used_route.model_name,
+        "max_model_len": used_route.max_model_len,
+    }
+    debug_payload["response"] = response
 
     if is_failed_response(sample):
         sample["error"] = repr(request_error) if request_error is not None else sample.get("error")
@@ -172,6 +215,15 @@ def process_one_sample(sample, args, prompt, routes):
         sample["status"] = "failed_generation"
         sample["timing_extraction_seconds"] = 0.0
         sample["timing_total_seconds"] = round(perf_counter() - total_start, 3)
+        debug_payload["request_error"] = repr(request_error) if request_error is not None else None
+        debug_payload["extractor"] = None
+        debug_payload["timing"] = {
+            "prepare_seconds": sample["timing_prepare_seconds"],
+            "generation_seconds": sample["timing_generation_seconds"],
+            "extraction_seconds": sample["timing_extraction_seconds"],
+            "total_seconds": sample["timing_total_seconds"],
+        }
+        write_debug_record(args, sample, debug_payload)
         return sample
 
     extractor_model_name = args.extractor_model_name or used_route.model_name
@@ -179,6 +231,13 @@ def process_one_sample(sample, args, prompt, routes):
         api_key=args.extractor_api_key if args.extractor_model_name else used_route.api_key,
         base_url=args.extractor_base_url if args.extractor_model_name else used_route.base_url,
     )
+    extractor_input = {
+        "model_name": extractor_model_name,
+        "base_url": args.extractor_base_url if args.extractor_model_name else used_route.base_url,
+        "question": sample["question"],
+        "prompt_template": prompt,
+        "analysis": response,
+    }
     extraction_start = perf_counter()
     extracted_res = extract_answer(
         sample["question"],
@@ -204,6 +263,17 @@ def process_one_sample(sample, args, prompt, routes):
     sample["score"] = score
     sample["timing_extraction_seconds"] = round(extraction_seconds, 3)
     sample["timing_total_seconds"] = round(perf_counter() - total_start, 3)
+    debug_payload["extractor"] = extractor_input
+    debug_payload["extracted_res"] = extracted_res
+    debug_payload["pred"] = sample["pred"]
+    debug_payload["status"] = sample["status"]
+    debug_payload["timing"] = {
+        "prepare_seconds": sample["timing_prepare_seconds"],
+        "generation_seconds": sample["timing_generation_seconds"],
+        "extraction_seconds": sample["timing_extraction_seconds"],
+        "total_seconds": sample["timing_total_seconds"],
+    }
+    write_debug_record(args, sample, debug_payload)
     return sample
 
 
@@ -230,6 +300,8 @@ if __name__ == "__main__":
     parser.add_argument("--route_api_keys", type=str, default=None)
     parser.add_argument("--route_labels", type=str, default=None)
     parser.add_argument("--route_max_model_lens", type=str, default=None)
+    parser.add_argument("--debug_prompts", action="store_true")
+    parser.add_argument("--debug_dir", type=str, default=None)
     args = parser.parse_args()
     local_env = load_local_env()
 
@@ -267,6 +339,9 @@ if __name__ == "__main__":
     args.output_path = args.output_path or f"./results/res_text_{model_slug}.json"
     os.makedirs("./results", exist_ok=True)
     os.makedirs("./tmp", exist_ok=True)
+    if args.debug_prompts:
+        args.num_workers = 1
+        ensure_debug_dir(args)
 
     routes = build_routes(
         model_name=args.model_name,

@@ -12,6 +12,7 @@
 
 !/.gitignore
 !/README.md
+!/LONGDOCURL_BENCHMARK_GUIDE_CN.md
 !/requirements.txt
 !/main.sh
 !/main4api.sh

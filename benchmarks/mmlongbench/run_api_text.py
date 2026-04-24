@@ -25,8 +25,25 @@ def is_failed_response(sample):
     return response == "Failed" or response.startswith("Failed:")
 
 
+def is_failed_extraction(sample):
+    pred = str(sample.get("pred", ""))
+    extracted_res = str(sample.get("extracted_res", ""))
+    return (
+        pred == "Failed to extract"
+        or extracted_res == "Failed"
+        or extracted_res.startswith("Failed:")
+    )
+
+
+def is_retryable_failure(sample):
+    status = sample.get("status")
+    if status in {"failed_generation", "failed_extraction"}:
+        return True
+    return is_failed_response(sample) or is_failed_extraction(sample)
+
+
 def should_skip_sample(sample):
-    return "score" in sample and not is_failed_response(sample)
+    return "score" in sample and not is_retryable_failure(sample)
 
 
 def parse_extracted_answer(extracted_res):
@@ -163,6 +180,7 @@ if __name__ == "__main__":
         sample.pop("pred", None)
         sample.pop("extracted_res", None)
         sample.pop("error", None)
+        sample.pop("failure_stage", None)
         messages = build_text_prompt(sample, args)
 
         try_cnt = 0
@@ -177,32 +195,44 @@ if __name__ == "__main__":
                 )
                 response = completion.choices[0].message.content
                 sample.pop("error", None)
+                sample.pop("failure_stage", None)
                 break
             except Exception as exc:
                 try_cnt += 1
                 response = f"Failed: {exc}"
                 sample["error"] = repr(exc)
+                sample["failure_stage"] = "generation"
                 print(f"[Attempt {try_cnt}/{args.max_try}] request failed: {exc}")
 
         sample["response"] = response
-        extracted_res = extract_answer(
-            sample["question"],
-            response,
-            prompt,
-            model_name=args.extractor_model_name,
-            client=extractor_client,
-        )
-        sample["extracted_res"] = extracted_res
-        pred_ans = parse_extracted_answer(extracted_res)
-        try:
-            if pred_ans is None:
-                raise ValueError("failed to parse extracted answer")
-            score = eval_score(sample["answer"], pred_ans, sample["answer_format"])
-        except Exception:
-            pred_ans = "Failed to extract"
-            score = 0.0
-        sample["pred"] = pred_ans
-        sample["score"] = score
+        if is_failed_response(sample):
+            sample["extracted_res"] = "Failed"
+            sample["pred"] = "Failed to extract"
+            sample["score"] = 0.0
+            sample["status"] = "failed_generation"
+        else:
+            extracted_res = extract_answer(
+                sample["question"],
+                response,
+                prompt,
+                model_name=args.extractor_model_name,
+                client=extractor_client,
+            )
+            sample["extracted_res"] = extracted_res
+            pred_ans = parse_extracted_answer(extracted_res)
+            try:
+                if pred_ans is None:
+                    raise ValueError("failed to parse extracted answer")
+                score = eval_score(sample["answer"], pred_ans, sample["answer_format"])
+                sample["status"] = "completed"
+                sample.pop("failure_stage", None)
+            except Exception:
+                pred_ans = "Failed to extract"
+                score = 0.0
+                sample["status"] = "failed_extraction"
+                sample["failure_stage"] = "extraction"
+            sample["pred"] = pred_ans
+            sample["score"] = score
 
         acc, f1 = eval_acc_and_f1(samples)
         print("--------------------------------------")

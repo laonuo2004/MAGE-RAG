@@ -88,6 +88,11 @@ def build_text_prompt(sample, args):
 def load_samples(args):
     with open(args.input_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
+    has_sample_filter = (
+        args.sample_id is not None
+        or args.sample_doc_id is not None
+        or args.sample_question is not None
+    )
     if args.sample_id is not None:
         samples = [sample for sample in samples if str(sample.get("sample_id")) == str(args.sample_id)]
     if args.sample_doc_id is not None:
@@ -96,6 +101,9 @@ def load_samples(args):
         samples = [sample for sample in samples if sample.get("question") == args.sample_question]
     if args.limit is not None:
         samples = samples[: args.limit]
+
+    if args.debug_prompts and has_sample_filter:
+        return samples
 
     existing_samples = safe_load_existing_samples(args.output_path)
     if existing_samples is not None:
@@ -141,6 +149,14 @@ def request_with_fallback(messages, args, routes):
     last_error = None
     while route_index is not None and route_index < len(routes):
         route = routes[route_index]
+        print(
+            "[ROUTE TRY] label={} | base_url={} | model={} | max_model_len={}".format(
+                route.label,
+                route.base_url,
+                route.model_name,
+                route.max_model_len,
+            )
+        )
         client = build_client(api_key=route.api_key, base_url=route.base_url)
         attempts = 0
         while attempts < args.max_try:
@@ -156,6 +172,14 @@ def request_with_fallback(messages, args, routes):
                 attempts += 1
                 last_error = exc
                 message = str(exc)
+                print(
+                    "[ROUTE ERROR] label={} | attempt={}/{} | error={}".format(
+                        route.label,
+                        attempts,
+                        args.max_try,
+                        exc,
+                    )
+                )
                 if is_context_overflow_error(message):
                     next_route_index = find_next_route_index(routes, route_index, message)
                     if next_route_index is None:
@@ -166,6 +190,12 @@ def request_with_fallback(messages, args, routes):
             next_route_index = route_index + 1 if route_index + 1 < len(routes) else None
             if next_route_index is None:
                 return f"Failed: {last_error}", route, last_error
+            print(
+                "[ROUTE FALLBACK] from={} -> to={}".format(
+                    route.label,
+                    routes[next_route_index].label,
+                )
+            )
             route_index = next_route_index
             continue
     return f"Failed: {last_error}", routes[min(route_index or 0, len(routes) - 1)], last_error
@@ -204,7 +234,25 @@ def process_one_sample(sample, args, prompt, routes):
 
     print("[STAGE] generation")
     generation_start = perf_counter()
-    response, used_route, request_error = request_with_fallback(messages, args, routes)
+    if args.api_style == "openai":
+        response, used_route, request_error = request_with_fallback(messages, args, routes)
+    elif args.api_style == "gemini":
+        used_route = routes[0]
+        request_error = None
+        response = "Failed"
+        try_cnt = 0
+        while try_cnt < args.max_try:
+            try:
+                gemini_response = args.gemini_client.generate_content(messages, generation_config=args.gemini_config)
+                gemini_response.resolve()
+                response = gemini_response.text.strip()
+                break
+            except Exception as exc:
+                try_cnt += 1
+                request_error = exc
+                response = f"Failed: {exc}"
+    else:
+        raise AssertionError()
     generation_seconds = perf_counter() - generation_start
     sample["response"] = response
     sample["used_base_url"] = used_route.base_url
@@ -241,14 +289,22 @@ def process_one_sample(sample, args, prompt, routes):
         write_debug_record(args, sample, debug_payload)
         return sample
 
-    extractor_model_name = args.extractor_model_name or used_route.model_name
+    extractor_model_name = used_route.model_name
+    extractor_base_url = used_route.base_url
+    extractor_api_key = used_route.api_key
+    if args.extractor_model_explicit:
+        extractor_model_name = args.extractor_model_name
+    if args.extractor_base_url_explicit:
+        extractor_base_url = args.extractor_base_url
+    if args.extractor_api_key_explicit:
+        extractor_api_key = args.extractor_api_key
     extractor_client = build_client(
-        api_key=args.extractor_api_key if args.extractor_model_name else used_route.api_key,
-        base_url=args.extractor_base_url if args.extractor_model_name else used_route.base_url,
+        api_key=extractor_api_key,
+        base_url=extractor_base_url,
     )
     extractor_input = {
         "model_name": extractor_model_name,
-        "base_url": args.extractor_base_url if args.extractor_model_name else used_route.base_url,
+        "base_url": extractor_base_url,
         "question": sample["question"],
         "prompt_template": prompt,
         "analysis": response,
@@ -323,6 +379,9 @@ if __name__ == "__main__":
     parser.add_argument("--debug_dir", type=str, default=None)
     args = parser.parse_args()
     local_env = load_local_env()
+    args.extractor_model_explicit = args.extractor_model_name is not None or "EXTRACTOR_MODEL_NAME" in local_env
+    args.extractor_base_url_explicit = args.extractor_base_url is not None or "EXTRACTOR_BASE_URL" in local_env
+    args.extractor_api_key_explicit = args.extractor_api_key is not None or "EXTRACTOR_API_KEY" in local_env
 
     args.model_name = get_config_value(args.model_name, "MODEL_NAME", local_env=local_env)
     args.base_url = get_config_value(args.base_url, "OPENROUTER_BASE_URL", local_env=local_env)
@@ -361,17 +420,31 @@ if __name__ == "__main__":
     if args.debug_prompts:
         args.num_workers = 1
         ensure_debug_dir(args)
+    if args.api_style == "gemini":
+        args.num_workers = 1
 
-    routes = build_routes(
-        model_name=args.model_name,
-        base_url=args.base_url,
-        api_key=args.api_key,
-        route_model_names=args.route_model_names,
-        route_base_urls=args.route_base_urls,
-        route_api_keys=args.route_api_keys,
-        route_labels=args.route_labels,
-        route_max_model_lens=args.route_max_model_lens,
-    )
+    if args.api_style == "openai":
+        routes = build_routes(
+            model_name=args.model_name,
+            base_url=args.base_url,
+            api_key=args.api_key,
+            route_model_names=args.route_model_names,
+            route_base_urls=args.route_base_urls,
+            route_api_keys=args.route_api_keys,
+            route_labels=args.route_labels,
+            route_max_model_lens=args.route_max_model_lens,
+        )
+    elif args.api_style == "gemini":
+        import google.generativeai as genai
+        args.gemini_client = genai.GenerativeModel(args.model_name)
+        args.gemini_config = genai.types.GenerationConfig(max_output_tokens=args.max_tokens, temperature=args.temperature)
+        routes = build_routes(
+            model_name=args.model_name,
+            base_url=args.base_url,
+            api_key=args.api_key,
+        )
+    else:
+        raise AssertionError()
 
     with open(args.extractor_prompt_path, "r", encoding="utf-8") as f:
         prompt = f.read()

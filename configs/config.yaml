@@ -1,0 +1,37 @@
+defaults:
+  - _self_
+  - benchmarks: longdocurl
+  - baselines: m3docrag
+  - llm_providers: litellm
+  - ablations: full
+
+project:
+  name: logma-rag
+  seed: 42
+  tags: []
+
+paths:
+  output_root: outputs
+
+runtime:
+  device: cuda
+  num_workers: 64
+  dry_run: false
+
+logging:
+  level: INFO
+
+hydra:
+  run:
+    dir: ${paths.output_root}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ${paths.output_root}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}_${hydra.job.override_dirname}
+  job:
+    chdir: false
+    name: ${project.name}
+    config:
+      override_dirname:
+        exclude_keys:
+          - paths.output_root
+          - project.tags

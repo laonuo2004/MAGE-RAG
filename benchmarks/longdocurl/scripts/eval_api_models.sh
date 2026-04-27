@@ -1,6 +1,7 @@
 python eval/api_models/eval_api_models.py \
     --qa_file data/LongDocURL.jsonl \
     --process_mode parallel \
+    --workers 64 \
     --llm_provider local \
     --input_format e2e \
     --ocr_backend pymupdf \

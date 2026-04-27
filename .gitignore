@@ -205,3 +205,9 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Hydra
+outputs
+
+# API related
+configs/llm_providers/openrouter.yaml

@@ -1,0 +1,4 @@
+base_url: https://localhost:4000/v1
+api_key: "sk-123"
+model_mapping:
+  Qwen2.5-VL-7B-Instruct: "Qwen/Qwen2.5-VL-7B-Instruct"

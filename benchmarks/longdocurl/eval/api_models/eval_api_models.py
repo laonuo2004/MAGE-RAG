@@ -196,7 +196,7 @@ def eval_per_record(args):
         print("error")
 
 
-def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial", input_format="e2e", ocr_backend="pymupdf", ocr_json_dir=None, extra_infos=None, llm_provider="openrouter"):
+def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial", input_format="e2e", ocr_backend="pymupdf", ocr_json_dir=None, extra_infos=None, llm_provider="openrouter", workers=64):
 
     if os.path.exists(output_datapath):
         output_dataset = read_jsonl_file(output_datapath)
@@ -217,7 +217,7 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", process_mode="serial"
         for args in args_list:
             eval_per_record(args)
     elif process_mode == "parallel":
-        with Pool(processes=64) as pool:  # You can adjust the number of processes as needed
+        with Pool(processes=workers) as pool:  # You can adjust the number of processes as needed
             list(tqdm(pool.imap(eval_per_record, args_list), total=len(args_list)))
     else:
         print("process mode error!")
@@ -227,6 +227,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--qa_file', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl")
     parser.add_argument('--process_mode', type=str, default="serial") # serial/parallel
+    parser.add_argument('--workers', type=int, default=64)
     parser.add_argument('--llm_provider', type=str, default="openrouter") # openrouter/local
     parser.add_argument('--input_format', type=str, choices=["e2e", "ocr"], default="e2e")
     parser.add_argument('--ocr_backend', type=str, choices=["pymupdf"], default="pymupdf")
@@ -256,6 +257,7 @@ if __name__ == "__main__":
                 output_datapath,
                 model_name=args.model_name,
                 process_mode=args.process_mode,
+                workers=args.workers,
                 input_format=args.input_format,
                 ocr_backend=args.ocr_backend,
                 ocr_json_dir=args.ocr_json_dir,

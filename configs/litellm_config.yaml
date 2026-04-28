@@ -31,7 +31,7 @@ model_list:
         max_input_tokens: 65536
   - model_name: Qwen/Qwen2.5-VL-7B-Instruct
     litellm_params:
-      model: hosted_vllm/Qwen/Qwen2.5-VL-7B-Instruct
+      model: hosted_vllm//root/autodl-tmp/ylz/models/Qwen2.5-VL-7B-Instruct
       api_base: "http://localhost:8000/v1"  # MM GPU 1, 128k instance
       api_key: "none"
       model_info:
@@ -53,7 +53,7 @@ model_list:
         max_input_tokens: 65536
   - model_name: Qwen/Qwen2.5-VL-7B-Instruct-fallback-64k
     litellm_params:
-      model: hosted_vllm/Qwen/Qwen2.5-VL-7B-Instruct
+      model: hosted_vllm//root/autodl-tmp/ylz/models/Qwen2.5-VL-7B-Instruct
       api_base: "http://localhost:8000/v1"
       api_key: "none"
       model_info:
@@ -61,7 +61,7 @@ model_list:
 
   - model_name: Qwen/Qwen2.5-VL-7B-Instruct-fallback-128k
     litellm_params:
-      model: hosted_vllm/Qwen/Qwen2.5-VL-7B-Instruct
+      model: hosted_vllm//root/autodl-tmp/ylz/models/Qwen2.5-VL-7B-Instruct
       api_base: "http://localhost:8000/v1"
       api_key: "none"
       model_info:

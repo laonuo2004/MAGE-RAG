@@ -1,26 +1,27 @@
 #!/usr/bin/env bash
 
-# ### Serving Qwen2.5-VL-7B with vLLM
+# ### Serving Qwen3-VL-8B with vLLM
 
-# For local OpenAI-compatible serving on a single GPU, this repo provides three presets for `Qwen/Qwen2.5-VL-7B-Instruct`:
+# For local OpenAI-compatible serving on a single GPU, this repo provides three presets for `Qwen/Qwen3-VL-8B-Instruct`:
 
 # ```bash
 # # Throughput-oriented default profile.
-# bash scripts/serve_qwen25_vl_vllm.sh throughput
+# bash scripts/serve_qwen3_vl_vllm.sh throughput
 
-# # Long-context profile for occasional 40k-60k token requests.
-# bash scripts/serve_qwen25_vl_vllm.sh longctx
+# # Long-context profile for 256k token requests.
+# bash scripts/serve_qwen3_vl_vllm.sh longctx
 
-# # Maximum-context profile for 128k-token reruns.
-# bash scripts/serve_qwen25_vl_vllm.sh maxctx
+# # Maximum-context profile for up to 1M token requests.
+# # Note: 1M context requires massive VRAM or specific optimizations.
+# bash scripts/serve_qwen3_vl_vllm.sh maxctx
 # ```
 
 # Notes:
-# - `throughput` uses `--max-model-len 32768`, `--max-num-seqs 12`, and `--max-num-batched-tokens 24576`. This is the recommended default for mixed workloads.
-# - `longctx` uses `--max-model-len 65536`, `--max-num-seqs 4`, and `--max-num-batched-tokens 16384`. Use it when you need to rerun very long document requests.
-# - `maxctx` uses `--max-model-len 128000`, `--max-num-seqs 2`, and `--max-num-batched-tokens 8192`. Use it only for maximum-context reruns where throughput is secondary.
+# - `throughput` uses `--max-model-len 32768`.
+# - `longctx` uses `--max-model-len 262144` (256K).
+# - `maxctx` uses `--max-model-len 1048576` (1M).
 # - All presets enable chunked prefill.
-# - Override GPU or port when needed, for example: `CUDA_VISIBLE_DEVICES=1 PORT=8001 bash scripts/serve_qwen25_vl_vllm.sh throughput`.
+# - Override GPU or port when needed, for example: `CUDA_VISIBLE_DEVICES=1 PORT=8001 bash scripts/serve_qwen3_vl_vllm.sh longctx`.
 
 set -euo pipefail
 
@@ -28,7 +29,7 @@ PROFILE="${1:-throughput}"
 
 CUDA_VISIBLE_DEVICES_VALUE="${CUDA_VISIBLE_DEVICES:-1}"
 VLLM_BIN="${VLLM_BIN:-/root/autodl-tmp/conda/envs/logma-rag/bin/vllm}"
-MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/ylz/models/Qwen2.5-VL-7B-Instruct}"
+MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/ylz/models/Qwen3-VL-8B-Instruct}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
@@ -60,8 +61,9 @@ case "${PROFILE}" in
     DEFAULT_MAX_NUM_BATCHED_TOKENS="16384"
     ;;
   maxctx)
+    # 1M context usually requires tensor parallelism or extremely high VRAM.
     DEFAULT_GPU_MEMORY_UTILIZATION="0.9"
-    DEFAULT_MAX_MODEL_LEN="128000"
+    DEFAULT_MAX_MODEL_LEN="262144"
     DEFAULT_MAX_NUM_SEQS="8"
     DEFAULT_MAX_NUM_BATCHED_TOKENS="8192"
     ;;

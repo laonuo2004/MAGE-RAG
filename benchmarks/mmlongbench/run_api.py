@@ -1,15 +1,16 @@
 import os
 import re
 import json
-import base64
 import argparse
-import fitz
-from io import BytesIO
+import pathlib
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 from time import perf_counter
 
-from PIL import Image
+CURRENT_DIR = pathlib.Path(__file__).resolve().parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
+
 from tqdm import tqdm
 
 from env_utils import get_config_value, load_local_env
@@ -17,10 +18,11 @@ from eval.extract_answer import build_client, extract_answer
 from eval.eval_score import eval_score, eval_acc_and_f1, show_results
 from route_utils import build_routes, find_next_route_index, is_context_overflow_error, safe_load_existing_samples
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-cached_image_list = dict()
-doc_locks = {}
-doc_locks_guard = Lock()
+from baselines.wrapper import build_context_builder
 
 
 def sample_key(sample):
@@ -69,92 +71,6 @@ def parse_extracted_answer(extracted_res):
 def slugify_filename(text, max_len=80):
     text = re.sub(r"[^0-9a-zA-Z._-]+", "_", str(text))
     return text[:max_len].strip("_") or "sample"
-
-
-def get_doc_lock(doc_id):
-    with doc_locks_guard:
-        if doc_id not in doc_locks:
-            doc_locks[doc_id] = Lock()
-        return doc_locks[doc_id]
-
-
-def encode_image_to_base64(img):
-    if img.mode in ('RGBA', 'P'):
-        img = img.convert('RGB')
-    buffer = BytesIO()
-    img.save(buffer, format="JPEG")
-    return base64.b64encode(buffer.getvalue()).decode('utf-8')
-
-
-def process_sample_openai_compatible(sample, args):
-    question = sample["question"]
-    doc_name = re.sub(r"\.pdf$", "", sample["doc_id"]).split("/")[-1]
-
-    image_list = list()
-    with get_doc_lock(sample["doc_id"]):
-        with fitz.open(os.path.join(args.document_path, sample["doc_id"])) as pdf:
-            for index, page in enumerate(pdf[:args.max_pages]):
-                if not os.path.exists(f"./tmp/{doc_name}_{index+1}.png"):
-                    image = page.get_pixmap(dpi=args.resolution)
-                    image.save(f"./tmp/{doc_name}_{index+1}.png")
-                image = Image.open(f"./tmp/{doc_name}_{index+1}.png")
-                encoded_image = encode_image_to_base64(image)
-                image_list.append(encoded_image)
-
-    content = list()
-    content.append(
-        {
-            "type": "text",
-            "text": question,
-        }
-    )
-    for encoded_image in image_list:
-        content.append({
-            "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"}
-        })
-    messages = [
-        {
-            "role": "user",
-            "content": content
-        }
-    ]
-    return messages
-
-
-def process_sample_gemini(sample, args, mode):
-    question = sample["question"]
-    doc_name = re.sub(r"\.pdf$", "", sample["doc_id"]).split("/")[-1]
-
-    image_list = list()
-    with fitz.open(os.path.join(args.document_path, sample["doc_id"])) as pdf:
-        if mode=="png":
-            for index, page in enumerate(pdf[:args.max_pages]):
-                if not os.path.exists(f"./tmp/{doc_name}_{index+1}.png"):
-                    im = page.get_pixmap(dpi=args.resolution)
-                    im.save(f"./tmp/{doc_name}_{index+1}.png")
-                image_list.append(Image.open(f"./tmp/{doc_name}_{index+1}.png"))
-        else:
-            if sample["doc_id"] in cached_image_list:
-                image_list = cached_image_list[sample["doc_id"]]
-            else:
-                for index, page in enumerate(pdf[:args.max_pages]):
-                    if not os.path.exists(f"./tmp/{doc_name}_{index+1}.png"):
-                        im = page.get_pixmap(dpi=args.resolution)
-                        im.save(f"./tmp/{doc_name}_{index+1}.png")
-                    image_list.append(genai.upload_file(f"./tmp/{doc_name}_{index+1}.png"))
-                cached_image_list[sample["doc_id"]] = image_list
-    
-    return [question] + image_list
-
-
-def process_sample(sample, args, mode="png"):
-    if args.api_style == "openai":
-        return process_sample_openai_compatible(sample, args)
-    elif "gemini-1.5" in args.model_name:
-        return process_sample_gemini(sample, args, mode)
-    else:
-        raise AssertionError()
 
 
 def load_samples(args):
@@ -273,7 +189,7 @@ def request_with_fallback(messages, args, routes):
     return f"Failed: {last_error}", routes[min(route_index or 0, len(routes) - 1)], last_error
 
 
-def process_one_sample(sample, args, prompt, routes):
+def process_one_sample(sample, args, prompt, routes, context_builder=None):
     total_start = perf_counter()
     sample = dict(sample)
     sample.pop("score", None)
@@ -292,7 +208,10 @@ def process_one_sample(sample, args, prompt, routes):
 
     print("[STAGE] prepare")
     prep_start = perf_counter()
-    messages = process_sample(sample, args)
+    if context_builder is None:
+        context_builder = build_context_builder(args)
+    context_bundle = context_builder.build("mmlongbench", sample, args)
+    messages = context_bundle.messages
     prep_seconds = perf_counter() - prep_start
     debug_payload = {
         "question": sample.get("question"),
@@ -302,6 +221,7 @@ def process_one_sample(sample, args, prompt, routes):
         "evidence_pages": sample.get("evidence_pages"),
         "evidence_sources": sample.get("evidence_sources"),
         "input_messages": messages,
+        "context_metadata": context_bundle.metadata,
     }
 
     print("[STAGE] generation")
@@ -321,7 +241,9 @@ def process_one_sample(sample, args, prompt, routes):
                 except Exception:
                     if mode == "png":
                         mode = "file"
-                        messages = process_sample(sample, args, mode="file")
+                        context_bundle = context_builder.build("mmlongbench", sample, args, mode="file")
+                        messages = context_bundle.messages
+                        debug_payload["context_metadata"] = context_bundle.metadata
                         gemini_response = args.gemini_client.generate_content(messages, generation_config=args.gemini_config)
                     else:
                         raise
@@ -427,7 +349,7 @@ def process_one_sample(sample, args, prompt, routes):
     return sample
 
 
-if __name__=="__main__":
+def build_arg_parser(default_context_builder="image"):
     parser = argparse.ArgumentParser()
     parser.add_argument("--input_path", type=str, default="./data/samples.json")
     parser.add_argument("--document_path", type=str, default="./data/documents")
@@ -445,6 +367,8 @@ if __name__=="__main__":
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--extractor_prompt_path", type=str, default="./eval/prompt_for_answer_extraction.md")
     parser.add_argument("--output_path", type=str, default=None)
+    parser.add_argument("--results_dir", type=str, default="./results")
+    parser.add_argument("--tmp_dir", type=str, default="./tmp")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--sample_id", type=str, default=None)
     parser.add_argument("--sample_doc_id", type=str, default=None)
@@ -457,7 +381,12 @@ if __name__=="__main__":
     parser.add_argument("--route_max_model_lens", type=str, default=None)
     parser.add_argument("--debug_prompts", action="store_true")
     parser.add_argument("--debug_dir", type=str, default=None)
-    args = parser.parse_args()
+    parser.add_argument("--context_builder", type=str, default=default_context_builder, choices=["image", "ocr"])
+    return parser
+
+
+def run_mmlongbench(args):
+    args.baselines = {"name": args.context_builder}
     local_env = load_local_env()
     args.extractor_model_explicit = args.extractor_model_name is not None or "EXTRACTOR_MODEL_NAME" in local_env
     args.extractor_base_url_explicit = args.extractor_base_url is not None or "EXTRACTOR_BASE_URL" in local_env
@@ -494,9 +423,11 @@ if __name__=="__main__":
         raise ValueError("Missing model name. Set --model_name or MODEL_NAME in .env.mmlongbench/.env.")
 
     model_slug = re.sub(r"[^0-9a-zA-Z._-]+", "_", args.model_name)
-    args.output_path = args.output_path or f'./results/res_{model_slug}.json'
-    os.makedirs("./results", exist_ok=True)
-    os.makedirs("./tmp", exist_ok=True)
+    if args.output_path is None:
+        result_prefix = "res_text" if args.context_builder == "ocr" else "res"
+        args.output_path = os.path.join(args.results_dir, f"{result_prefix}_{model_slug}.json")
+    os.makedirs(args.results_dir, exist_ok=True)
+    os.makedirs(args.tmp_dir, exist_ok=True)
     if args.debug_prompts:
         args.num_workers = 1
         ensure_debug_dir(args)
@@ -527,6 +458,7 @@ if __name__=="__main__":
     with open(args.extractor_prompt_path, "r", encoding="utf-8") as f:
         prompt = f.read()
     samples = load_samples(args)
+    context_builder = build_context_builder(args)
     
     # 计算已完成和待完成样本
     completed_count = sum(1 for s in samples if should_skip_sample(s))
@@ -539,7 +471,7 @@ if __name__=="__main__":
 
     with ThreadPoolExecutor(max_workers=max(1, args.num_workers)) as executor:
         future_to_index = {
-            executor.submit(process_one_sample, samples[idx], args, prompt, routes): idx for idx in pending_indices
+            executor.submit(process_one_sample, samples[idx], args, prompt, routes, context_builder): idx for idx in pending_indices
         }
         for future in tqdm(as_completed(future_to_index), total=len(future_to_index), desc="Processing"):
             idx = future_to_index[future]
@@ -565,3 +497,13 @@ if __name__=="__main__":
                 json.dump(samples, f, ensure_ascii=False)
     
     show_results(samples, show_path=re.sub(r"\.json$", ".txt", args.output_path))
+    return samples
+
+
+def main(argv=None):
+    args = build_arg_parser().parse_args(argv)
+    return run_mmlongbench(args)
+
+
+if __name__ == "__main__":
+    main()

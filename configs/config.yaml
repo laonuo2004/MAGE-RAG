@@ -1,9 +1,10 @@
 defaults:
   - _self_
   - benchmarks: longdocurl
-  - baselines: m3docrag
-  - llm_providers: litellm
+  - baselines: image
   - ablations: full
+  - /llm_providers@llm_providers.litellm: litellm
+  - /llm_providers@llm_providers.openrouter: openrouter
 
 project:
   name: logma-rag
@@ -12,11 +13,6 @@ project:
 
 paths:
   output_root: outputs
-
-runtime:
-  device: cuda
-  num_workers: 64
-  dry_run: false
 
 logging:
   level: INFO

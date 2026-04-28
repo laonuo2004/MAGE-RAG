@@ -11,7 +11,7 @@ def get_pdf_filename(pdf_paths_txt, **kwargs):
     with open(pdf_paths_txt, "r", encoding="utf-8") as file:
         files = [line.strip() for line in file.readlines()]
     files = [(filename, filename.split("/")[-2], filename.split("/")[-1][:-4]) for filename in files]
-    print("pdf file cnt: ", len(files))
+    print("PDF File Count: ", len(files))
     if "start_id" in kwargs and "end_id" in kwargs:
         start_id = int(kwargs.pop("start_id"))
         end_id = int(kwargs.pop("end_id"))
@@ -48,7 +48,7 @@ def extracts(pdf_path, img_save_dir, json_dir):
         for pp in doc:
             pages.append(pp)
     except:
-        print("error: ", filename.split('/')[-1])
+        print("Error: ", filename.split('/')[-1])
         return  
 
     lines = []
@@ -57,7 +57,7 @@ def extracts(pdf_path, img_save_dir, json_dir):
             png_path = save_png(page, idx, doc_no, img_save_dir, zip_no)
             my_image = Image.open(png_path)
         except:
-            print("img error: ", filename.split('/')[-1])
+            print("Image Error: ", filename.split('/')[-1])
             continue 
         
         word_lists = page.get_text("words")

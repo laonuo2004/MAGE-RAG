@@ -4,10 +4,9 @@ import re
 from io import BytesIO
 from threading import Lock
 
-from .base import ContextBuilder, ContextBundle
+from .base import ContextBuilder, ContextMessages
 
 
-_cached_gemini_images = {}
 _doc_locks = {}
 _doc_locks_guard = Lock()
 
@@ -30,20 +29,25 @@ def _encode_pil_image_to_base64(img):
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
 
+def _encode_image_file_to_base64(image_path):
+    if 'https' in image_path:
+        import requests
+
+        response = requests.get(image_path)
+        return base64.b64encode(response.content).decode('utf-8')
+    with open(image_path, 'rb') as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+
 class ImageContextBuilder(ContextBuilder):
     name = 'image'
 
     def build_mmlongbench(self, sample, **kwargs):
-        # if args.api_style == 'openai':
-        #     return self._build_mmlongbench_openai(sample, args)
-        # if args.api_style == 'gemini':
-        #     return self._build_mmlongbench_gemini(sample, args, mode=mode)
-        return self._build_mmlongbench_openai(sample, kwargs)
-        raise AssertionError()
+        return self._build_mmlongbench_openai(sample)
 
     def _render_page_path(self, sample, page_index):
         doc_name = re.sub(r'\.pdf$', '', sample['doc_id']).split('/')[-1]
-        tmp_dir = getattr(args, 'tmp_dir', './tmp')
+        tmp_dir = self.cfg.benchmarks.tmp_dir
         os.makedirs(tmp_dir, exist_ok=True)
         return os.path.join(tmp_dir, f'{doc_name}_{page_index + 1}.png')
 
@@ -54,11 +58,13 @@ class ImageContextBuilder(ContextBuilder):
         question = sample['question']
         image_list = []
         with _get_doc_lock(sample['doc_id']):
-            with fitz.open(os.path.join(args.document_path, sample['doc_id'])) as pdf:
-                for index, page in enumerate(pdf[: args.max_pages]):
-                    page_path = self._render_page_path(sample, args, index)
+            pdf_path = os.path.join(self.cfg.benchmarks.document_path, sample['doc_id'])
+            max_pages = self.cfg.benchmarks.max_pages
+            with fitz.open(pdf_path) as pdf:
+                for index, page in enumerate(pdf[:max_pages]):
+                    page_path = self._render_page_path(sample, index)
                     if not os.path.exists(page_path):
-                        image = page.get_pixmap(dpi=args.resolution)
+                        image = page.get_pixmap(dpi=self.cfg.benchmarks.resolution)
                         image.save(page_path)
                     image = Image.open(page_path)
                     image_list.append(_encode_pil_image_to_base64(image))
@@ -66,48 +72,24 @@ class ImageContextBuilder(ContextBuilder):
         content = [{'type': 'text', 'text': question}]
         for encoded_image in image_list:
             content.append({'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded_image}'}})
-        return ContextBundle(
-            messages=[{'role': 'user', 'content': content}],
+        return ContextMessages(
+            [{'role': 'user', 'content': content}],
             metadata={'context_builder': self.name, 'input_format': 'image'},
         )
-
-    # def _build_mmlongbench_gemini(self, sample, args, mode='png'):
-    #     import fitz
-    #     from PIL import Image
-    #     import google.generativeai as genai
-
-    #     question = sample['question']
-    #     image_list = []
-    #     with fitz.open(os.path.join(args.document_path, sample['doc_id'])) as pdf:
-    #         if mode == 'png':
-    #             for index, page in enumerate(pdf[: args.max_pages]):
-    #                 page_path = self._render_page_path(sample, args, index)
-    #                 if not os.path.exists(page_path):
-    #                     image = page.get_pixmap(dpi=args.resolution)
-    #                     image.save(page_path)
-    #                 image_list.append(Image.open(page_path))
-    #         else:
-    #             if sample['doc_id'] in _cached_gemini_images:
-    #                 image_list = _cached_gemini_images[sample['doc_id']]
-    #             else:
-    #                 for index, page in enumerate(pdf[: args.max_pages]):
-    #                     page_path = self._render_page_path(sample, args, index)
-    #                     if not os.path.exists(page_path):
-    #                         image = page.get_pixmap(dpi=args.resolution)
-    #                         image.save(page_path)
-    #                     image_list.append(genai.upload_file(page_path))
-    #                 _cached_gemini_images[sample['doc_id']] = image_list
-    #     return ContextBundle(
-    #         messages=[question] + image_list,
-    #         metadata={'context_builder': self.name, 'input_format': 'image', 'gemini_image_mode': mode},
-    #     )
 
     def build_longdocurl(self, sample, **kwargs):
         question = sample['question']
         prompt = VISION_SYSTEM_PROMPT + 'Following is our question: \n' + f'<question>{question}</question>' + '\n'
-        return ContextBundle(
-            prompt=prompt,
-            images=sample['images'],
-            system_prompt=VISION_SYSTEM_PROMPT,
-            metadata={'sample': sample, 'context_builder': self.name},
+        content = [{'type': 'text', 'text': prompt}]
+        images = sample.get('images')
+        if isinstance(images, str):
+            images = [images]
+        for index, image_path in enumerate(images or []):
+            content.extend([
+                {'type': 'text', 'text': f'Below is the {index + 1}-th image (total {len(images)} images).\n'},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{_encode_image_file_to_base64(image_path)}'}},
+            ])
+        return ContextMessages(
+            [{'role': 'user', 'content': content}],
+            metadata={'context_builder': self.name, 'sample': sample},
         )

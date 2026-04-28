@@ -23,16 +23,11 @@ def calculate_accuracy(answers: list, annotations: list, answer_formats: list):
     return generalized_score
 
 
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--results_file', type=str, default="")
-    
-    args = parser.parse_args()
-
-    with open(args.results_file, "r", encoding="utf-8") as rf:
+def calculate_metrics(results_file: str):
+    results_file = Path(results_file)
+    with open(results_file, "r", encoding="utf-8") as rf:
         samples = [json.loads(_.strip()) for _ in rf.readlines()]
-    
+
     for sample in samples:
         assert "pred" in sample
 
@@ -43,7 +38,7 @@ if __name__ == "__main__":
     generalized_score = calculate_accuracy(answers, annotations, answer_formats) # calculate on size of successful samples
     rectified_generalized_score = generalized_score * len(answers) / 2325 # calculate on size of 2325
 
-    output_dir = Path(args.results_file).with_suffix("")
+    output_dir = results_file.with_suffix("")
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / "metrics.json"
 
@@ -55,6 +50,16 @@ if __name__ == "__main__":
     with open(output_file, "w", encoding="utf-8") as wf:
         json.dump(metrics, wf, ensure_ascii=False, indent=2)
 
+    return metrics
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--results_file', type=str, default="")
+
+    args = parser.parse_args()
+    metrics = calculate_metrics(args.results_file)
+
     print("--------------------------------------")
-    print("Avg. acc: {}".format(generalized_score))
-    print("Rectified Avg. acc: {}".format(rectified_generalized_score))
+    print("Avg. Acc: {}".format(metrics["avg_acc"]))
+    print("Rectified Avg. Acc: {}".format(metrics["rectified_avg_acc"]))

@@ -1,7 +1,7 @@
 defaults:
   - _self_
   - benchmarks: longdocurl
-  - baselines: image
+  - baselines: ocr
   - ablations: full
   - /llm_providers@llm_providers.litellm: litellm
   - /llm_providers@llm_providers.openrouter: openrouter
@@ -15,9 +15,12 @@ paths:
   output_root: outputs
 
 logging:
-  level: INFO
+  level: DEBUG
 
 hydra:
+  job_logging:
+    root:
+      level: ${logging.level}
   run:
     dir: ${paths.output_root}/${now:%Y-%m-%d}/${now:%H-%M-%S}
   sweep:

@@ -1,7 +1,11 @@
 import os
+import sys
+import pathlib
 
-from .base import ContextBuilder, ContextBundle
+CODE_DIR = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(CODE_DIR))
 
+from .base import ContextBuilder, ContextMessages
 
 TEXT_SYSTEM_PROMPT = 'You are an expert in document question-answering, please answer our questions based on the extracted text from the given pages.\n'
 
@@ -13,11 +17,11 @@ class OcrContextBuilder(ContextBuilder):
         import fitz
 
         question = sample['question']
-        pdf_path = os.path.join(args.document_path, sample['doc_id'])
+        pdf_path = os.path.join(self.cfg.benchmarks.document_path, sample['doc_id'])
 
         page_blocks = []
         with fitz.open(pdf_path) as pdf:
-            for page_idx, page in enumerate(pdf[: args.max_pages], start=1):
+            for page_idx, page in enumerate(pdf[:self.cfg.benchmarks.max_pages], start=1):
                 page_text = page.get_text('text').strip()
                 if not page_text:
                     page_text = '[EMPTY PAGE]'
@@ -31,19 +35,19 @@ class OcrContextBuilder(ContextBuilder):
             f'Question:\n{question}\n\n'
             f'Document text:\n{document_text}'
         )
-        return ContextBundle(
-            messages=[{'role': 'user', 'content': prompt}],
+        return ContextMessages(
+            [{'role': 'user', 'content': prompt}],
             metadata={'context_builder': self.name, 'input_format': 'ocr'},
         )
 
     def build_longdocurl(self, sample, **kwargs):
-        from pure_ocr_utils import get_pure_ocr_prompt_pymupdf
+        from benchmarks.longdocurl.eval.api_models.pure_ocr_utils import get_pure_ocr_prompt_pymupdf
 
         question = sample['question']
         ocr_prompt, ocr_pages_used = get_pure_ocr_prompt_pymupdf(
             sample['doc_no'],
             images=sample.get('images'),
-            ocr_json_dir=args.ocr_json_dir,
+            ocr_json_dir=self.cfg.benchmarks.ocr_json_dir,
             start_page=sample['start_end_idx'][0],
             end_page=sample['start_end_idx'][1],
         )
@@ -54,9 +58,13 @@ class OcrContextBuilder(ContextBuilder):
             + 'Following are the extracted texts from the selected document pages:\n'
             + ocr_prompt
         )
-        return ContextBundle(
-            prompt=prompt,
-            images=None,
-            system_prompt=TEXT_SYSTEM_PROMPT,
-            metadata={'context_builder': self.name, 'input_format': 'ocr', 'ocr_backend': 'pymupdf', 'ocr_pages_used': ocr_pages_used},
+        return ContextMessages(
+            [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}],
+            metadata={
+                'context_builder': self.name,
+                'input_format': 'ocr',
+                'ocr_backend': 'pymupdf',
+                'ocr_pages_used': ocr_pages_used,
+                'system_prompt': TEXT_SYSTEM_PROMPT,
+            },
         )

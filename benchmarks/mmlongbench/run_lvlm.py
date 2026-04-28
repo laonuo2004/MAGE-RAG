@@ -27,7 +27,7 @@ def load_model(model_name, cache_path):
 
 def extract_images(sample, document_path, max_pages=1000, resolution=144):
     image_list = list()
-    doc_name = re.sub("\.pdf$", "", sample["doc_id"]).split("/")[-1]
+    doc_name = re.sub(r"\.pdf$", "", sample["doc_id"]).split("/")[-1]
     with fitz.open(os.path.join(document_path, sample["doc_id"])) as pdf:
         for index, page in enumerate(pdf[:max_pages]):
             if not os.path.exists(f"./tmp/{doc_name}_{index+1}.png"):
@@ -83,7 +83,7 @@ def load_questions(args):
     # 计算已完成和待完成样本
     completed_count = sum(1 for s in samples if "score" in s)
     total_count = len(samples)
-    print(f"进度: {completed_count}/{total_count} 已完成")
+    print(f"Progress: {completed_count}/{total_count} Completed")
 
     for idx, sample in enumerate(tqdm(samples, desc="Processing")):
         if "score" in sample:
@@ -116,15 +116,15 @@ def load_questions(args):
         print("--------------------------------------")
         print("Question: {}".format(sample["question"]))
         print("Response: {}".format(sample["response"]))
-        print("Gt: {}\tPred: {}\tScore: {}".format(sample["answer"], sample["pred"], sample["score"]))
-        print("Avg acc: {}".format(acc))
-        print("Avg f1: {}".format(f1))
+        print("GT: {}\tPred: {}\tScore: {}".format(sample["answer"], sample["pred"], sample["score"]))
+        print("Avg Acc: {}".format(acc))
+        print("Avg F1: {}".format(f1))
         
         # 每处理完一个样本就保存，确保断电不丢失进度
         with open(args.output_path, 'w') as f:
             json.dump(samples, f)
     
-    show_results(samples, show_path=re.sub("\.json$", ".txt", args.output_path))
+    show_results(samples, show_path=re.sub(r"\.json$", ".txt", args.output_path))
 
 
 if __name__=="__main__":

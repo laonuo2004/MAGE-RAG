@@ -66,7 +66,7 @@ class APIInferencer(ABC):
                 completion = client.chat.completions.create(model=model_name, messages=messages, temperature=0., max_completion_tokens=4096)
                 response = completion.choices[0].message.content
             except Exception as e:
-                print("exception: ", e)
+                print("Exception: ", e)
                 max_try -= 1
         return response
 

@@ -135,7 +135,7 @@ def get_cuda_version():
         version = version_line.split(" ")[-1]
         return version
     except Exception as e:
-        logger.info(f"Cannot detect CUDA version. Exception occured: {e}")
+        logger.info(f"Cannot Detect CUDA Version. Exception Occurred: {e}")
         return "N/A"
 
 
@@ -163,10 +163,10 @@ def log_runtime_info():
     logger.info(f"Environment Variables: {env_vars}")
     logger.info(f"Installed Packages: {installed_packages}")
 
-    logger.info(f"CUDA version: {get_cuda_version()}")
-    logger.info(f"Is CUDA available for Torch?: {torch.cuda.is_available()}")
+    logger.info(f"CUDA Version: {get_cuda_version()}")
+    logger.info(f"Is CUDA Available For Torch?: {torch.cuda.is_available()}")
 
-    logger.info(f"World size: {world_size()}")
+    logger.info(f"World Size: {world_size()}")
 
 
 def local_rank_zero(func):

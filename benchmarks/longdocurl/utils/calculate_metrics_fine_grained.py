@@ -75,6 +75,38 @@ def calculate_accuracy_fine_grained(samples, score_dict):
 
     return score_dict
 
+def generalize_score_dict(score_dict, sample_cnt_dict):
+    for key, value in score_dict.items():
+        if isinstance(value, dict):
+            generalize_score_dict(value, sample_cnt_dict[key])
+            score_dict[key] = value
+        else:
+            score_dict[key] /= sample_cnt_dict[key]
+
+
+def calculate_metrics_fine_grained(results_file: str, score_sample_file: str = "evaluation_results/scores_sample_fine_grained.json"):
+    results_file = Path(results_file)
+    with open(results_file, "r", encoding="utf-8") as rf:
+        samples = [json.loads(_.strip()) for _ in rf.readlines()]
+
+    with open(score_sample_file, "r", encoding="utf-8") as rf:
+        score_sample = json.load(rf)
+        score_dict, sample_cnt_dict = score_sample["scores"], score_sample["sample_cnt"]
+    
+    for sample in samples:
+        assert "pred" in sample
+
+    score_dict = calculate_accuracy_fine_grained(samples, score_dict)
+    generalize_score_dict(score_dict, sample_cnt_dict)
+
+    output_dir = results_file.with_suffix("")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / "metrics_fine_grained.json"
+
+    with open(output_file, "w", encoding="utf-8") as wf:
+        json.dump(score_dict, wf, ensure_ascii=False, indent=2)
+
+    return score_dict
 
 
 if __name__ == "__main__":
@@ -83,35 +115,7 @@ if __name__ == "__main__":
     parser.add_argument('--score_sample_file', type=str, default="evaluation_results/scores_sample_fine_grained.json")
     
     args = parser.parse_args()
-
-    with open(args.results_file, "r", encoding="utf-8") as rf:
-        samples = [json.loads(_.strip()) for _ in rf.readlines()]
-
-    with open(args.score_sample_file, "r", encoding="utf-8") as rf:
-        _ = json.load(rf)
-        score_dict, sample_cnt_dict = _["scores"], _["sample_cnt"]
-    
-    for sample in samples:
-        assert "pred" in sample
-
-    score_dict = calculate_accuracy_fine_grained(samples, score_dict)
-
-    def generalize_score_dict(score_dict, sample_cnt_dict):
-        for key, value in score_dict.items():
-            if isinstance(value, dict):
-                generalize_score_dict(value, sample_cnt_dict[key])
-                score_dict[key] = value
-            else:
-                score_dict[key] /= sample_cnt_dict[key]
-
-    generalize_score_dict(score_dict, sample_cnt_dict)
-
-    output_dir = Path(args.results_file).with_suffix("")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    output_file = output_dir / "metrics_fine_grained.json"
-
-    with open(output_file, "w", encoding="utf-8") as wf:
-        json.dump(score_dict, wf, ensure_ascii=False, indent=2)
+    score_dict = calculate_metrics_fine_grained(args.results_file, args.score_sample_file)
 
     print("--------------------------------------------------------------")
     print(score_dict)

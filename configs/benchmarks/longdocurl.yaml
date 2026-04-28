@@ -1,15 +1,16 @@
 name: longdocurl
 qa_file: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl
-process_mode: serial
+# process_mode: serial
+process_model: parallel
 workers: 64 # only for parallel processing
 ocr_json_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_jsons/4000-4999
 image_prefix: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999
-# qa_llm_provider: litellm
-# qa_model_name: Qwen2.5-VL-7B-Instruct
-# extractor_llm_provider: litellm
-# extractor_model_name: Qwen2.5-VL-7B-Instruct
-qa_llm_provider: openrouter
-qa_model_name: Gemini-2.5-Flash-Lite
-extractor_llm_provider: openrouter
-extractor_model_name: Gemini-2.5-Flash-Lite
+qa_llm_provider: litellm
+qa_model_name: Qwen2.5-VL-7B-Instruct
+extractor_llm_provider: litellm
+extractor_model_name: Qwen2.5-VL-7B-Instruct
+# qa_llm_provider: openrouter
+# qa_model_name: Gemini-2.5-Flash-Lite
+# extractor_llm_provider: openrouter
+# extractor_model_name: Gemini-2.5-Flash-Lite
 results_file: null

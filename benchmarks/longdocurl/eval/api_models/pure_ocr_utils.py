@@ -3,6 +3,8 @@ import os
 import re
 from collections import defaultdict
 
+import logging
+logger = logging.getLogger(__name__)
 
 PAGE_NO_PATTERN = re.compile(r"_(\d+)\.png$")
 OCR_TEXT_TEMPLATE = "page_no: {}\n{}\n\n"
@@ -34,24 +36,24 @@ def record2text(record):
     return text
 
 
-def get_pure_ocr_prompt_docmind(doc_no: str, **kwargs):
-    zip_no = doc_no[:4]
-    json_path = "/mnt/achao/Downloads/pdf_jsons/{}/{}_docmind_results.json"
-    record = json.load(open(json_path.format(zip_no, doc_no), "r", encoding="utf-8"))["contents"]
+# def get_pure_ocr_prompt_docmind(doc_no: str, **kwargs):
+#     zip_no = doc_no[:4]
+#     json_path = "/mnt/achao/Downloads/pdf_jsons/{}/{}_docmind_results.json"
+#     record = json.load(open(json_path.format(zip_no, doc_no), "r", encoding="utf-8"))["contents"]
 
-    start_page = kwargs.pop("start_page", 0)
-    end_page = kwargs.pop("end_page", start_page + 1)
-    if "extra_infos" in kwargs and "with_layout" in kwargs["extra_infos"] and kwargs["extra_infos"]["with_layout"]:
-        ocr_texts = [record2text_with_layout(record[f"page_{idx}"]) for idx in range(start_page, end_page + 1) if f"page_{idx}" in record]
-    else:
-        ocr_texts = [record2text(record[f"page_{idx}"]) for idx in range(start_page, end_page + 1) if f"page_{idx}" in record]
-    print("number of pages used: ", end_page - start_page + 1)
+#     start_page = kwargs.pop("start_page", 0)
+#     end_page = kwargs.pop("end_page", start_page + 1)
+#     if "extra_infos" in kwargs and "with_layout" in kwargs["extra_infos"] and kwargs["extra_infos"]["with_layout"]:
+#         ocr_texts = [record2text_with_layout(record[f"page_{idx}"]) for idx in range(start_page, end_page + 1) if f"page_{idx}" in record]
+#     else:
+#         ocr_texts = [record2text(record[f"page_{idx}"]) for idx in range(start_page, end_page + 1) if f"page_{idx}" in record]
+#     # print("Number Of Pages Used: ", end_page - start_page + 1)
 
-    ocr_prompt = "\n\n"
-    for page_no, ocr_text in zip(range(start_page, end_page + 1), ocr_texts):
-        ocr_prompt += OCR_TEXT_TEMPLATE.format(page_no + 1, ocr_text)
+#     ocr_prompt = "\n\n"
+#     for page_no, ocr_text in zip(range(start_page, end_page + 1), ocr_texts):
+#         ocr_prompt += OCR_TEXT_TEMPLATE.format(page_no + 1, ocr_text)
 
-    return ocr_prompt
+#     return ocr_prompt
 
 
 def extract_page_nos_from_images(images):
@@ -117,7 +119,7 @@ def get_pure_ocr_prompt_pymupdf(doc_no: str, images=None, ocr_json_dir=None, **k
     record = load_pymupdf_record(doc_no, ocr_json_dir)
     page_texts = build_page_texts_from_contents(record["contents"], selected_pages)
     pages_used = [page_no for page_no, _ in page_texts]
-    print("number of pages used: ", len(pages_used))
+    logger.debug("number of pages used: {}".format(len(pages_used)))
 
     ocr_prompt = "\n\n"
     for page_no, page_text in page_texts:

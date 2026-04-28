@@ -33,7 +33,7 @@ def get_pure_ocr_prompt_docmind(doc_no: str, **kwargs):
     else:
         ocr_texts = [record2text(record[f"page_{idx}"]) for idx in range(start_page, end_page+1) if f"page_{idx}" in record]
     pages_used = end_page - start_page + 1
-    print("number of pages used: ", end_page - start_page + 1)
+    print("Number Of Pages Used: ", end_page - start_page + 1)
 
     ocr_prompt = "\n\n"
     for page_no, ocr_text in zip(range(start_page, end_page+1), ocr_texts):
@@ -50,7 +50,7 @@ def get_pure_ocr_prompt_pymupdf(doc_no: str, **kwargs):
     start_page = kwargs.pop("start_page", 0); end_page = kwargs.pop("end_page", start_page+1)
 
     pages_used = end_page - start_page + 1
-    print("number of pages used: ", end_page - start_page + 1)
+    print("Number Of Pages Used: ", end_page - start_page + 1)
 
     ocr_prompt = "\n\n"
     for page_no, ocr_texts_page in zip(range(start_page, end_page+1), ocr_texts_doc):

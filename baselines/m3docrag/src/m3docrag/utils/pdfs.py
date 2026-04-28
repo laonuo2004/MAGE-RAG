@@ -48,8 +48,8 @@ def get_images_from_pdf(pdf_path, max_pages=None, dpi_resolution=144, save_dir='
 
     # 2) if pages have different sizes -> resize all pages to that image size
     if len(images) != common_img_size_count:
-        logger.info(f"total: {len(images)} pages")
-        logger.info(f"resizing to the most common image size: {common_img_size} with count: {common_img_size_count}")
+        logger.info(f"Total: {len(images)} Pages")
+        logger.info(f"Resizing To The Most Common Image Size: {common_img_size} With Count: {common_img_size_count}")
         images = [img.resize(common_img_size) for img in images]
 
     if save_image:
@@ -61,7 +61,7 @@ def get_images_from_pdf(pdf_path, max_pages=None, dpi_resolution=144, save_dir='
             if not save_page_path.exists():
                 page_image.save(save_page_path)
                 if verbose:
-                    logger.info(f"Page {page_index} saved at {save_page_path}")
+                    logger.info(f"Page {page_index} Saved At {save_page_path}")
 
     return images
 

@@ -41,7 +41,7 @@ def call_llm(prompt, urls, temperature=0.1, seed=42, max_tokens=4096):
             completion = client.chat.completions.create(model="gpt-4o-0513", messages=msgs, temperature=0.)
             response = completion.choices[0].message.content
         except Exception as e:
-            print(f"error with {e}, response = {response}")
+            print(f"Error With {e}, Response = {response}")
             max_try -= 1
             response = None
 
@@ -88,14 +88,14 @@ def extract_per_record(args):
     print("\n\n")
     print("Question: {}".format(case["question"]))
     print("Response: {}".format(case["pred"]))
-    print("Gt: {}\tPred: {}\tScore_v3: {}".format(case["answer"], case["pred"], case["score_v3"]))
+    print("GT: {}\tPred: {}\tScore V3: {}".format(case["answer"], case["pred"], case["score_v3"]))
 
     try:
         with open(output_datapath, "a") as output_review_file:
             output_review_file.write(json.dumps(case, ensure_ascii=False) + "\n")
     except Exception as e:
-        print("error: ", e)
-        print("error: ", case["question_id"])
+        print("Error: ", e)
+        print("Error: ", case["question_id"])
 
 
 
@@ -131,4 +131,3 @@ if __name__ == "__main__":
     extract_answers(records, args.results_file)
 
     # run_test()
-

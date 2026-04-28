@@ -88,7 +88,7 @@ def main() -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         kept, removed = clean_jsonl(input_path, output_path)
 
-    print(f"kept={kept} removed={removed} output={output_path}")
+    print(f"Kept={kept} Removed={removed} Output={output_path}")
 
 
 if __name__ == "__main__":

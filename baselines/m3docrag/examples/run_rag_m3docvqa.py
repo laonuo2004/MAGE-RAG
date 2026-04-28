@@ -93,7 +93,7 @@ def run_model(
     end = time.perf_counter()
 
     time_retrieval = end - start
-    logger.info(f"time_retrieval: {time_retrieval}")
+    logger.info(f"Time Retrieval: {time_retrieval}")
 
     start = time.perf_counter()
 
@@ -124,7 +124,7 @@ def run_model(
     end = time.perf_counter()
 
     time_qa = end - start
-    logger.info(f"time_qa: {time_qa}")
+    logger.info(f"Time QA: {time_qa}")
 
     out_dict["time_retrieval"] = time_retrieval
     out_dict["time_qa"] = time_qa
@@ -138,11 +138,11 @@ def run_model(
 
 def evaluate(data_loader, rag_model, index=None, data_len=None, args=None, **kwargs):
     if data_len is not None:
-        logger.info(f"eval on the first {data_len} items")
+        logger.info(f"Eval On The First {data_len} Items")
 
     # docid2embs = data_loader.dataset.load_all_embeddings()
 
-    logger.info("Preparing doc indices")
+    logger.info("Preparing Doc Indices")
 
     if args.retrieval_model_type == "colpali":
         docid2embs = data_loader.dataset.load_all_embeddings()
@@ -170,7 +170,7 @@ def evaluate(data_loader, rag_model, index=None, data_len=None, args=None, **kwa
     all_token_embeddings = torch.cat(all_token_embeddings, dim=0)
     all_token_embeddings = all_token_embeddings.float().numpy()
 
-    logger.info("Created flattened token embeddings / token2pageuid")
+    logger.info("Created Flattened Token Embeddings / Token2Pageuid")
 
     qid2result = {}
 
@@ -232,7 +232,7 @@ def main():
     accelerator = Accelerator()
 
     if not is_distributed() or global_rank() == 0:
-        logger.info(f"Process {global_rank()}:{local_rank()} - args {args}")
+        logger.info(f"Process {global_rank()}:{local_rank()} - Args {args}")
 
     local_data_dir = Path(LOCAL_DATA_DIR) / args.data_name
     local_embedding_dir = Path(LOCAL_EMBEDDINGS_DIR) / args.embedding_name
@@ -264,7 +264,7 @@ def main():
             )
 
         if local_model_dir.exists() or args.retrieval_only:
-            logger.info("Model exists - pass")
+            logger.info("Model Exists - Pass")
         else:
             raise ValueError(
                 f"Model directory {local_model_dir} does not exist"
@@ -298,13 +298,13 @@ def main():
         )
         retrieval_model = colpali_model
 
-    logger.info(f"loaded Retrieval model -: {local_retrieval_model_dir}")
+    logger.info(f"Loaded Retrieval Model -: {local_retrieval_model_dir}")
 
     # Create QA / VQA Model (Step 2)
 
     if args.retrieval_only:
         rag_model = MultimodalRAGModel(retrieval_model=retrieval_model, vqa_model=None)
-        logger.info("skipping QA model")
+        logger.info("Skipping QA Model")
 
     else:
         if "florence" in args.model_name_or_path.lower():
@@ -334,24 +334,24 @@ def main():
             attn_implementation=attn_implementation,
         )
 
-        logger.info(f"loaded VQA model - {model_type}: {local_model_dir}")
+        logger.info(f"Loaded VQA Model - {model_type}: {local_model_dir}")
 
         rag_model = MultimodalRAGModel(
             retrieval_model=retrieval_model, vqa_model=vqa_model
         )
 
-    logger.info("Created RAG model")
+    logger.info("Created RAG Model")
 
     dataset = M3DocVQADataset(args=args)
-    logger.info("loaded dataset")
+    logger.info("Loaded Dataset")
 
     index = None
     if local_index_dir.exists():
-        logger.info("Loading faiss index")
+        logger.info("Loading FAISS Index")
         import faiss
 
         index = faiss.read_index(str(local_index_dir / "index.bin"))
-        logger.info("Loading faiss index -- done")
+        logger.info("Loading FAISS Index -- Done")
 
     def list_collate_fn(batch):
         batch = {
@@ -404,7 +404,7 @@ def main():
     with open(results_file, "w") as f:
         json.dump(samples, f, indent=4)
 
-    logger.info(f"Prediction results saved at: {results_file}")
+    logger.info(f"Prediction Results Saved At: {results_file}")
 
     # Evaluation
     all_eval_scores = evaluate_prediction_file(
@@ -419,7 +419,7 @@ def main():
     with open(results_file, "w") as f:
         json.dump(all_eval_scores, f, indent=4)
 
-    logger.info(f"Evaluation results saved at: {results_file}")
+    logger.info(f"Evaluation Results Saved At: {results_file}")
 
     if is_distributed():
         barrier()

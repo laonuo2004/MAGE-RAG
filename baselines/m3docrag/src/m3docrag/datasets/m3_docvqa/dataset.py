@@ -58,7 +58,7 @@ class M3DocVQADataset(torch.utils.data.Dataset):
             all_supporting_doc_ids = json.load(open(split_supporting_doc_ids_path))
             # dev: 3366
             # train: 24162
-            logger.info(f"# supporting doc ids in split {args.split}: {len(all_supporting_doc_ids)}")
+            logger.info(f"# Supporting Doc IDs In Split {args.split}: {len(all_supporting_doc_ids)}")
         self.all_supporting_doc_ids = all_supporting_doc_ids
 
     def __len__(self):
@@ -75,7 +75,7 @@ class M3DocVQADataset(torch.utils.data.Dataset):
 
         emb_dir = Path(LOCAL_EMBEDDINGS_DIR) / self.args.embedding_name
 
-        logger.info(f"Loading all doc embeddings from {emb_dir}")
+        logger.info(f"Loading All Doc Embeddings From {emb_dir}")
 
         docid2embs = {}
         docid2lens = {}

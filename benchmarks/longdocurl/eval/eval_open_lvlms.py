@@ -58,7 +58,7 @@ prompt_sign = True
 
 def preprocess(input_datapath, output_datapath, image_prefix=None):
     dataset = read_jsonl_file(input_datapath)
-    print("dataset cnt: ", len(dataset))
+    print("Dataset Count: ", len(dataset))
 
     if os.path.exists(output_datapath):
         output_dataset = read_jsonl_file(output_datapath)
@@ -69,7 +69,7 @@ def preprocess(input_datapath, output_datapath, image_prefix=None):
             for i, image_path in enumerate(_["images"]):
                 _["images"][i] = os.path.join(image_prefix, "/".join(image_path.split("/")[-2:]))
 
-    print("dataset cnt need to do: ", len(dataset))
+    print("Dataset Count Need To Do: ", len(dataset))
     return dataset
 
 def read_jsonl_file(file_path):
@@ -94,7 +94,7 @@ def call_llm(prompt, urls, temperature=0.1, seed=42, max_tokens=4096):
             # completion = client.chat.completions.create(model="gpt-4o", messages=msgs, temperature=0.)
             response = completion.choices[0].message.content
         except Exception as e:
-            print(f"error with {e}, response = {response}")
+            print(f"Error With {e}, Response = {response}")
             max_try -= 1
             response = None
     return response
@@ -116,7 +116,7 @@ def eval_per_record(model_pool, task=None, gpu_id=None, inferencer=None):
     try:
         result = inferencer.infer(prompt, case["images"], device=f"cuda:{gpu_id}" if gpu_id is not None else "cpu", model_pool=model_pool)
     except Exception as e:
-        print("error: ", e)
+        print("Error: ", e)
         result = None
 
     if result is None:
@@ -154,7 +154,7 @@ def eval_per_record(model_pool, task=None, gpu_id=None, inferencer=None):
     print("Question: {}".format(case["question"]))
     print("Response: {}".format(case["pred"]))
     
-    print("Gt: {}\tPred: {}\tScore_v3: {}".format(case["answer"], case["pred"], case["score_v3"]))
+    print("GT: {}\tPred: {}\tScore V3: {}".format(case["answer"], case["pred"], case["score_v3"]))
 
     try: # not json serialable
         dir_name = os.path.dirname(output_datapath)
@@ -163,7 +163,7 @@ def eval_per_record(model_pool, task=None, gpu_id=None, inferencer=None):
         with open(output_datapath, "a") as output_review_file:
             output_review_file.write(json.dumps(case, ensure_ascii=False) + "\n")
     except Exception as e:
-        print("error: ", e)
+        print("Error: ", e)
 
 
 
@@ -200,7 +200,7 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", num_gpus=0):
         output_dataset = read_jsonl_file(output_datapath)
         dataset = delete_generate_dataset(dataset, output_dataset)
 
-    print("dataset cnt: ", len(dataset))
+    print("Dataset Count: ", len(dataset))
     if not len(dataset):
         return
 
@@ -209,11 +209,11 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", num_gpus=0):
         args_list.append((case, output_datapath, model_name))
 
     start_time = datetime.datetime.now()
-    print("job start time:", start_time)
+    print("Job Start Time:", start_time)
 
     # Use parallel mode if multiple GPUs are available
     if num_gpus > 1:
-        print(f"Running in multi-GPU parallel mode on {num_gpus} devices.")
+        print(f"Running In Multi-GPU Parallel Mode On {num_gpus} Devices.")
         task_queue = multiprocessing.Queue()
         for args in args_list:
             task_queue.put(args)
@@ -257,7 +257,7 @@ def evaluate(dataset, output_datapath, model_name="gpt4o", num_gpus=0):
         global model_pool
         # Serial mode for 1 GPU or CPU
         mode_str = "GPU:0" if num_gpus == 1 else "CPU"
-        print(f"Running in serial mode on {mode_str}.")
+        print(f"Running In Serial Mode On {mode_str}.")
         inferencer = eval(model_name2inferencer[model_name])(model_name)
         gpu_id = "0" if num_gpus == 1 else None
 
@@ -284,7 +284,7 @@ if __name__ == "__main__":
 
     # Auto-detect GPUs
     num_gpus = torch.cuda.device_count()
-    print(f"Total available GPUs: {num_gpus}")
+    print(f"Total Available GPUs: {num_gpus}")
 
     input_datapath = args.qa_file
     output_datapath = args.results_file
@@ -301,11 +301,11 @@ if __name__ == "__main__":
             evaluate(dataset, output_datapath, model_name=args.model_name, num_gpus=num_gpus)
             break
         except Exception as e:
-            print(f"An error occurred: {e}")
-            print("Restarting script...")
+            print(f"An Error Occurred: {e}")
+            print("Restarting Script...")
             time.sleep(1)
 
     acc, f1, = calculate_acc_and_f1(output_datapath)
     print("--------------------------------------")
-    print("Avg acc: {}".format(acc))
-    print("Avg f1: {}".format(f1))
+    print("Avg Acc: {}".format(acc))
+    print("Avg F1: {}".format(f1))

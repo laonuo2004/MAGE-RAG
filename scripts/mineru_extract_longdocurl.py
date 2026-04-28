@@ -173,7 +173,7 @@ class MinerUAutomator:
             if not batch_id:
                 continue
                 
-            self.logger.info(f"获取 batch_id 成功: {batch_id}，并发上传中...")
+            self.logger.info(f"获取 Batch ID 成功: {batch_id}，并发上传中...")
             active_batches.append(batch_id)
             self.batch_info[batch_id] = len(chunk)
             

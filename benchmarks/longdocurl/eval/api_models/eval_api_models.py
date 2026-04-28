@@ -1,6 +1,8 @@
 import sys
 import pathlib
 
+from importlib_metadata import metadata
+
 EVAL = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EVAL))
 BENCHMARK_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -10,10 +12,8 @@ sys.path.insert(0, str(BENCHMARKS_ROOT))
 CODE_WORKSPACE = pathlib.Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(CODE_WORKSPACE))
 
-import argparse
 import os
 
-import hydra
 from omegaconf import DictConfig, OmegaConf
 
 BENCHMARK_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -26,8 +26,9 @@ from openai import OpenAI
 
 from utils_api import *
 from utils.utils_score_v3 import *
+from utils.calculate_metrics import calculate_metrics
+from utils.calculate_metrics_fine_grained import calculate_metrics_fine_grained
 # from model import Gemini15ProInferencer, GPT4oInferencer, QwenVLMaxInferencer, O1PreviewInferencer, QwenMaxInferencer, Gemini31ProInferencer, GPT54Inferencer, ClaudeSonnet46Inferencer
-from .model import Inferencer
 from pure_ocr_utils import *
 from baselines.wrapper import build_context_builder
 
@@ -40,11 +41,8 @@ text_system_prompt = "You are an expert in document question-answering, please a
 # TODO
 project_prefix = "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/"
 
-config_file = os.path.join(project_prefix, "config/api_config.json")
 extractor_prompt_path = os.path.join(project_prefix, "eval/prompt_for_answer_extraction.md")
-
-with open(config_file, "r", encoding="utf-8") as rf:
-    config = json.load(rf)
+score_sample_file = BENCHMARK_ROOT / "evaluation_results/scores_sample_fine_grained.json"
 
 # model_name2inferencer = {"gpt4o": "GPT4oInferencer", "gemini15_pro": "Gemini15ProInferencer", "qwen_vl_max": "QwenVLMaxInferencer", \
 #     "o1_preview": "O1PreviewInferencer", "qwen_max": "QwenMaxInferencer", "gemini-3.1-pro-preview": "Gemini31ProInferencer", \
@@ -57,16 +55,12 @@ _worker_clients = {}
 
 
 def build_client(llm_provider, llm_provider_cfg=None):
-    # if llm_provider == "openrouter":
-    #     return OpenAI(api_key=config["api_model"]["access_key"], base_url=config["api_model"]["base_url"])
-    # if llm_provider == "lite":
-    #     return OpenAI(api_key=config["local_model"]["access_key"], base_url=config["local_model"]["base_url"])
-    # raise ValueError(f"Unsupported llm_provider: {llm_provider}")
+    llm_provider_cfg = llm_provider_cfg or {}
     selected_cfg = llm_provider_cfg.get(llm_provider, {})
     base_url = selected_cfg.get("base_url", None)
     api_key = selected_cfg.get("api_key", None)
     if base_url is None or api_key is None:
-        raise ValueError(f"Base URL or API key not found for llm_provider: {llm_provider}")
+        raise ValueError(f"Base URL or API key not found for llm_provider: {llm_provider}. Set llm_providers.{llm_provider}.")
     return OpenAI(api_key=api_key, base_url=base_url)
 
 
@@ -82,7 +76,7 @@ def get_model_name(model_name, llm_provider, llm_provider_cfg=None):
 
 def preprocess(input_datapath, output_datapath, image_prefix=None):
     dataset = read_jsonl_file(input_datapath)
-    logger.info(f"dataset cnt: {len(dataset)}")
+    logger.info(f"Dataset Count: {len(dataset)}")
 
     if os.path.exists(output_datapath):
         output_dataset = read_jsonl_file(output_datapath)
@@ -93,7 +87,7 @@ def preprocess(input_datapath, output_datapath, image_prefix=None):
             for i, image_path in enumerate(_["images"]):
                 _["images"][i] = os.path.join(image_prefix, "/".join(image_path.split("/")[-2:]))
 
-    logger.info(f"dataset cnt need to do: {len(dataset)}")
+    logger.info(f"Dataset Count Need To Do: {len(dataset)}")
 
     return dataset
 
@@ -109,16 +103,19 @@ def read_jsonl_file(file_path):
 
 def call_llm(model_name, prompt, urls, client_obj, temperature=0.1, seed=42, max_tokens=4096):
     msgs = get_msg_format(prompt, urls)
+    return call_llm_messages(model_name, msgs, client_obj, temperature=temperature, seed=seed, max_tokens=max_tokens)
+
+
+def call_llm_messages(model_name, messages, client_obj, temperature=0.1, seed=42, max_tokens=4096):
     response = None
     max_try = 2
     while response is None and max_try > 0:
         try:
             # TODO
-            # completion = client.chat.completions.create(model="gpt-4o-0513", messages=msgs, temperature=0.)
-            completion = client_obj.chat.completions.create(model=model_name, messages=msgs, temperature=0.)
+            completion = client_obj.chat.completions.create(model=model_name, messages=messages, temperature=0., max_completion_tokens=max_tokens)
             response = completion.choices[0].message.content
         except Exception as e:
-            logger.error(f"error with {e}, response = {response}")
+            logger.error(f"Error With {e}, Response = {response}")
             max_try -= 1
             response = None
 
@@ -137,9 +134,8 @@ def build_default_results_file(cfg, benchmark_cfg):
     return os.path.join(BENCHMARK_ROOT, f"evaluation_results/api_models/results_{baseline_name}_{model_name}.jsonl")
 
 
-def eval_per_record(args):
-    # logger.info("--------------------------------------")
-    cfg, case, output_datapath = args
+def eval_per_record(task):
+    cfg, case, output_datapath = task
     benchmark_cfg = cfg.get('benchmarks', {})
     llm_provider_cfg = cfg.get('llm_providers', {})
     qa_client = get_worker_client(benchmark_cfg.get('qa_llm_provider'), llm_provider_cfg)
@@ -147,22 +143,19 @@ def eval_per_record(args):
     extractor_client = get_worker_client(benchmark_cfg.get('extractor_llm_provider'), llm_provider_cfg)
     extractor_model_name = get_model_name(benchmark_cfg.get('extractor_model_name'), benchmark_cfg.get('extractor_llm_provider'), llm_provider_cfg)
 
-    # inferencer = eval(qa_model_name2inferencer[qa_model_name])()
-    inferencer = eval("Inferencer")()
-
     question = case["question"]
     context_builder = build_context_builder(cfg)
-    context_bundle = context_builder.build("longdocurl", case)
-    system_prompt = context_bundle.system_prompt
-    result = inferencer.infer(context_bundle.prompt, context_bundle.images, qa_model_name, qa_client)
+    messages = context_builder.build("longdocurl", case)
+    result = call_llm_messages(qa_model_name, messages, qa_client)
 
     if result is None:
+        logger.warning(f"LLM returned None for question_id {case.get('question_id', 'unknown')}. Skipping this case.")
         return
 
     # extract concise answer
     with open(extractor_prompt_path) as f:
         extractor_prompt = f.read()
-    prompt = system_prompt + extractor_prompt + "\nQuestion: " + question + "\nAnalysis: " + result
+    prompt = extractor_prompt + "\nQuestion: " + question + "\nAnalysis: " + result
     extractor_result = call_llm(extractor_model_name, prompt, None, extractor_client)
     try:
         import re
@@ -186,127 +179,101 @@ def eval_per_record(args):
     case["detailed_response"] = result
     case["pred"] = pred_ans
     case["score_v3"] = score_v3
-    case["input_format"] = context_bundle.metadata.get("input_format", input_format)
-    case["ocr_backend"] = context_bundle.metadata.get("ocr_backend", ocr_backend if input_format == "ocr" else None)
-    case["ocr_pages_used"] = context_bundle.metadata.get("ocr_pages_used", [])
-    case["context_builder"] = context_bundle.metadata.get("context_builder", context_builder_name)
+    # case["input_format"] = metadata.get("input_format")
+    # case["ocr_backend"] = metadata.get("ocr_backend")
+    # case["ocr_pages_used"] = metadata.get("ocr_pages_used", [])
+    # case["context_builder"] = metadata.get("context_builder")
 
-    logger.info("\n\n")
-    logger.info("Question: {}".format(case["question"]))
-    logger.info("Response: {}".format(case["pred"]))
+    # logger.info("\n\n")
+    # logger.info("Question: {}".format(case["question"]))
+    # logger.info("Response: {}".format(case["pred"]))
     
-    logger.info("Gt: {}\tPred: {}\tScore_v3: {}".format(case["answer"], case["pred"], case["score_v3"]))
+    # logger.info("GT: {}\tPred: {}\tScore V3: {}".format(case["answer"], case["pred"], case["score_v3"]))
+    # 为了避免多线程时日志输出混乱，我们将其改为 debug 级别
+    logger.debug("Question: {}".format(case["question"]))
+    logger.debug("Response: {}".format(case["pred"]))
+    
+    logger.debug("GT: {}\tPred: {}\tScore V3: {}".format(case["answer"], case["pred"], case["score_v3"]))
 
     if result is not None:  # Check if result is not None
         try: # not json serialable
             with open(output_datapath, "a") as output_review_file:
                 output_review_file.write(json.dumps(case, ensure_ascii=False) + "\n")
         except Exception as e:
-            logger.error(f"error: {e}")
+            logger.error(f"Error: {e}")
     else:
-        logger.error("error")
+        logger.error("Error")
 
-
-# def evaluate(dataset, output_datapath, qa_model_name="gpt4o", extractor_model_name="gpt4o", process_mode="serial", input_format="e2e", ocr_backend="pymupdf", ocr_json_dir=None, extra_infos=None, qa_llm_provider="openrouter", extractor_llm_provider="openrouter", workers=64, context_builder_name=None):
-# def evaluate(cfg, dataset, output_datapath, process_mode="serial", workers=64, ocr_json_dir=None, image_prefix=None, qa_llm_provider="litellm", qa_model_name="Qwen2.5-VL-7B-Instruct", extractor_llm_provider="litellm", extractor_model_name="Qwen2.5-VL-7B-Instruct", context_builder_name="image"):
 def evaluate(cfg, dataset, output_datapath):
     benchmark_cfg = cfg.get('benchmarks', {})
     process_mode = benchmark_cfg.get('process_mode', 'serial')
     workers = benchmark_cfg.get('workers', 64)
-    # if os.path.exists(output_datapath):
-    #     output_dataset = read_jsonl_file(output_datapath)
-    #     dataset = delete_generate_dataset(dataset, output_dataset)
 
-    # logger.info(f"dataset cnt: {len(dataset)}")
+    logger.info(f"Evaluation Process Mode: {process_mode}")
+    if process_mode == "parallel":
+        logger.info(f"Number Of Worker Processes: {workers}")
+    
     if not len(dataset):
-        logger.info("No data to process.")
+        logger.info("No Data To Process.")
         return
 
-    args_list = []
+    tasks = []
     for case in dataset:
-        args_list.append((cfg, case, output_datapath))
+        tasks.append((cfg, case, output_datapath))
+
+    baseline_name = cfg.baselines.name
+    logger.info(f"Using Baseline: {baseline_name}")
 
     start_time = datetime.datetime.now()
-    logger.info(f"job start time: {start_time}")
+    logger.info(f"Job Start Time: {start_time}")
 
     if process_mode == "serial":
-        for args in args_list:
-            eval_per_record(args)
+        for task in tasks:
+            eval_per_record(task)
     elif process_mode == "parallel":
+        # Keep the logging level as configured instead of forcing INFO
         with Pool(processes=workers) as pool:  # You can adjust the number of processes as needed
-            list(tqdm(pool.imap(eval_per_record, args_list), total=len(args_list)))
+            list(tqdm(pool.imap(eval_per_record, tasks), total=len(tasks)))
     else:
-        logger.error("process mode error!")
+        logger.error("Process Mode Error!")
 
-
-def build_arg_parser(default_context_builder=None):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--qa_file', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl")
-    parser.add_argument('--process_mode', type=str, default="serial") # serial/parallel
-    parser.add_argument('--workers', type=int, default=64)
-    parser.add_argument('--input_format', type=str, choices=["e2e", "ocr"], default="e2e")
-    parser.add_argument('--context_builder', type=str, choices=["image", "ocr"], default=default_context_builder)
-    parser.add_argument('--ocr_backend', type=str, choices=["pymupdf"], default="pymupdf")
-    parser.add_argument('--ocr_json_dir', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_jsons/4000-4999")
-    parser.add_argument('--image_prefix', type=str, default="/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999")
-    parser.add_argument('--qa_llm_provider', type=str, default="openrouter") # openrouter/local
-    parser.add_argument('--qa_model_name', type=str, default="gemma-4-26b-a4b-it") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
-    parser.add_argument('--extractor_model_name', type=str, default="gemma-4-26b-a4b-it") # gemini15_pro/claude35_sonnet/qwen_vl_max/gpt4o
-    parser.add_argument('--extractor_llm_provider', type=str, default="openrouter") # openrouter/local
-    parser.add_argument('--results_file', type=str, default=None)
-    return parser
 
 def run_longdocurl(cfg: DictConfig):
-    # if args.context_builder is None:
-    #     args.context_builder = "ocr" if args.input_format == "ocr" else "image"
-    # args.input_format = "ocr" if args.context_builder == "ocr" else "e2e"
-    # input_datapath = args.qa_file
-    # output_datapath = args.results_file or build_default_results_file(
-    #     args.qa_model_name,
-    #     args.input_format,
-    #     args.ocr_backend,
-    # )
-    benchmark_cfg = cfg.get('benchmarks', {})
-    output_datapath = benchmark_cfg.results_file or build_default_results_file(cfg, benchmark_cfg)
+    benchmark_cfg = cfg.benchmarks
+    output_datapath = benchmark_cfg.get("results_file") or build_default_results_file(cfg, benchmark_cfg)
+    os.makedirs(os.path.dirname(output_datapath), exist_ok=True)
         
-    logger.info(f"Output datapath: {output_datapath}")
-    
-    # client = build_client(args.qa_llm_provider)
+    logger.info(f"Output Datapath: {output_datapath}")
 
-    # load data
-    # dataset = preprocess(input_datapath, output_datapath)
-    # if image paths are not modified in .jsonl file, add image prefix when executed
     dataset = preprocess(benchmark_cfg.qa_file, output_datapath, benchmark_cfg.image_prefix)
 
-    try_cnt = 2
-    while try_cnt:
-        try_cnt -= 1
-        try:
-            evaluate(
-                cfg,
-                dataset,
-                output_datapath
-            )
-        except Exception as e:
-            logger.error(f"An error occurred: {e}")
-            logger.info("Restarting script...")
-            time.sleep(1)
+    # try_cnt = 2
+    # while try_cnt:
+    #     try_cnt -= 1
+    #     try:
+    #         evaluate(
+    #             cfg,
+    #             dataset,
+    #             output_datapath
+    #         )
+    #     except Exception as e:
+    #         logger.error(f"An Error Occurred: {e}")
+    #         logger.info("Restarting Script...")
+    #         time.sleep(1)
+    
+    evaluate(cfg, dataset, output_datapath)
 
     if not os.path.exists(output_datapath):
-        logger.error(f"No results generated at: {output_datapath}")
+        logger.error(f"No Results Generated At: {output_datapath}")
         sys.exit(1)
 
-    acc, f1, = calculate_acc_and_f1(output_datapath)
-    logger.info("--------------------------------------")
-    logger.info("Avg acc: {}".format(acc))
-    logger.info("Avg f1: {}".format(f1))
-    return acc, f1
+    metrics = calculate_metrics(output_datapath)
+    fine_grained_metrics = calculate_metrics_fine_grained(output_datapath, score_sample_file)
+    logger.info(f"Metrics: {metrics}")
+    logger.info(f"Fine-grained metrics saved under: {pathlib.Path(output_datapath).with_suffix('')}")
 
-
-def main(argv=None):
-    args = build_arg_parser().parse_args(argv)
-    return run_longdocurl(args)
-
-
-if __name__ == "__main__":
-    main()
+    return {
+        "results_file": output_datapath,
+        "metrics": metrics,
+        "fine_grained_metrics": fine_grained_metrics,
+    }

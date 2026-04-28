@@ -1,7 +1,6 @@
 import os
 import re
 import json
-import argparse
 import pathlib
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,7 +12,6 @@ if str(CURRENT_DIR) not in sys.path:
 
 from tqdm import tqdm
 
-from env_utils import get_config_value, load_local_env
 from eval.extract_answer import build_client, extract_answer
 from eval.eval_score import eval_score, eval_acc_and_f1, show_results
 from route_utils import build_routes, find_next_route_index, is_context_overflow_error, safe_load_existing_samples
@@ -23,6 +21,43 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from baselines.wrapper import build_context_builder
+
+MAX_TRY = 10
+MAX_TOKENS = 1024
+TEMPERATURE = 0.0
+EXTRACTOR_PROMPT_PATH = CURRENT_DIR / "eval" / "prompt_for_answer_extraction.md"
+
+
+def _resolve_provider_cfg(cfg, benchmark_cfg, default_provider="litellm"):
+    provider_name = benchmark_cfg.get("llm_provider", default_provider)
+    providers = cfg.get("llm_providers", {}) or {}
+    provider_cfg = providers.get(provider_name, {}) or {}
+    return provider_name, provider_cfg
+
+
+def _resolve_model_name(model_name, provider_cfg):
+    if model_name is None:
+        return None
+    model_mapping = provider_cfg.get("model_mapping", {}) or {}
+    return model_mapping.get(model_name, model_name)
+
+
+def resolve_model_name(cfg, model_name=None):
+    benchmark_cfg = cfg.benchmarks
+    _, provider_cfg = _resolve_provider_cfg(cfg, benchmark_cfg)
+    return _resolve_model_name(model_name or benchmark_cfg.model_name, provider_cfg)
+
+
+def resolve_base_url(cfg):
+    benchmark_cfg = cfg.benchmarks
+    _, provider_cfg = _resolve_provider_cfg(cfg, benchmark_cfg)
+    return provider_cfg.get("base_url")
+
+
+def resolve_api_key(cfg):
+    benchmark_cfg = cfg.benchmarks
+    _, provider_cfg = _resolve_provider_cfg(cfg, benchmark_cfg)
+    return provider_cfg.get("api_key")
 
 
 def sample_key(sample):
@@ -68,32 +103,12 @@ def parse_extracted_answer(extracted_res):
     return match.group(1).strip()
 
 
-def slugify_filename(text, max_len=80):
-    text = re.sub(r"[^0-9a-zA-Z._-]+", "_", str(text))
-    return text[:max_len].strip("_") or "sample"
-
-
-def load_samples(args):
-    with open(args.input_path, "r", encoding="utf-8") as f:
+def load_samples(cfg, output_path):
+    benchmark_cfg = cfg.benchmarks
+    with open(benchmark_cfg.input_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
-    has_sample_filter = (
-        args.sample_id is not None
-        or args.sample_doc_id is not None
-        or args.sample_question is not None
-    )
-    if args.sample_id is not None:
-        samples = [sample for sample in samples if str(sample.get("sample_id")) == str(args.sample_id)]
-    if args.sample_doc_id is not None:
-        samples = [sample for sample in samples if sample.get("doc_id") == args.sample_doc_id]
-    if args.sample_question is not None:
-        samples = [sample for sample in samples if sample.get("question") == args.sample_question]
-    if args.limit is not None:
-        samples = samples[: args.limit]
 
-    if args.debug_prompts and has_sample_filter:
-        return samples
-
-    existing_samples = safe_load_existing_samples(args.output_path)
+    existing_samples = safe_load_existing_samples(output_path)
     if existing_samples is not None:
         existing_by_key = {sample_key(sample): sample for sample in existing_samples}
         merged_samples = []
@@ -110,35 +125,13 @@ def load_samples(args):
     return samples
 
 
-def ensure_debug_dir(args):
-    if not args.debug_prompts:
-        return None
-    debug_dir = args.debug_dir or "./debug_prompts"
-    os.makedirs(debug_dir, exist_ok=True)
-    return debug_dir
-
-
-def write_debug_record(args, sample, payload):
-    debug_dir = ensure_debug_dir(args)
-    if debug_dir is None:
-        return
-
-    sample_id = sample.get("sample_id")
-    if sample_id is None:
-        sample_id = f"{sample.get('doc_id', 'doc')}__{slugify_filename(sample.get('question', 'question'), 60)}"
-
-    path = os.path.join(debug_dir, f"{slugify_filename(sample_id, 120)}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-
-
-def request_with_fallback(messages, args, routes):
+def request_with_fallback(messages, routes):
     route_index = 0
     last_error = None
     while route_index is not None and route_index < len(routes):
         route = routes[route_index]
         print(
-            "[ROUTE TRY] label={} | base_url={} | model={} | max_model_len={}".format(
+            "[ROUTE TRY] Label={} | Base URL={} | Model={} | Max Model Len={}".format(
                 route.label,
                 route.base_url,
                 route.model_name,
@@ -147,13 +140,13 @@ def request_with_fallback(messages, args, routes):
         )
         client = build_client(api_key=route.api_key, base_url=route.base_url)
         attempts = 0
-        while attempts < args.max_try:
+        while attempts < MAX_TRY:
             try:
                 response = client.chat.completions.create(
                     model=route.model_name,
                     messages=messages,
-                    max_tokens=args.max_tokens,
-                    temperature=args.temperature,
+                    max_tokens=MAX_TOKENS,
+                    temperature=TEMPERATURE,
                 )
                 return response.choices[0].message.content, route, None
             except Exception as exc:
@@ -161,10 +154,10 @@ def request_with_fallback(messages, args, routes):
                 last_error = exc
                 message = str(exc)
                 print(
-                    "[ROUTE ERROR] label={} | attempt={}/{} | error={}".format(
+                    "[ROUTE ERROR] Label={} | Attempt={}/{} | Error={}".format(
                         route.label,
                         attempts,
-                        args.max_try,
+                        MAX_TRY,
                         exc,
                     )
                 )
@@ -179,7 +172,7 @@ def request_with_fallback(messages, args, routes):
             if next_route_index is None:
                 return f"Failed: {last_error}", route, last_error
             print(
-                "[ROUTE FALLBACK] from={} -> to={}".format(
+                "[ROUTE FALLBACK] From={} -> To={}".format(
                     route.label,
                     routes[next_route_index].label,
                 )
@@ -189,7 +182,7 @@ def request_with_fallback(messages, args, routes):
     return f"Failed: {last_error}", routes[min(route_index or 0, len(routes) - 1)], last_error
 
 
-def process_one_sample(sample, args, prompt, routes, context_builder=None):
+def process_one_sample(sample, cfg, prompt, routes, context_builder=None):
     total_start = perf_counter()
     sample = dict(sample)
     sample.pop("score", None)
@@ -200,18 +193,18 @@ def process_one_sample(sample, args, prompt, routes, context_builder=None):
     sample.pop("status", None)
 
     print(
-        "[START] doc_id={} | question={}".format(
+        "[START] Doc ID={} | Question={}".format(
             sample.get("doc_id"),
             sample.get("question"),
         )
     )
 
-    print("[STAGE] prepare")
+    print("[STAGE] Prepare")
     prep_start = perf_counter()
     if context_builder is None:
-        context_builder = build_context_builder(args)
-    context_bundle = context_builder.build("mmlongbench", sample, args)
-    messages = context_bundle.messages
+        raise ValueError("context_builder is required.")
+    messages = context_builder.build("mmlongbench", sample)
+    metadata = getattr(messages, "metadata", {})
     prep_seconds = perf_counter() - prep_start
     debug_payload = {
         "question": sample.get("question"),
@@ -221,41 +214,12 @@ def process_one_sample(sample, args, prompt, routes, context_builder=None):
         "evidence_pages": sample.get("evidence_pages"),
         "evidence_sources": sample.get("evidence_sources"),
         "input_messages": messages,
-        "context_metadata": context_bundle.metadata,
+        "context_metadata": metadata,
     }
 
-    print("[STAGE] generation")
+    print("[STAGE] Generation")
     generation_start = perf_counter()
-    if args.api_style == "openai":
-        response, used_route, request_error = request_with_fallback(messages, args, routes)
-    elif args.api_style == "gemini":
-        used_route = routes[0]
-        request_error = None
-        response = "Failed"
-        try_cnt = 0
-        mode = "png"
-        while try_cnt < args.max_try:
-            try:
-                try:
-                    gemini_response = args.gemini_client.generate_content(messages, generation_config=args.gemini_config)
-                except Exception:
-                    if mode == "png":
-                        mode = "file"
-                        context_bundle = context_builder.build("mmlongbench", sample, args, mode="file")
-                        messages = context_bundle.messages
-                        debug_payload["context_metadata"] = context_bundle.metadata
-                        gemini_response = args.gemini_client.generate_content(messages, generation_config=args.gemini_config)
-                    else:
-                        raise
-                gemini_response.resolve()
-                response = gemini_response.text.strip()
-                break
-            except Exception as exc:
-                try_cnt += 1
-                request_error = exc
-                response = f"Failed: {exc}"
-    else:
-        raise AssertionError()
+    response, used_route, request_error = request_with_fallback(messages, routes)
     generation_seconds = perf_counter() - generation_start
     sample["response"] = response
     sample["used_base_url"] = used_route.base_url
@@ -289,18 +253,11 @@ def process_one_sample(sample, args, prompt, routes, context_builder=None):
             "extraction_seconds": sample["timing_extraction_seconds"],
             "total_seconds": sample["timing_total_seconds"],
         }
-        write_debug_record(args, sample, debug_payload)
         return sample
 
     extractor_model_name = used_route.model_name
     extractor_base_url = used_route.base_url
     extractor_api_key = used_route.api_key
-    if args.extractor_model_explicit:
-        extractor_model_name = args.extractor_model_name
-    if args.extractor_base_url_explicit:
-        extractor_base_url = args.extractor_base_url
-    if args.extractor_api_key_explicit:
-        extractor_api_key = args.extractor_api_key
     extractor_client = build_client(
         api_key=extractor_api_key,
         base_url=extractor_base_url,
@@ -312,7 +269,7 @@ def process_one_sample(sample, args, prompt, routes, context_builder=None):
         "prompt_template": prompt,
         "analysis": response,
     }
-    print("[STAGE] extraction")
+    print("[STAGE] Extraction")
     extraction_start = perf_counter()
     extracted_res = extract_answer(
         sample["question"],
@@ -345,133 +302,45 @@ def process_one_sample(sample, args, prompt, routes, context_builder=None):
         "extraction_seconds": sample["timing_extraction_seconds"],
         "total_seconds": sample["timing_total_seconds"],
     }
-    write_debug_record(args, sample, debug_payload)
     return sample
 
 
-def build_arg_parser(default_context_builder="image"):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input_path", type=str, default="./data/samples.json")
-    parser.add_argument("--document_path", type=str, default="./data/documents")
-    parser.add_argument("--model_name", type=str, default=None)
-    parser.add_argument("--api_style", type=str, default="openai", choices=["openai", "gemini"])
-    parser.add_argument("--base_url", type=str, default=None)
-    parser.add_argument("--api_key", type=str, default=None)
-    parser.add_argument("--extractor_model_name", type=str, default=None)
-    parser.add_argument("--extractor_base_url", type=str, default=None)
-    parser.add_argument("--extractor_api_key", type=str, default=None)
-    parser.add_argument("--max_pages", type=int, default=120)
-    parser.add_argument("--resolution", type=int, default=144)
-    parser.add_argument("--max_try", type=int, default=10)
-    parser.add_argument("--max_tokens", type=int, default=1024)
-    parser.add_argument("--temperature", type=float, default=0.0)
-    parser.add_argument("--extractor_prompt_path", type=str, default="./eval/prompt_for_answer_extraction.md")
-    parser.add_argument("--output_path", type=str, default=None)
-    parser.add_argument("--results_dir", type=str, default="./results")
-    parser.add_argument("--tmp_dir", type=str, default="./tmp")
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--sample_id", type=str, default=None)
-    parser.add_argument("--sample_doc_id", type=str, default=None)
-    parser.add_argument("--sample_question", type=str, default=None)
-    parser.add_argument("--num_workers", type=int, default=1)
-    parser.add_argument("--route_base_urls", type=str, default=None)
-    parser.add_argument("--route_model_names", type=str, default=None)
-    parser.add_argument("--route_api_keys", type=str, default=None)
-    parser.add_argument("--route_labels", type=str, default=None)
-    parser.add_argument("--route_max_model_lens", type=str, default=None)
-    parser.add_argument("--debug_prompts", action="store_true")
-    parser.add_argument("--debug_dir", type=str, default=None)
-    parser.add_argument("--context_builder", type=str, default=default_context_builder, choices=["image", "ocr"])
-    return parser
+def run_mmlongbench(cfg):
+    benchmark_cfg = cfg.benchmarks
+    context_builder_name = cfg.baselines.name
+    model_name = resolve_model_name(cfg)
+    base_url = resolve_base_url(cfg)
+    api_key = resolve_api_key(cfg)
 
+    if not model_name:
+        raise ValueError("Missing model name. Set benchmarks.model_name in the Hydra config.")
 
-def run_mmlongbench(args):
-    args.baselines = {"name": args.context_builder}
-    local_env = load_local_env()
-    args.extractor_model_explicit = args.extractor_model_name is not None or "EXTRACTOR_MODEL_NAME" in local_env
-    args.extractor_base_url_explicit = args.extractor_base_url is not None or "EXTRACTOR_BASE_URL" in local_env
-    args.extractor_api_key_explicit = args.extractor_api_key is not None or "EXTRACTOR_API_KEY" in local_env
+    model_slug = re.sub(r"[^0-9a-zA-Z._-]+", "_", model_name)
+    baseline_slug = re.sub(r"[^0-9a-zA-Z._-]+", "_", context_builder_name)
+    output_path = os.path.join(benchmark_cfg.results_dir, f"res_{baseline_slug}_{model_slug}.json")
+    os.makedirs(benchmark_cfg.results_dir, exist_ok=True)
+    os.makedirs(benchmark_cfg.tmp_dir, exist_ok=True)
 
-    args.model_name = get_config_value(args.model_name, "MODEL_NAME", local_env=local_env)
-    args.base_url = get_config_value(args.base_url, "OPENROUTER_BASE_URL", local_env=local_env)
-    args.api_key = get_config_value(args.api_key, "OPENROUTER_API_KEY", local_env=local_env)
-    args.extractor_model_name = get_config_value(
-        args.extractor_model_name,
-        "EXTRACTOR_MODEL_NAME",
-        local_env=local_env,
-        default=args.model_name,
+    routes = build_routes(
+        model_name=model_name,
+        base_url=base_url,
+        api_key=api_key,
     )
-    args.extractor_base_url = get_config_value(
-        args.extractor_base_url,
-        "EXTRACTOR_BASE_URL",
-        local_env=local_env,
-        default=args.base_url,
-    )
-    args.extractor_api_key = get_config_value(
-        args.extractor_api_key,
-        "EXTRACTOR_API_KEY",
-        local_env=local_env,
-        default=args.api_key,
-    )
-    args.route_base_urls = get_config_value(args.route_base_urls, "ROUTE_BASE_URLS", local_env=local_env)
-    args.route_model_names = get_config_value(args.route_model_names, "ROUTE_MODEL_NAMES", local_env=local_env)
-    args.route_api_keys = get_config_value(args.route_api_keys, "ROUTE_API_KEYS", local_env=local_env)
-    args.route_labels = get_config_value(args.route_labels, "ROUTE_LABELS", local_env=local_env)
-    args.route_max_model_lens = get_config_value(args.route_max_model_lens, "ROUTE_MAX_MODEL_LENS", local_env=local_env)
 
-    if not args.model_name:
-        raise ValueError("Missing model name. Set --model_name or MODEL_NAME in .env.mmlongbench/.env.")
-
-    model_slug = re.sub(r"[^0-9a-zA-Z._-]+", "_", args.model_name)
-    if args.output_path is None:
-        result_prefix = "res_text" if args.context_builder == "ocr" else "res"
-        args.output_path = os.path.join(args.results_dir, f"{result_prefix}_{model_slug}.json")
-    os.makedirs(args.results_dir, exist_ok=True)
-    os.makedirs(args.tmp_dir, exist_ok=True)
-    if args.debug_prompts:
-        args.num_workers = 1
-        ensure_debug_dir(args)
-
-    if args.api_style == "openai":
-        routes = build_routes(
-            model_name=args.model_name,
-            base_url=args.base_url,
-            api_key=args.api_key,
-            route_model_names=args.route_model_names,
-            route_base_urls=args.route_base_urls,
-            route_api_keys=args.route_api_keys,
-            route_labels=args.route_labels,
-            route_max_model_lens=args.route_max_model_lens,
-        )
-    elif args.api_style == "gemini":
-        import google.generativeai as genai
-        args.gemini_client = genai.GenerativeModel(args.model_name)
-        args.gemini_config = genai.types.GenerationConfig(max_output_tokens=args.max_tokens, temperature=args.temperature)
-        routes = build_routes(
-            model_name=args.model_name,
-            base_url=args.base_url,
-            api_key=args.api_key,
-        )
-    else:
-        raise AssertionError()
-
-    with open(args.extractor_prompt_path, "r", encoding="utf-8") as f:
+    with open(EXTRACTOR_PROMPT_PATH, "r", encoding="utf-8") as f:
         prompt = f.read()
-    samples = load_samples(args)
-    context_builder = build_context_builder(args)
+    samples = load_samples(cfg, output_path)
+    context_builder = build_context_builder(cfg)
     
     # 计算已完成和待完成样本
     completed_count = sum(1 for s in samples if should_skip_sample(s))
     total_count = len(samples)
-    print(f"进度: {completed_count}/{total_count} 已完成")
+    print(f"Progress: {completed_count}/{total_count} Completed")
     pending_indices = [idx for idx, sample in enumerate(samples) if not should_skip_sample(sample)]
 
-    if args.api_style == "gemini":
-        args.num_workers = 1
-
-    with ThreadPoolExecutor(max_workers=max(1, args.num_workers)) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, benchmark_cfg.num_workers)) as executor:
         future_to_index = {
-            executor.submit(process_one_sample, samples[idx], args, prompt, routes, context_builder): idx for idx in pending_indices
+            executor.submit(process_one_sample, samples[idx], cfg, prompt, routes, context_builder): idx for idx in pending_indices
         }
         for future in tqdm(as_completed(future_to_index), total=len(future_to_index), desc="Processing"):
             idx = future_to_index[future]
@@ -482,7 +351,7 @@ def run_mmlongbench(args):
             print("Question: {}".format(sample["question"]))
             print("Route: {} | {} | {}".format(sample.get("used_route_label"), sample.get("used_base_url"), sample.get("used_model_name")))
             print(
-                "Timing: prepare={:.3f}s | generation={:.3f}s | extraction={:.3f}s | total={:.3f}s".format(
+                "Timing: Prepare={:.3f}s | Generation={:.3f}s | Extraction={:.3f}s | Total={:.3f}s".format(
                     sample.get("timing_prepare_seconds", 0.0),
                     sample.get("timing_generation_seconds", 0.0),
                     sample.get("timing_extraction_seconds", 0.0),
@@ -490,20 +359,11 @@ def run_mmlongbench(args):
                 )
             )
             print("Response: {}".format(sample["response"]))
-            print("Gt: {}\tPred: {}\tScore: {}".format(sample["answer"], sample["pred"], sample["score"]))
-            print("Avg acc: {}".format(acc))
-            print("Avg f1: {}".format(f1))
-            with open(args.output_path, 'w', encoding="utf-8") as f:
+            print("GT: {}\tPred: {}\tScore: {}".format(sample["answer"], sample["pred"], sample["score"]))
+            print("Avg Acc: {}".format(acc))
+            print("Avg F1: {}".format(f1))
+            with open(output_path, 'w', encoding="utf-8") as f:
                 json.dump(samples, f, ensure_ascii=False)
     
-    show_results(samples, show_path=re.sub(r"\.json$", ".txt", args.output_path))
+    show_results(samples, show_path=re.sub(r"\.json$", ".txt", output_path))
     return samples
-
-
-def main(argv=None):
-    args = build_arg_parser().parse_args(argv)
-    return run_mmlongbench(args)
-
-
-if __name__ == "__main__":
-    main()

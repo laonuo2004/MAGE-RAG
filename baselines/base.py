@@ -1,14 +1,12 @@
-from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 
-@dataclass
-class ContextBundle:
-    messages: Optional[Any] = None
-    prompt: Optional[str] = None
-    images: Optional[Any] = None
-    system_prompt: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+class ContextMessages(list):
+
+    def __init__(self, messages, metadata: Dict[str, Any] | None = None):
+        super().__init__(messages)
+        self.metadata = metadata or {}
+
 
 class ContextBuilder:
     name = None

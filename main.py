@@ -1,14 +1,22 @@
 import hydra
 import logging
+from pathlib import Path
+
+from dotenv import load_dotenv
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 from benchmarks.wrapper import run_benchmark
+
+
+load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     # Set the logging level based on the configuration
     logging.getLogger().setLevel(cfg.logging.level)
+    logging.getLogger("httpx").setLevel(cfg.logging.httpx_level)
+    logging.getLogger("httpcore").setLevel(cfg.logging.httpcore_level)
     
     logger = logging.getLogger(__name__)
     logger.info("Starting Benchmark With The Following Configuration:")

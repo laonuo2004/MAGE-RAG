@@ -67,7 +67,6 @@ class ContextBuilderTests(unittest.TestCase):
             wrapper.run_benchmark({
                 'benchmarks': {'name': 'longdocurl', 'qa_file': 'qa.jsonl', 'model_name': 'model'},
                 'baselines': {'name': 'ocr'},
-                'llm_providers': {'model_mapping': {}},
             })
         finally:
             wrapper._run_longdocurl = original_run_longdocurl

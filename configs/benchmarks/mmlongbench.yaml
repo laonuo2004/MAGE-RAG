@@ -1,10 +1,12 @@
 name: mmlongbench
 input_path: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/data/samples.json
 document_path: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/data/documents
-llm_provider: litellm
-model_name: Qwen2.5-VL-7B-Instruct
-max_pages: 120
-resolution: 144
 results_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/results
 tmp_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp
-num_workers: 1
+# process_mode: serial
+process_mode: parallel
+workers: 4 # only for parallel processing
+qa_model_name: Gemini-2.5-Flash-Lite
+extractor_model_name: Gemini-2.5-Flash-Lite
+max_pages: 120
+resolution: 144

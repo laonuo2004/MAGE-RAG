@@ -201,8 +201,8 @@ def eval_score(gt, pred, answer_type):
         if isinstance(pred[0], dict):
             pred = ["-".join([str(value) for key,value in _.items()]) for _ in pred]
 
-        print(len(gt), len(pred))
-        print(gt, pred)
+        # print(len(gt), len(pred))
+        # print(gt, pred)
         def cal_score_v3(gt, pred):
             gt = [get_clean_string(a) for a in gt]
             pred = [get_clean_string(a) for a in pred]

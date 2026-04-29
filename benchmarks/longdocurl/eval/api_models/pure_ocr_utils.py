@@ -4,7 +4,7 @@ import re
 from collections import defaultdict
 
 import logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("longdocurl.utils")
 
 PAGE_NO_PATTERN = re.compile(r"_(\d+)\.png$")
 OCR_TEXT_TEMPLATE = "page_no: {}\n{}\n\n"

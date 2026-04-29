@@ -1,10 +1,12 @@
 defaults:
   - _self_
-  - benchmarks: longdocurl
-  - baselines: ocr
+  - benchmarks: mmlongbench
+  - baselines: image
   - ablations: full
-  - /llm_providers@llm_providers.litellm: litellm
-  - /llm_providers@llm_providers.openrouter: openrouter
+
+litellm:
+  base_url: http://localhost:4000/v1
+  api_key: "none"
 
 project:
   name: logma-rag
@@ -16,6 +18,8 @@ paths:
 
 logging:
   level: DEBUG
+  httpx_level: WARNING
+  httpcore_level: WARNING
 
 hydra:
   job_logging:

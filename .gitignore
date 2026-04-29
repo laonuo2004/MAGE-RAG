@@ -211,3 +211,4 @@ outputs
 
 # API related
 configs/llm_providers/openrouter.yaml
+configs/litellm_config.yaml

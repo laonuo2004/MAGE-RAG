@@ -33,7 +33,7 @@ from pure_ocr_utils import *
 from baselines.wrapper import build_context_builder
 
 import logging
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("longdocurl.eval_api_models")
 
 vision_system_prompt = "You are an expert in visual document question-answering, please answer our questions based on the given images.\n"
 text_system_prompt = "You are an expert in document question-answering, please answer our questions based on the extracted text from the given pages.\n"
@@ -52,27 +52,6 @@ score_sample_file = BENCHMARK_ROOT / "evaluation_results/scores_sample_fine_grai
 prompt_sign = True
 client = None
 _worker_clients = {}
-
-
-def build_client(llm_provider, llm_provider_cfg=None):
-    llm_provider_cfg = llm_provider_cfg or {}
-    selected_cfg = llm_provider_cfg.get(llm_provider, {})
-    base_url = selected_cfg.get("base_url", None)
-    api_key = selected_cfg.get("api_key", None)
-    if base_url is None or api_key is None:
-        raise ValueError(f"Base URL or API key not found for llm_provider: {llm_provider}. Set llm_providers.{llm_provider}.")
-    return OpenAI(api_key=api_key, base_url=base_url)
-
-
-def get_worker_client(llm_provider, llm_provider_cfg=None):
-    if llm_provider not in _worker_clients:
-        _worker_clients[llm_provider] = build_client(llm_provider, llm_provider_cfg)
-    return _worker_clients[llm_provider]
-
-def get_model_name(model_name, llm_provider, llm_provider_cfg=None):
-    selected_cfg = llm_provider_cfg.get(llm_provider, {})
-    model_mapping = selected_cfg.get("model_mapping", {})
-    return model_mapping.get(model_name, model_name)
 
 def preprocess(input_datapath, output_datapath, image_prefix=None):
     dataset = read_jsonl_file(input_datapath)
@@ -113,6 +92,7 @@ def call_llm_messages(model_name, messages, client_obj, temperature=0.1, seed=42
         try:
             # TODO
             completion = client_obj.chat.completions.create(model=model_name, messages=messages, temperature=0., max_completion_tokens=max_tokens)
+            logger.debug(f"Raw LLM response: {completion.choices[0].message}")
             response = completion.choices[0].message.content
         except Exception as e:
             logger.error(f"Error With {e}, Response = {response}")
@@ -137,17 +117,19 @@ def build_default_results_file(cfg, benchmark_cfg):
 def eval_per_record(task):
     cfg, case, output_datapath = task
     benchmark_cfg = cfg.get('benchmarks', {})
-    llm_provider_cfg = cfg.get('llm_providers', {})
-    qa_client = get_worker_client(benchmark_cfg.get('qa_llm_provider'), llm_provider_cfg)
-    qa_model_name = get_model_name(benchmark_cfg.get('qa_model_name'), benchmark_cfg.get('qa_llm_provider'), llm_provider_cfg)
-    extractor_client = get_worker_client(benchmark_cfg.get('extractor_llm_provider'), llm_provider_cfg)
-    extractor_model_name = get_model_name(benchmark_cfg.get('extractor_model_name'), benchmark_cfg.get('extractor_llm_provider'), llm_provider_cfg)
+    # 统一使用 litellm 路由
+    client = OpenAI(api_key=cfg.litellm.api_key, base_url=cfg.litellm.base_url)
+    qa_model_name = benchmark_cfg.get('qa_model_name', None)
+    extractor_model_name = benchmark_cfg.get('extractor_model_name', None)
 
     question = case["question"]
+    # ========== 这一部分抽象程度较高，需要仔细分析理解 ==========
     context_builder = build_context_builder(cfg)
     messages = context_builder.build("longdocurl", case)
-    result = call_llm_messages(qa_model_name, messages, qa_client)
-
+    # =========================================================
+    logger.debug(f"Messages for question_id {case.get('question_id', 'unknown')}: {messages}")
+    result = call_llm_messages(qa_model_name, messages, client)
+    logger.debug(f"LLM response for question_id {case.get('question_id', 'unknown')}: {result}")
     if result is None:
         logger.warning(f"LLM returned None for question_id {case.get('question_id', 'unknown')}. Skipping this case.")
         return
@@ -156,7 +138,10 @@ def eval_per_record(task):
     with open(extractor_prompt_path) as f:
         extractor_prompt = f.read()
     prompt = extractor_prompt + "\nQuestion: " + question + "\nAnalysis: " + result
-    extractor_result = call_llm(extractor_model_name, prompt, None, extractor_client)
+    
+    logger.debug(f"Extractor prompt for question_id {case.get('question_id', 'unknown')}: {prompt}")
+    extractor_result = call_llm(extractor_model_name, prompt, None, client)
+    logger.debug(f"Extractor LLM response for question_id {case.get('question_id', 'unknown')}: {extractor_result}")
     try:
         import re
         concise_answer = re.findall(r"<concise_answer>(.*?)</concise_answer>", extractor_result, re.DOTALL)[0]
@@ -172,6 +157,7 @@ def eval_per_record(task):
     except:
         pred_ans = concise_answer
     if pred_ans == "Fail to extract":
+        logger.warning(f"Failed to extract concise answer for question_id {case.get('question_id', 'unknown')}.")
         score_v3 = 0.0
     else:
         score_v3 = eval_score(case["answer"], pred_ans, case["answer_format"])
@@ -231,9 +217,20 @@ def evaluate(cfg, dataset, output_datapath):
         for task in tasks:
             eval_per_record(task)
     elif process_mode == "parallel":
-        # Keep the logging level as configured instead of forcing INFO
+        # Disable DEBUG logs for console only in parallel mode to protect tqdm
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.setLevel(logging.INFO)
+
         with Pool(processes=workers) as pool:  # You can adjust the number of processes as needed
-            list(tqdm(pool.imap(eval_per_record, tasks), total=len(tasks)))
+            # Use imap_unordered so tqdm is updated as worker tasks finish
+            for _ in tqdm(pool.imap_unordered(eval_per_record, tasks), total=len(tasks), mininterval=0.5):
+                pass
+            
+        # Restore original level if needed (though Hydra will reset for next job)
+        for handler in logging.getLogger().handlers:
+            if isinstance(handler, logging.StreamHandler):
+                handler.setLevel(logging.DEBUG if cfg.logging.level == "DEBUG" else logging.INFO)
     else:
         logger.error("Process Mode Error!")
 
@@ -247,21 +244,12 @@ def run_longdocurl(cfg: DictConfig):
 
     dataset = preprocess(benchmark_cfg.qa_file, output_datapath, benchmark_cfg.image_prefix)
 
-    # try_cnt = 2
-    # while try_cnt:
-    #     try_cnt -= 1
-    #     try:
-    #         evaluate(
-    #             cfg,
-    #             dataset,
-    #             output_datapath
-    #         )
-    #     except Exception as e:
-    #         logger.error(f"An Error Occurred: {e}")
-    #         logger.info("Restarting Script...")
-    #         time.sleep(1)
-    
-    evaluate(cfg, dataset, output_datapath)
+    try:
+        evaluate(cfg, dataset, output_datapath)
+    except Exception as e:
+        logger.error(f"An Error Occurred During Evaluation: {e}")
+        logger.info("Evaluation Failed.")
+        return
 
     if not os.path.exists(output_datapath):
         logger.error(f"No Results Generated At: {output_datapath}")

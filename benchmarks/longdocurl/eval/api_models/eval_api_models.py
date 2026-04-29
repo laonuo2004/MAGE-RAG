@@ -92,7 +92,7 @@ def call_llm_messages(model_name, messages, client_obj, temperature=0.1, seed=42
     while response is None and max_try > 0:
         try:
             # TODO
-            completion = client_obj.chat.completions.create(model=model_name, messages=messages, temperature=0., max_completion_tokens=max_tokens)
+            completion = client_obj.chat.completions.create(model=model_name, messages=messages, temperature=0., max_tokens=max_tokens)
             logger.debug(f"Raw LLM response: {completion.choices[0].message}")
             response = completion.choices[0].message.content
         except Exception as e:

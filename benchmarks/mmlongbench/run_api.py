@@ -149,8 +149,10 @@ def process_one_sample(
     )
 
     prep_start = perf_counter()
+    # ========== 这一部分抽象程度较高，需要仔细分析理解 ==========
     context_builder = build_context_builder(cfg)
     messages = context_builder.build("mmlongbench", sample)
+    # =========================================================
     benchmark_cfg = cfg.benchmarks
     client = OpenAI(api_key=cfg.litellm.api_key, base_url=cfg.litellm.base_url)
     qa_model_name = benchmark_cfg.qa_model_name

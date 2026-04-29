@@ -37,7 +37,7 @@ class OcrContextBuilder(ContextBuilder):
         )
         return ContextMessages(
             [{'role': 'user', 'content': prompt}],
-            metadata={'context_builder': self.name, 'input_format': 'ocr'},
+            metadata={'context_builder': self.name},
         )
 
     def build_longdocurl(self, sample, **kwargs):
@@ -60,11 +60,5 @@ class OcrContextBuilder(ContextBuilder):
         )
         return ContextMessages(
             [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}],
-            metadata={
-                'context_builder': self.name,
-                'input_format': 'ocr',
-                'ocr_backend': 'pymupdf',
-                'ocr_pages_used': ocr_pages_used,
-                'system_prompt': TEXT_SYSTEM_PROMPT,
-            },
+            metadata={'context_builder': self.name},
         )

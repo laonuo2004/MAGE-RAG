@@ -1,5 +1,3 @@
-from omegaconf import OmegaConf
-
 from .image import ImageContextBuilder
 from .ocr import OcrContextBuilder
 
@@ -12,8 +10,7 @@ _CONTEXT_BUILDERS = {
 def build_context_builder(cfg):
     if cfg is None:
         raise ValueError('Config is required to build a context_builder.')
-    baseline_cfg = cfg.baselines
-    name = baseline_cfg.get('name')
+    name = cfg.baselines.name
     if name is None:
         raise ValueError('Baseline name not found. Please specify baselines.name in the config.')
     try:

@@ -187,10 +187,24 @@ def eval_acc_and_f1(samples):
     return acc, f1
 
 
+def ensure_list(value):
+    if isinstance(value, list):
+        return value
+    if value is None or value == "":
+        return []
+    try:
+        parsed = ast.literal_eval(value)
+    except Exception:
+        return [value]
+    if isinstance(parsed, list):
+        return parsed
+    return [parsed]
+
+
 def show_results(samples, show_path=None):
     for sample in samples:
-        sample["evidence_pages"] = eval(sample["evidence_pages"])
-        sample["evidence_sources"] = eval(sample["evidence_sources"])
+        sample["evidence_pages"] = ensure_list(sample.get("evidence_pages"))
+        sample["evidence_sources"] = ensure_list(sample.get("evidence_sources"))
     
     with open(show_path, 'w') as f:
         acc, f1 = eval_acc_and_f1(samples)

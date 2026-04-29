@@ -10,3 +10,4 @@ qa_model_name: Gemini-2.5-Flash-Lite
 extractor_model_name: Gemini-2.5-Flash-Lite
 max_pages: 120
 resolution: 144
+results_file: null

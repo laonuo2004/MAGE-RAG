@@ -49,7 +49,8 @@ class ImageContextBuilder(ContextBuilder):
         doc_name = re.sub(r'\.pdf$', '', sample['doc_id']).split('/')[-1]
         tmp_dir = self.cfg.benchmarks.tmp_dir
         os.makedirs(tmp_dir, exist_ok=True)
-        return os.path.join(tmp_dir, f'{doc_name}_{page_index + 1}.png')
+        resolution = self.cfg.benchmarks.resolution
+        return os.path.join(tmp_dir, f'{doc_name}_dpi{resolution}_{page_index + 1}.png')
 
     def _build_mmlongbench_openai(self, sample):
         import fitz
@@ -74,7 +75,7 @@ class ImageContextBuilder(ContextBuilder):
             content.append({'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{encoded_image}'}})
         return ContextMessages(
             [{'role': 'user', 'content': content}],
-            metadata={'context_builder': self.name, 'input_format': 'image'},
+            metadata={'context_builder': self.name},
         )
 
     def build_longdocurl(self, sample, **kwargs):
@@ -91,5 +92,5 @@ class ImageContextBuilder(ContextBuilder):
             ])
         return ContextMessages(
             [{'role': 'user', 'content': content}],
-            metadata={'context_builder': self.name, 'sample': sample},
+            metadata={'context_builder': self.name},
         )

@@ -31,6 +31,7 @@ from utils.calculate_metrics_fine_grained import calculate_metrics_fine_grained
 # from model import Gemini15ProInferencer, GPT4oInferencer, QwenVLMaxInferencer, O1PreviewInferencer, QwenMaxInferencer, Gemini31ProInferencer, GPT54Inferencer, ClaudeSonnet46Inferencer
 from pure_ocr_utils import *
 from baselines.wrapper import build_context_builder
+from utils.logging_utils import apply_logging_config
 
 import logging
 logger = logging.getLogger("longdocurl.eval_api_models")
@@ -87,7 +88,7 @@ def call_llm(model_name, prompt, urls, client_obj, temperature=0.1, seed=42, max
 
 def call_llm_messages(model_name, messages, client_obj, temperature=0.1, seed=42, max_tokens=4096):
     response = None
-    max_try = 2
+    max_try = 3
     while response is None and max_try > 0:
         try:
             # TODO
@@ -127,7 +128,6 @@ def eval_per_record(task):
     context_builder = build_context_builder(cfg)
     messages = context_builder.build("longdocurl", case)
     # =========================================================
-    logger.debug(f"Messages for question_id {case.get('question_id', 'unknown')}: {messages}")
     result = call_llm_messages(qa_model_name, messages, client)
     logger.debug(f"LLM response for question_id {case.get('question_id', 'unknown')}: {result}")
     if result is None:
@@ -219,23 +219,21 @@ def evaluate(cfg, dataset, output_datapath):
     elif process_mode == "parallel":
         # Disable DEBUG logs for console only in parallel mode to protect tqdm
         for handler in logging.getLogger().handlers:
-            if isinstance(handler, logging.StreamHandler):
+            if isinstance(handler, logging.StreamHandler) and handler.level in (logging.NOTSET, logging.DEBUG):
                 handler.setLevel(logging.INFO)
 
         with Pool(processes=workers) as pool:  # You can adjust the number of processes as needed
             # Use imap_unordered so tqdm is updated as worker tasks finish
             for _ in tqdm(pool.imap_unordered(eval_per_record, tasks), total=len(tasks), mininterval=0.5):
                 pass
-            
-        # Restore original level if needed (though Hydra will reset for next job)
-        for handler in logging.getLogger().handlers:
-            if isinstance(handler, logging.StreamHandler):
-                handler.setLevel(logging.DEBUG if cfg.logging.level == "DEBUG" else logging.INFO)
+
     else:
         logger.error("Process Mode Error!")
 
 
 def run_longdocurl(cfg: DictConfig):
+    apply_logging_config(cfg)
+
     benchmark_cfg = cfg.benchmarks
     output_datapath = benchmark_cfg.get("results_file") or build_default_results_file(cfg, benchmark_cfg)
     os.makedirs(os.path.dirname(output_datapath), exist_ok=True)

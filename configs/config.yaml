@@ -1,7 +1,7 @@
 defaults:
   - _self_
   - benchmarks: mmlongbench
-  - baselines: image
+  - baselines: ocr
   - ablations: full
 
 litellm:
@@ -20,6 +20,9 @@ logging:
   level: DEBUG
   httpx_level: WARNING
   httpcore_level: WARNING
+  openai_level: WARNING
+  pil_level: WARNING
+  pil_pngimageplugin_level: WARNING
 
 hydra:
   job_logging:

@@ -156,13 +156,11 @@ def eval_score(gt, pred, answer_type):
         pred = maybe_parse_literal(pred)
         if not isinstance(pred, list):
             pred = [pred]
-        print(len(gt), len(pred))
         if len(gt)!=len(pred):
             score = 0.0
         else:
             gt = sorted([get_clean_string(a) for a in gt])
             pred = sorted([get_clean_string(a) for a in pred])
-            print(gt, pred)
             if isfloat(gt[0]) or is_exact_match(gt[0]):
                 score = ("-".join(gt)=="-".join(pred))
             else:

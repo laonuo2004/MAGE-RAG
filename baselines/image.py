@@ -1,24 +1,12 @@
 import base64
 import os
-import re
 from io import BytesIO
-from threading import Lock
 
 from .base import ContextBuilder, ContextMessages
-
-
-_doc_locks = {}
-_doc_locks_guard = Lock()
+from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_png_page_path
 
 
 VISION_SYSTEM_PROMPT = 'You are an expert in visual document question-answering, please answer our questions based on the given images.\n'
-
-
-def _get_doc_lock(doc_id):
-    with _doc_locks_guard:
-        if doc_id not in _doc_locks:
-            _doc_locks[doc_id] = Lock()
-        return _doc_locks[doc_id]
 
 
 def _encode_pil_image_to_base64(img):
@@ -45,30 +33,22 @@ class ImageContextBuilder(ContextBuilder):
     def build_mmlongbench(self, sample, **kwargs):
         return self._build_mmlongbench_openai(sample)
 
-    def _render_page_path(self, sample, page_index):
-        doc_name = re.sub(r'\.pdf$', '', sample['doc_id']).split('/')[-1]
-        tmp_dir = self.cfg.benchmarks.tmp_dir
-        os.makedirs(tmp_dir, exist_ok=True)
-        resolution = self.cfg.benchmarks.resolution
-        return os.path.join(tmp_dir, f'{doc_name}_dpi{resolution}_{page_index + 1}.png')
-
     def _build_mmlongbench_openai(self, sample):
-        import fitz
         from PIL import Image
 
         question = sample['question']
         image_list = []
-        with _get_doc_lock(sample['doc_id']):
-            pdf_path = os.path.join(self.cfg.benchmarks.document_path, sample['doc_id'])
-            max_pages = self.cfg.benchmarks.max_pages
-            with fitz.open(pdf_path) as pdf:
-                for index, page in enumerate(pdf[:max_pages]):
-                    page_path = self._render_page_path(sample, index)
-                    if not os.path.exists(page_path):
-                        image = page.get_pixmap(dpi=self.cfg.benchmarks.resolution)
-                        image.save(page_path)
-                    image = Image.open(page_path)
-                    image_list.append(_encode_pil_image_to_base64(image))
+        for index in range(int(self.cfg.benchmarks.max_pages)):
+            page_path = mmlongbench_png_page_path(self.cfg.benchmarks, sample['doc_id'], index)
+            if not os.path.exists(page_path):
+                if index == 0:
+                    raise FileNotFoundError(
+                        f'Missing preprocessed PNG cache for doc_id={sample["doc_id"]}: {page_path}. '
+                        'Run benchmarks/mmlongbench/scripts/preprocess_mmlongbench.py before evaluating the image baseline.'
+                    )
+                break
+            image = Image.open(page_path)
+            image_list.append(_encode_pil_image_to_base64(image))
 
         content = [{'type': 'text', 'text': question}]
         for encoded_image in image_list:

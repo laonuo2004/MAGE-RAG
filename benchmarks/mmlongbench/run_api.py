@@ -160,9 +160,9 @@ def process_one_sample(
     prep_seconds = perf_counter() - prep_start
 
     generation_start = perf_counter()
-    
     response = request_llm(messages, qa_model_name, client)
     generation_seconds = perf_counter() - generation_start
+    logger.debug(f"Time taken for LLM to answer question_id {sample.get('question_id', 'unknown')}: {generation_seconds:.2f} seconds")
     sample["response"] = response
     sample["timing_prepare_seconds"] = round(prep_seconds, 3)
     sample["timing_generation_seconds"] = round(generation_seconds, 3)
@@ -176,6 +176,7 @@ def process_one_sample(
         client=client,
     )
     extraction_seconds = perf_counter() - extraction_start
+    logger.debug(f"Time taken for Extractor LLM to answer question_id {sample.get('question_id', 'unknown')}: {extraction_seconds:.2f} seconds")
     sample["extractor_model_name"] = extractor_model_name
     sample["extracted_res"] = extracted_res
     pred_ans = parse_extracted_answer(extracted_res)
@@ -262,7 +263,7 @@ def evaluate(cfg, samples, output_path):
                         
         with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
             future_to_index = {executor.submit(run_index, idx): idx for idx in pending_indices}
-            for future in tqdm(as_completed(future_to_index), total=len(future_to_index), desc="Processing"):
+            for future in tqdm(as_completed(future_to_index), total=len(future_to_index), desc="Processing", mininterval=1):
                 idx = future_to_index[future]
                 sample = future.result()
                 samples[idx] = sample

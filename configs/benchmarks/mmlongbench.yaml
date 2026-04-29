@@ -3,6 +3,8 @@ input_path: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/data/s
 document_path: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/data/documents
 results_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/results
 tmp_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp
+ocr_json_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/pdf_jsons
+pdf_png_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/pdf_pngs
 # process_mode: serial
 process_mode: parallel
 workers: 4 # only for parallel processing

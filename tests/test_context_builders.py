@@ -1,7 +1,9 @@
 import unittest
 import base64
+import json
 import os
 import tempfile
+from io import BytesIO
 
 from omegaconf import OmegaConf
 
@@ -66,6 +68,70 @@ class ContextBuilderTests(unittest.TestCase):
             wrapper._run_longdocurl = original_run_longdocurl
 
         self.assertEqual(captured[0].baselines.name, 'ocr')
+
+    def test_mmlongbench_ocr_reads_preprocessed_json_pages(self):
+        builder = build_context_builder(OmegaConf.create({
+            'baselines': {'name': 'ocr'},
+            'benchmarks': {'name': 'mmlongbench'},
+        }))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg = OmegaConf.create({
+                'benchmarks': {
+                    'tmp_dir': tmp_dir,
+                    'ocr_json_dir': os.path.join(tmp_dir, 'pdf_jsons'),
+                    'max_pages': 3,
+                }
+            })
+            builder.cfg = cfg
+            page_dir = os.path.join(tmp_dir, 'pdf_jsons', 'sample')
+            os.makedirs(page_dir)
+            with open(os.path.join(page_dir, 'page_0001.json'), 'w', encoding='utf-8') as f:
+                json.dump({'text': 'first page text'}, f)
+            with open(os.path.join(page_dir, 'page_0002.json'), 'w', encoding='utf-8') as f:
+                json.dump({'text': 'second page text'}, f)
+
+            messages = builder.build('mmlongbench', {'doc_id': 'sample.pdf', 'question': 'Question?'})
+
+        prompt = messages[0]['content']
+        self.assertIn('[Page 1]\nfirst page text', prompt)
+        self.assertIn('[Page 2]\nsecond page text', prompt)
+        self.assertNotIn('[Page 3]', prompt)
+
+    def test_mmlongbench_image_reads_preprocessed_png_pages(self):
+        from PIL import Image
+
+        buffer = BytesIO()
+        Image.new('RGB', (1, 1), color='white').save(buffer, format='PNG')
+        png_bytes = buffer.getvalue()
+        builder = build_context_builder(OmegaConf.create({
+            'baselines': {'name': 'image'},
+            'benchmarks': {'name': 'mmlongbench'},
+        }))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            cfg = OmegaConf.create({
+                'benchmarks': {
+                    'tmp_dir': tmp_dir,
+                    'pdf_png_dir': os.path.join(tmp_dir, 'pdf_pngs'),
+                    'max_pages': 3,
+                    'resolution': 144,
+                }
+            })
+            builder.cfg = cfg
+            page_dir = os.path.join(tmp_dir, 'pdf_pngs', 'sample')
+            os.makedirs(page_dir)
+            for page_no in (1, 2):
+                with open(os.path.join(page_dir, f'page_{page_no:04d}_dpi144.png'), 'wb') as f:
+                    f.write(png_bytes)
+
+            messages = builder.build('mmlongbench', {'doc_id': 'sample.pdf', 'question': 'What is shown?'})
+
+        content = messages[0]['content']
+        self.assertEqual(content[0], {'type': 'text', 'text': 'What is shown?'})
+        self.assertEqual(len(content), 3)
+        self.assertTrue(content[1]['image_url']['url'].startswith('data:image/jpeg;base64,'))
+        self.assertTrue(content[2]['image_url']['url'].startswith('data:image/jpeg;base64,'))
 
 
 if __name__ == '__main__':

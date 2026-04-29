@@ -128,7 +128,10 @@ def eval_per_record(task):
     context_builder = build_context_builder(cfg)
     messages = context_builder.build("longdocurl", case)
     # =========================================================
+    qa_start_time = time.time()
     result = call_llm_messages(qa_model_name, messages, client)
+    qa_end_time = time.time()
+    logger.debug(f"Time taken for LLM to answer question_id {case.get('question_id', 'unknown')}: {qa_end_time - qa_start_time:.2f} seconds")
     logger.debug(f"LLM response for question_id {case.get('question_id', 'unknown')}: {result}")
     if result is None:
         logger.warning(f"LLM returned None for question_id {case.get('question_id', 'unknown')}. Skipping this case.")
@@ -140,7 +143,10 @@ def eval_per_record(task):
     prompt = extractor_prompt + "\nQuestion: " + question + "\nAnalysis: " + result
     
     logger.debug(f"Extractor prompt for question_id {case.get('question_id', 'unknown')}: {prompt}")
+    extractor_start_time = time.time()
     extractor_result = call_llm(extractor_model_name, prompt, None, client)
+    extractor_end_time = time.time()
+    logger.debug(f"Time taken for Extractor LLM to answer question_id {case.get('question_id', 'unknown')}: {extractor_end_time - extractor_start_time:.2f} seconds")
     logger.debug(f"Extractor LLM response for question_id {case.get('question_id', 'unknown')}: {extractor_result}")
     try:
         import re
@@ -224,7 +230,7 @@ def evaluate(cfg, dataset, output_datapath):
 
         with Pool(processes=workers) as pool:  # You can adjust the number of processes as needed
             # Use imap_unordered so tqdm is updated as worker tasks finish
-            for _ in tqdm(pool.imap_unordered(eval_per_record, tasks), total=len(tasks), mininterval=0.5):
+            for _ in tqdm(pool.imap_unordered(eval_per_record, tasks), total=len(tasks), mininterval=1):
                 pass
 
     else:

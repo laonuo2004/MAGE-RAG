@@ -1,11 +1,13 @@
 import os
 import sys
 import pathlib
+import json
 
 CODE_DIR = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(CODE_DIR))
 
 from .base import ContextBuilder, ContextMessages
+from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path
 
 TEXT_SYSTEM_PROMPT = 'You are an expert in document question-answering, please answer our questions based on the extracted text from the given pages.\n'
 
@@ -14,18 +16,22 @@ class OcrContextBuilder(ContextBuilder):
     name = 'ocr'
 
     def build_mmlongbench(self, sample, **kwargs):
-        import fitz
-
         question = sample['question']
-        pdf_path = os.path.join(self.cfg.benchmarks.document_path, sample['doc_id'])
 
         page_blocks = []
-        with fitz.open(pdf_path) as pdf:
-            for page_idx, page in enumerate(pdf[:self.cfg.benchmarks.max_pages], start=1):
-                page_text = page.get_text('text').strip()
-                if not page_text:
-                    page_text = '[EMPTY PAGE]'
-                page_blocks.append(f'[Page {page_idx}]\n{page_text}')
+        for page_index in range(int(self.cfg.benchmarks.max_pages)):
+            page_path = mmlongbench_ocr_page_path(self.cfg.benchmarks, sample['doc_id'], page_index)
+            if not os.path.exists(page_path):
+                if page_index == 0:
+                    raise FileNotFoundError(
+                        f'Missing preprocessed OCR cache for doc_id={sample["doc_id"]}: {page_path}. '
+                        'Run benchmarks/mmlongbench/scripts/preprocess_mmlongbench.py before evaluating the ocr baseline.'
+                    )
+                break
+            with open(page_path, 'r', encoding='utf-8') as f:
+                page_payload = json.load(f)
+            page_text = str(page_payload.get('text') or '').strip() or '[EMPTY PAGE]'
+            page_blocks.append(f'[Page {page_index + 1}]\n{page_text}')
 
         document_text = '\n\n'.join(page_blocks)
         prompt = (

@@ -20,7 +20,7 @@ BENCHMARK_ROOT = pathlib.Path(__file__).resolve().parents[2]
 import json
 from tqdm import tqdm
 import time
-from multiprocessing import Pool
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 from openai import OpenAI
 
@@ -161,8 +161,13 @@ def build_default_results_file(cfg, benchmark_cfg):
     return os.path.join(BENCHMARK_ROOT, f"evaluation_results/api_models/results_{baseline_name}_{model_name}.jsonl")
 
 
+def append_result(sample, output_datapath):
+    with open(output_datapath, "a", encoding="utf-8") as output_review_file:
+        output_review_file.write(json.dumps(sample, ensure_ascii=False) + "\n")
+
+
 def eval_per_record(task):
-    cfg, case, output_datapath = task
+    cfg, case = task
     benchmark_cfg = cfg.get('benchmarks', {})
     # 统一使用 litellm 路由
     client = OpenAI(api_key=cfg.litellm.api_key, base_url=cfg.litellm.base_url)
@@ -181,7 +186,7 @@ def eval_per_record(task):
     logger.debug(f"LLM response for question_id {case.get('question_id', 'unknown')}: {result}")
     if result is None:
         logger.warning(f"LLM returned None for question_id {case.get('question_id', 'unknown')}. Skipping this case.")
-        return
+        return None
 
     # extract concise answer
     with open(extractor_prompt_path) as f:
@@ -210,7 +215,7 @@ def eval_per_record(task):
         pred_ans = concise_answer
     if pred_ans == "Fail to extract":
         logger.warning(f"Failed to extract concise answer for question_id {case.get('question_id', 'unknown')}.")
-        return
+        return None
     else:
         score_v3 = eval_score(case["answer"], pred_ans, case["answer_format"])
         
@@ -233,17 +238,22 @@ def eval_per_record(task):
     
     logger.debug("GT: {}\tPred: {}\tScore V3: {}".format(case["answer"], case["pred"], case["score_v3"]))
 
-    with open(output_datapath, "a") as output_review_file:
-        output_review_file.write(json.dumps(case, ensure_ascii=False) + "\n")
+    return case
+
+
+def handle_record_result(sample, output_datapath):
+    if sample is None:
+        return
+    append_result(sample, output_datapath)
 
 def evaluate(cfg, dataset, output_datapath):
     benchmark_cfg = cfg.get('benchmarks', {})
     process_mode = benchmark_cfg.get('process_mode', 'serial')
-    workers = benchmark_cfg.get('workers', 64)
+    workers = int(benchmark_cfg.get('workers', 64))
 
     logger.info(f"Evaluation Process Mode: {process_mode}")
     if process_mode == "parallel":
-        logger.info(f"Number Of Worker Processes: {workers}")
+        logger.info(f"Number Of Worker Threads: {workers}")
     
     if not len(dataset):
         logger.info("No Data To Process.")
@@ -251,7 +261,7 @@ def evaluate(cfg, dataset, output_datapath):
 
     tasks = []
     for case in dataset:
-        tasks.append((cfg, case, output_datapath))
+        tasks.append((cfg, case))
 
     baseline_name = cfg.baselines.name
     logger.info(f"Using Baseline: {baseline_name}")
@@ -261,17 +271,27 @@ def evaluate(cfg, dataset, output_datapath):
 
     if process_mode == "serial":
         for task in tasks:
-            eval_per_record(task)
+            sample = eval_per_record(task)
+            handle_record_result(sample, output_datapath)
     elif process_mode == "parallel":
-        # Disable DEBUG logs for console only in parallel mode to protect tqdm
-        for handler in logging.getLogger().handlers:
-            if isinstance(handler, logging.StreamHandler) and handler.level in (logging.NOTSET, logging.DEBUG):
-                handler.setLevel(logging.INFO)
 
-        with Pool(processes=workers) as pool:  # You can adjust the number of processes as needed
-            # Use imap_unordered so tqdm is updated as worker tasks finish
-            for _ in tqdm(pool.imap_unordered(eval_per_record, tasks), total=len(tasks), mininterval=1):
-                pass
+        def run_task(task):
+            try:
+                return eval_per_record(task)
+            except Exception:
+                _, case = task
+                logger.exception(
+                    "LongDocURL sample failed. question_id=%s doc_no=%s",
+                    case.get("question_id", "unknown"),
+                    case.get("doc_no"),
+                )
+                return None
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
+            future_to_task = {executor.submit(run_task, task): task for task in tasks}
+            for future in tqdm(as_completed(future_to_task), total=len(future_to_task), mininterval=1):
+                sample = future.result()
+                handle_record_result(sample, output_datapath)
 
     else:
         logger.error("Process Mode Error!")

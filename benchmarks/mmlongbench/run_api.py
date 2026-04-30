@@ -294,7 +294,7 @@ def evaluate(cfg, samples, output_path):
     logger.info("Progress: %s/%s completed", completed_count, total_count)
     logger.info("Evaluation Process Mode: %s", process_mode)
     if process_mode == "parallel":
-        logger.info("Number Of Worker Processes: %s", workers)
+        logger.info("Number Of Worker Threads: %s", workers)
 
     if not pending_indices:
         logger.info("No Data To Process.")
@@ -323,10 +323,6 @@ def evaluate(cfg, samples, output_path):
         return
 
     if process_mode == "parallel":
-        # Disable DEBUG logs for console only in parallel mode to protect tqdm
-        for handler in logging.getLogger().handlers:
-            if isinstance(handler, logging.StreamHandler) and handler.level in (logging.NOTSET, logging.DEBUG):
-                handler.setLevel(logging.INFO)
                         
         with ThreadPoolExecutor(max_workers=max(1, workers)) as executor:
             future_to_index = {executor.submit(run_index, idx): idx for idx in pending_indices}

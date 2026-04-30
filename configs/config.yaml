@@ -17,7 +17,7 @@ paths:
   output_root: outputs
 
 logging:
-  level: DEBUG
+  level: INFO
   httpx_level: WARNING
   httpcore_level: WARNING
   openai_level: WARNING

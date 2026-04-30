@@ -13,6 +13,8 @@ def extract_answer(
     model_name=None,
     client=None,
 ):
+    question = "" if question is None else str(question)
+    output = "" if output is None else str(output)
     prompt += "\n\nQuestion: " + question \
             + "\nAnalysis: " + output \
             + "\n\nPlease extract the final answer to the question based on the above analysis. Only provide the answer without any additional explanation."

@@ -44,6 +44,7 @@ project_prefix = "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/"
 
 extractor_prompt_path = os.path.join(project_prefix, "eval/prompt_for_answer_extraction.md")
 score_sample_file = BENCHMARK_ROOT / "evaluation_results/scores_sample_fine_grained.json"
+MAX_RETRY_ROUNDS = 3
 
 # model_name2inferencer = {"gpt4o": "GPT4oInferencer", "gemini15_pro": "Gemini15ProInferencer", "qwen_vl_max": "QwenVLMaxInferencer", \
 #     "o1_preview": "O1PreviewInferencer", "qwen_max": "QwenMaxInferencer", "gemini-3.1-pro-preview": "Gemini31ProInferencer", \
@@ -81,6 +82,47 @@ def read_jsonl_file(file_path):
             data.append(data_dict)
     return data
 
+
+def is_successful_result(sample):
+    return "score_v3" in sample and sample.get("pred") != "Fail to extract"
+
+
+def compact_results_file(output_datapath):
+    if not os.path.exists(output_datapath):
+        return
+    raw_count = 0
+    unique_results = {}
+    with open(output_datapath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            raw_count += 1
+            try:
+                sample = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            question_id = sample.get("question_id")
+            if question_id is not None and is_successful_result(sample):
+                unique_results[question_id] = sample
+    if len(unique_results) == raw_count:
+        return
+    with open(output_datapath, "w", encoding="utf-8") as f:
+        for sample in unique_results.values():
+            f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+
+
+def log_pending_samples(dataset):
+    for idx, sample in enumerate(dataset):
+        logger.warning(
+            "Pending LongDocURL sample after retries. idx=%s question_id=%s doc_no=%s question=%s",
+            idx,
+            sample.get("question_id", "unknown"),
+            sample.get("doc_no"),
+            sample.get("question"),
+        )
+
+
 def call_llm(model_name, prompt, urls, client_obj, temperature=0.1, seed=42, max_tokens=4096):
     msgs = get_msg_format(prompt, urls)
     return call_llm_messages(model_name, msgs, client_obj, temperature=temperature, seed=seed, max_tokens=max_tokens)
@@ -103,7 +145,11 @@ def call_llm_messages(model_name, messages, client_obj, temperature=0.1, seed=42
     return response
 
 def delete_generate_dataset(dataset, output_dataset):
-    finished_question_id_set = set([sample['question_id'] for sample in output_dataset])
+    finished_question_id_set = set([
+        sample['question_id']
+        for sample in output_dataset
+        if is_successful_result(sample)
+    ])
     unfinished_dataset = [sample for sample in dataset if sample['question_id'] not in finished_question_id_set]
     return unfinished_dataset
 
@@ -164,7 +210,7 @@ def eval_per_record(task):
         pred_ans = concise_answer
     if pred_ans == "Fail to extract":
         logger.warning(f"Failed to extract concise answer for question_id {case.get('question_id', 'unknown')}.")
-        score_v3 = 0.0
+        return
     else:
         score_v3 = eval_score(case["answer"], pred_ans, case["answer_format"])
         
@@ -187,14 +233,8 @@ def eval_per_record(task):
     
     logger.debug("GT: {}\tPred: {}\tScore V3: {}".format(case["answer"], case["pred"], case["score_v3"]))
 
-    if result is not None:  # Check if result is not None
-        try: # not json serialable
-            with open(output_datapath, "a") as output_review_file:
-                output_review_file.write(json.dumps(case, ensure_ascii=False) + "\n")
-        except Exception as e:
-            logger.error(f"Error: {e}")
-    else:
-        logger.error("Error")
+    with open(output_datapath, "a") as output_review_file:
+        output_review_file.write(json.dumps(case, ensure_ascii=False) + "\n")
 
 def evaluate(cfg, dataset, output_datapath):
     benchmark_cfg = cfg.get('benchmarks', {})
@@ -245,15 +285,28 @@ def run_longdocurl(cfg: DictConfig):
     os.makedirs(os.path.dirname(output_datapath), exist_ok=True)
         
     logger.info(f"Output Datapath: {output_datapath}")
+    compact_results_file(output_datapath)
+
+    for round_id in range(1, MAX_RETRY_ROUNDS + 1):
+        dataset = preprocess(benchmark_cfg.qa_file, output_datapath, benchmark_cfg.image_prefix)
+        if not dataset:
+            break
+        logger.info("LongDocURL retry round %s: %s samples pending", round_id, len(dataset))
+        try:
+            evaluate(cfg, dataset, output_datapath)
+        except Exception as e:
+            logger.error(f"An Error Occurred During Evaluation: {e}")
+            logger.info("Evaluation Failed.")
+            return
 
     dataset = preprocess(benchmark_cfg.qa_file, output_datapath, benchmark_cfg.image_prefix)
-
-    try:
-        evaluate(cfg, dataset, output_datapath)
-    except Exception as e:
-        logger.error(f"An Error Occurred During Evaluation: {e}")
-        logger.info("Evaluation Failed.")
-        return
+    if dataset:
+        logger.warning(
+            "LongDocURL stopped after %s retry rounds with %s samples still pending.",
+            MAX_RETRY_ROUNDS,
+            len(dataset),
+        )
+        log_pending_samples(dataset)
 
     if not os.path.exists(output_datapath):
         logger.error(f"No Results Generated At: {output_datapath}")

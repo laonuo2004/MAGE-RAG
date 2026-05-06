@@ -1,10 +1,5 @@
 import os
-import sys
-import pathlib
 import json
-
-CODE_DIR = pathlib.Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(CODE_DIR))
 
 from .base import ContextBuilder, ContextMessages
 from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path

@@ -1,0 +1,1 @@
+"""MMLongBench benchmark integration."""

@@ -2,11 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
-import sys
-import pathlib
-sys.path.append(str(pathlib.Path(__file__).absolute().parent.parent))
-
-from utils.utils_score_v3 import eval_score
+from benchmarks.longdocurl.utils.utils_score_v3 import eval_score
 
 def calculate_accuracy_fine_grained(samples, score_dict):
     for sample in samples:

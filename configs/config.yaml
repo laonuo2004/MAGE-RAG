@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - benchmarks: mmlongbench
+  - benchmarks: longdocurl
   - baselines: ocr
   - ablations: full
 

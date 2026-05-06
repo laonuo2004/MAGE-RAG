@@ -1,39 +1,17 @@
-import base64
 import os
-from io import BytesIO
 
 from .base import ContextBuilder, ContextMessages
+from baselines.utils.baselines_utils import encode_image_file_to_base64, encode_pil_image_to_base64
 from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_png_page_path
 
 
 VISION_SYSTEM_PROMPT = 'You are an expert in visual document question-answering, please answer our questions based on the given images.\n'
 
 
-def _encode_pil_image_to_base64(img):
-    if img.mode in ('RGBA', 'P'):
-        img = img.convert('RGB')
-    buffer = BytesIO()
-    img.save(buffer, format='JPEG')
-    return base64.b64encode(buffer.getvalue()).decode('utf-8')
-
-
-def _encode_image_file_to_base64(image_path):
-    if 'https' in image_path:
-        import requests
-
-        response = requests.get(image_path)
-        return base64.b64encode(response.content).decode('utf-8')
-    with open(image_path, 'rb') as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
-
-
 class ImageContextBuilder(ContextBuilder):
     name = 'image'
 
     def build_mmlongbench(self, sample, **kwargs):
-        return self._build_mmlongbench_openai(sample)
-
-    def _build_mmlongbench_openai(self, sample):
         from PIL import Image
 
         question = sample['question']
@@ -48,7 +26,7 @@ class ImageContextBuilder(ContextBuilder):
                     )
                 break
             image = Image.open(page_path)
-            image_list.append(_encode_pil_image_to_base64(image))
+            image_list.append(encode_pil_image_to_base64(image))
 
         content = [{'type': 'text', 'text': question}]
         for encoded_image in image_list:
@@ -68,7 +46,7 @@ class ImageContextBuilder(ContextBuilder):
         for index, image_path in enumerate(images or []):
             content.extend([
                 {'type': 'text', 'text': f'Below is the {index + 1}-th image (total {len(images)} images).\n'},
-                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{_encode_image_file_to_base64(image_path)}'}},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/png;base64,{encode_image_file_to_base64(image_path)}'}},
             ])
         return ContextMessages(
             [{'role': 'user', 'content': content}],

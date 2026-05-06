@@ -11,8 +11,8 @@ MODEL_DIR="/hy-tmp/Qwen3-VL-8B-Instruct"
 SERVED_MODEL_NAME="Qwen3-VL-8B-Instruct"
 PIP_INDEX_URL="https://mirrors.aliyun.com/pypi/simple/"
 
-MAX_MODEL_LEN=65536
-MAX_NUM_SEQS=4
+MAX_MODEL_LEN=2048
+MAX_NUM_SEQS=1
 MAX_NUM_BATCHED_TOKENS=2048
 PORT=8080
 
@@ -26,9 +26,9 @@ export CPU_ARCH=x86_64
 cd /
 mkdir -p "${WORKDIR}"
 
-python3 -m pip install -U pip
-python3 -m pip install -U uv
-python -m pip install --upgrade pip setuptools wheel
+python3 -m pip install -U pip -i "${PIP_INDEX_URL}"
+python3 -m pip install -U uv -i "${PIP_INDEX_URL}"
+python -m pip install --upgrade pip setuptools wheel -i "${PIP_INDEX_URL}"
 
 # =========================
 # Create virtual environment
@@ -80,17 +80,17 @@ export LD_LIBRARY_PATH="/usr/local/cuda/lib64:${LD_LIBRARY_PATH:-}"
 
 source "${VENV_DIR}/bin/activate"
 
-vllm serve "${MODEL_DIR}" \
-  --served-model-name "${SERVED_MODEL_NAME}" \
-  --host 0.0.0.0 \
-  --port ${PORT} \
-  --trust-remote-code \
-  --max-model-len ${MAX_MODEL_LEN} \
-  --gpu-memory-utilization 0.95 \
-  --max-num-seqs ${MAX_NUM_SEQS} \
-  --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} \
-  --limit-mm-per-prompt.video 0 \
-  --mm-processor-cache-gb 0 \
+vllm serve "${MODEL_DIR}" \\
+  --served-model-name "${SERVED_MODEL_NAME}" \\
+  --host 0.0.0.0 \\
+  --port ${PORT} \\
+  --trust-remote-code \\
+  --max-model-len ${MAX_MODEL_LEN} \\
+  --gpu-memory-utilization 0.95 \\
+  --max-num-seqs ${MAX_NUM_SEQS} \\
+  --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} \\
+  --limit-mm-per-prompt.video 0 \\
+  --mm-processor-cache-gb 0 \\
   --async-scheduling 
 EOF
 
@@ -100,4 +100,5 @@ echo "[INFO] Setup finished."
 echo "[INFO] Start server with:"
 echo "bash ${WORKDIR}/serve.sh"
 
-tmux new-session -d -s vllm "bash /vllm/serve.sh"
+tmux new-session -d -s vllm "bash ${WORKDIR}/serve.sh"
+tmux attach -t vllm

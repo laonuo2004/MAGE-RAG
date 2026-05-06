@@ -2,25 +2,20 @@ import os
 import re
 import json
 import pathlib
-import sys
 import logging
 from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import perf_counter
 
 CURRENT_DIR = pathlib.Path(__file__).resolve().parent
-if str(CURRENT_DIR) not in sys.path:
-    sys.path.insert(0, str(CURRENT_DIR))
 
 from tqdm import tqdm
 
-from eval.extract_answer import extract_answer
-from eval.eval_score import eval_score, eval_acc_and_f1, show_results
+from benchmarks.mmlongbench.eval.extract_answer import extract_answer
+from benchmarks.mmlongbench.eval.eval_score import eval_score, eval_acc_and_f1, show_results
 from utils.logging_utils import apply_logging_config
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
 
 from baselines.wrapper import build_context_builder
 
@@ -157,6 +152,14 @@ def process_one_sample(
     # ========== 这一部分抽象程度较高，需要仔细分析理解 ==========
     context_builder = build_context_builder(cfg)
     messages = context_builder.build("mmlongbench", sample)
+    if getattr(messages, "metadata", None):
+        existing_context_metadata = sample.get("context_metadata")
+        if not isinstance(existing_context_metadata, dict):
+            existing_context_metadata = {}
+        sample["context_metadata"] = {
+            **existing_context_metadata,
+            **messages.metadata,
+        }
     # =========================================================
     benchmark_cfg = cfg.benchmarks
     client = OpenAI(api_key=cfg.litellm.api_key, base_url=cfg.litellm.base_url)

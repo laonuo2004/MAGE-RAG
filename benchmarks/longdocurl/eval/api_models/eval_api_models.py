@@ -1,17 +1,6 @@
 import sys
 import pathlib
 
-from importlib_metadata import metadata
-
-EVAL = pathlib.Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(EVAL))
-BENCHMARK_ROOT = pathlib.Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(BENCHMARK_ROOT))
-BENCHMARKS_ROOT = pathlib.Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(BENCHMARKS_ROOT))
-CODE_WORKSPACE = pathlib.Path(__file__).resolve().parents[4]
-sys.path.insert(0, str(CODE_WORKSPACE))
-
 import os
 
 from omegaconf import DictConfig, OmegaConf
@@ -24,12 +13,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
 from openai import OpenAI
 
-from utils_api import *
-from utils.utils_score_v3 import *
-from utils.calculate_metrics import calculate_metrics
-from utils.calculate_metrics_fine_grained import calculate_metrics_fine_grained
+from benchmarks.longdocurl.eval.utils_api import get_msg_format
+from benchmarks.longdocurl.utils.utils_score_v3 import eval_score
+from benchmarks.longdocurl.utils.calculate_metrics import calculate_metrics
+from benchmarks.longdocurl.utils.calculate_metrics_fine_grained import calculate_metrics_fine_grained
 # from model import Gemini15ProInferencer, GPT4oInferencer, QwenVLMaxInferencer, O1PreviewInferencer, QwenMaxInferencer, Gemini31ProInferencer, GPT54Inferencer, ClaudeSonnet46Inferencer
-from pure_ocr_utils import *
 from baselines.wrapper import build_context_builder
 from utils.logging_utils import apply_logging_config
 
@@ -178,6 +166,14 @@ def eval_per_record(task):
     # ========== 这一部分抽象程度较高，需要仔细分析理解 ==========
     context_builder = build_context_builder(cfg)
     messages = context_builder.build("longdocurl", case)
+    if getattr(messages, "metadata", None):
+        existing_context_metadata = case.get("context_metadata")
+        if not isinstance(existing_context_metadata, dict):
+            existing_context_metadata = {}
+        case["context_metadata"] = {
+            **existing_context_metadata,
+            **messages.metadata,
+        }
     # =========================================================
     qa_start_time = time.time()
     result = call_llm_messages(qa_model_name, messages, client)

@@ -5,6 +5,8 @@ import unittest
 
 from omegaconf import OmegaConf
 
+import benchmarks.mmlongbench.run_api as run_api
+from baselines.base import ContextMessages
 from benchmarks.mmlongbench.run_api import (
     append_result,
     build_default_results_file,
@@ -148,6 +150,59 @@ class MMLongBenchResultsTests(unittest.TestCase):
         with self.assertLogs("mmlongbench.run_api", level="WARNING"):
             self.assertEqual(request_llm([], "model", client), "ok")
         self.assertEqual(client.chat.completions.calls, 2)
+
+    def test_process_one_sample_persists_context_metadata(self):
+        class Builder:
+            def build(self, benchmark_name, sample):
+                return ContextMessages(
+                    [{"role": "user", "content": "prompt"}],
+                    metadata={"context_builder": "mock", "retrieved_pages": [{"page_index": 0}]},
+                )
+
+        cfg = OmegaConf.create({
+            "baselines": {"name": "mock"},
+            "benchmarks": {
+                "qa_model_name": "qa-model",
+                "extractor_model_name": "extractor-model",
+            },
+            "litellm": {
+                "api_key": "key",
+                "base_url": "http://localhost",
+            },
+        })
+        sample = {
+            "doc_id": "d1",
+            "question": "q?",
+            "answer": "a",
+            "answer_format": "Str",
+        }
+
+        original_build_context_builder = run_api.build_context_builder
+        original_openai = run_api.OpenAI
+        original_request_llm = run_api.request_llm
+        original_extract_answer = run_api.extract_answer
+        original_eval_score = run_api.eval_score
+        try:
+            run_api.build_context_builder = lambda cfg: Builder()
+            run_api.OpenAI = lambda **kwargs: object()
+            run_api.request_llm = lambda messages, model_name, client: "analysis"
+            run_api.extract_answer = lambda question, response, prompt, model_name, client: (
+                "Extracted answer: a\nAnswer format: Str"
+            )
+            run_api.eval_score = lambda answer, pred, answer_format: 1.0
+
+            result = run_api.process_one_sample(sample, cfg, "extractor prompt")
+        finally:
+            run_api.build_context_builder = original_build_context_builder
+            run_api.OpenAI = original_openai
+            run_api.request_llm = original_request_llm
+            run_api.extract_answer = original_extract_answer
+            run_api.eval_score = original_eval_score
+
+        self.assertEqual(
+            result["context_metadata"],
+            {"context_builder": "mock", "retrieved_pages": [{"page_index": 0}]},
+        )
 
 
 if __name__ == "__main__":

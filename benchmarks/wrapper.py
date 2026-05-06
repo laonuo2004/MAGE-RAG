@@ -1,4 +1,7 @@
 import logging
+
+from utils.config_utils import require_config_value
+
 logger = logging.getLogger(__name__)
 
 def _run_mmlongbench(cfg):
@@ -11,8 +14,7 @@ def _run_longdocurl(cfg):
     return run_longdocurl(cfg)
 
 def run_benchmark(cfg):
-    benchmark_cfg = cfg.get('benchmarks', {})
-    benchmark_name = benchmark_cfg.get('name', None)
+    benchmark_name = require_config_value(cfg, 'benchmarks.name')
     if benchmark_name == 'mmlongbench':
         logger.info("Running MMLongBench Benchmark")
         return _run_mmlongbench(cfg)

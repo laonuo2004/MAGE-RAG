@@ -15,6 +15,7 @@ from benchmarks.mmlongbench.run_api import (
     read_jsonl_results,
     request_llm,
 )
+from utils.config_utils import require_config_value
 
 
 class MMLongBenchResultsTests(unittest.TestCase):
@@ -26,9 +27,10 @@ class MMLongBenchResultsTests(unittest.TestCase):
                 "qa_model_name": "Qwen/Qwen2.5-VL-7B-Instruct",
             },
         })
+        benchmark_cfg = require_config_value(cfg, "benchmarks")
 
         self.assertEqual(
-            build_default_results_file(cfg, cfg.benchmarks),
+            build_default_results_file(cfg, benchmark_cfg),
             "/tmp/mmlongbench-results/res_image_Qwen_Qwen2.5_VL_7B_Instruct.jsonl",
         )
 
@@ -178,13 +180,13 @@ class MMLongBenchResultsTests(unittest.TestCase):
         }
 
         original_build_context_builder = run_api.build_context_builder
-        original_openai = run_api.OpenAI
+        original_build_openai_client = run_api.build_openai_client
         original_request_llm = run_api.request_llm
         original_extract_answer = run_api.extract_answer
         original_eval_score = run_api.eval_score
         try:
             run_api.build_context_builder = lambda cfg: Builder()
-            run_api.OpenAI = lambda **kwargs: object()
+            run_api.build_openai_client = lambda cfg: object()
             run_api.request_llm = lambda messages, model_name, client: "analysis"
             run_api.extract_answer = lambda question, response, prompt, model_name, client: (
                 "Extracted answer: a\nAnswer format: Str"
@@ -194,7 +196,7 @@ class MMLongBenchResultsTests(unittest.TestCase):
             result = run_api.process_one_sample(sample, cfg, "extractor prompt")
         finally:
             run_api.build_context_builder = original_build_context_builder
-            run_api.OpenAI = original_openai
+            run_api.build_openai_client = original_build_openai_client
             run_api.request_llm = original_request_llm
             run_api.extract_answer = original_extract_answer
             run_api.eval_score = original_eval_score

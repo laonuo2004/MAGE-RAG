@@ -3,7 +3,7 @@ import pathlib
 
 import os
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 BENCHMARK_ROOT = pathlib.Path(__file__).resolve().parents[2]
 import json
@@ -11,12 +11,13 @@ from tqdm import tqdm
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import datetime
-from openai import OpenAI
 
 from benchmarks.longdocurl.eval.utils_api import get_msg_format
 from benchmarks.longdocurl.utils.utils_score_v3 import eval_score
 from benchmarks.longdocurl.utils.calculate_metrics import calculate_metrics
 from benchmarks.longdocurl.utils.calculate_metrics_fine_grained import calculate_metrics_fine_grained
+from utils.config_utils import get_config_value, require_config_value
+from utils.llm_utils import build_openai_client, call_llm_messages as request_llm_messages
 # from model import Gemini15ProInferencer, GPT4oInferencer, QwenVLMaxInferencer, O1PreviewInferencer, QwenMaxInferencer, Gemini31ProInferencer, GPT54Inferencer, ClaudeSonnet46Inferencer
 from baselines.wrapper import build_context_builder
 from utils.logging_utils import apply_logging_config
@@ -117,20 +118,16 @@ def call_llm_extract(model_name, prompt, urls, client_obj, temperature=0.1, seed
 
 
 def call_llm_messages(model_name, messages, client_obj, temperature=0.1, seed=42, max_tokens=1024):
-    response = None
-    max_try = 3
-    while response is None and max_try > 0:
-        try:
-            # TODO
-            completion = client_obj.chat.completions.create(model=model_name, messages=messages, temperature=0., max_tokens=max_tokens)
-            logger.debug(f"Raw LLM response: {completion.choices[0].message}")
-            response = completion.choices[0].message.content
-        except Exception as e:
-            logger.error(f"Error With {e}, Response = {response}")
-            max_try -= 1
-            response = None
-
-    return response
+    return request_llm_messages(
+        client_obj,
+        model_name,
+        messages,
+        temperature=0.0,
+        max_tokens=max_tokens,
+        retries=3,
+        logger=logger,
+        log_prefix="LongDocURL generation",
+    )
 
 def delete_generate_dataset(dataset, output_dataset):
     finished_question_id_set = set([
@@ -143,9 +140,10 @@ def delete_generate_dataset(dataset, output_dataset):
 
 
 def build_default_results_file(cfg, benchmark_cfg):
-    baseline_name = cfg.baselines.name
+    baseline_name = require_config_value(cfg, 'baselines.name')
     # 我们不根据 extractor_model_name 来命名结果，因为没有太大影响
-    model_name = benchmark_cfg.qa_model_name.replace("/", "_").replace(":free", "").replace("-", "_")
+    qa_model_name = require_config_value(benchmark_cfg, 'qa_model_name')
+    model_name = qa_model_name.replace("/", "_").replace(":free", "").replace("-", "_")
     return os.path.join(BENCHMARK_ROOT, f"evaluation_results/api_models/results_{baseline_name}_{model_name}.jsonl")
 
 
@@ -156,11 +154,11 @@ def append_result(sample, output_datapath):
 
 def eval_per_record(task):
     cfg, case = task
-    benchmark_cfg = cfg.get('benchmarks', {})
+    benchmark_cfg = require_config_value(cfg, 'benchmarks')
     # 统一使用 litellm 路由
-    client = OpenAI(api_key=cfg.litellm.api_key, base_url=cfg.litellm.base_url)
-    qa_model_name = benchmark_cfg.get('qa_model_name', None)
-    extractor_model_name = benchmark_cfg.get('extractor_model_name', None)
+    client = build_openai_client(cfg)
+    qa_model_name = require_config_value(benchmark_cfg, 'qa_model_name')
+    extractor_model_name = require_config_value(benchmark_cfg, 'extractor_model_name')
 
     question = case["question"]
     # ========== 这一部分抽象程度较高，需要仔细分析理解 ==========
@@ -243,9 +241,9 @@ def handle_record_result(sample, output_datapath):
     append_result(sample, output_datapath)
 
 def evaluate(cfg, dataset, output_datapath):
-    benchmark_cfg = cfg.get('benchmarks', {})
-    process_mode = benchmark_cfg.get('process_mode', 'serial')
-    workers = int(benchmark_cfg.get('workers', 64))
+    benchmark_cfg = require_config_value(cfg, 'benchmarks')
+    process_mode = get_config_value(benchmark_cfg, 'process_mode', 'serial')
+    workers = int(get_config_value(benchmark_cfg, 'workers', 64))
 
     logger.info(f"Evaluation Process Mode: {process_mode}")
     if process_mode == "parallel":
@@ -259,7 +257,7 @@ def evaluate(cfg, dataset, output_datapath):
     for case in dataset:
         tasks.append((cfg, case))
 
-    baseline_name = cfg.baselines.name
+    baseline_name = require_config_value(cfg, 'baselines.name')
     logger.info(f"Using Baseline: {baseline_name}")
 
     start_time = datetime.datetime.now()
@@ -296,15 +294,19 @@ def evaluate(cfg, dataset, output_datapath):
 def run_longdocurl(cfg: DictConfig):
     apply_logging_config(cfg)
 
-    benchmark_cfg = cfg.benchmarks
-    output_datapath = benchmark_cfg.get("results_file") or build_default_results_file(cfg, benchmark_cfg)
+    benchmark_cfg = require_config_value(cfg, 'benchmarks')
+    output_datapath = get_config_value(benchmark_cfg, 'results_file') or build_default_results_file(cfg, benchmark_cfg)
     os.makedirs(os.path.dirname(output_datapath), exist_ok=True)
         
     logger.info(f"Output Datapath: {output_datapath}")
     compact_results_file(output_datapath)
 
     for round_id in range(1, MAX_RETRY_ROUNDS + 1):
-        dataset = preprocess(benchmark_cfg.qa_file, output_datapath, benchmark_cfg.image_prefix)
+        dataset = preprocess(
+            require_config_value(benchmark_cfg, 'qa_file'),
+            output_datapath,
+            get_config_value(benchmark_cfg, 'image_prefix'),
+        )
         if not dataset:
             break
         logger.info("LongDocURL retry round %s: %s samples pending", round_id, len(dataset))
@@ -315,7 +317,11 @@ def run_longdocurl(cfg: DictConfig):
             logger.info("Evaluation Failed.")
             return
 
-    dataset = preprocess(benchmark_cfg.qa_file, output_datapath, benchmark_cfg.image_prefix)
+    dataset = preprocess(
+        require_config_value(benchmark_cfg, 'qa_file'),
+        output_datapath,
+        get_config_value(benchmark_cfg, 'image_prefix'),
+    )
     if dataset:
         logger.warning(
             "LongDocURL stopped after %s retry rounds with %s samples still pending.",

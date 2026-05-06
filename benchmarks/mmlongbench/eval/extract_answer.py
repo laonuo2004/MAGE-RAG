@@ -1,9 +1,7 @@
-import time
-import traceback
-
-from fastapi import logger
-from openai import OpenAI
 import logging
+
+from utils.llm_utils import call_llm_messages
+
 logger = logging.getLogger("mmlongbench.extract_answer")
 
 def extract_answer(
@@ -26,21 +24,16 @@ def extract_answer(
         }
     ]
     logger.debug("Prompt messages for answer extraction: %s", messages)
-    response = None
-    max_try = 3
-    while response is None and max_try > 0:
-        try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                temperature=0.0,
-                max_tokens=256,
-            )
-            logger.debug("Raw response from LLM for answer extraction: %s", response.choices[0].message)
-            response = response.choices[0].message.content
-        except Exception:
-            logger.warning("Error during answer extraction: %s, left %s attempts.", traceback.format_exc(), max_try - 1)
-            max_try -= 1
+    response = call_llm_messages(
+        client,
+        model_name,
+        messages,
+        temperature=0.0,
+        max_tokens=256,
+        retries=3,
+        logger=logger,
+        log_prefix="MMLongBench answer extraction",
+    )
 
     if response is None:
         logger.error("Failed to extract answer after multiple attempts.")

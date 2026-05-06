@@ -9,7 +9,7 @@ from omegaconf import OmegaConf
 from safetensors.torch import save_file
 import torch
 
-from baselines.utils.baselines_utils import encode_pil_image_to_base64
+from baselines.utils.benchmarks_related import encode_pil_image_to_base64
 from baselines.wrapper import build_context_builder
 from benchmarks import wrapper
 

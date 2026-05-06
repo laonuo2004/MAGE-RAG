@@ -3,6 +3,7 @@ import json
 
 from .base import ContextBuilder, ContextMessages
 from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path
+from utils.config_utils import require_config_value
 
 TEXT_SYSTEM_PROMPT = 'You are an expert in document question-answering, please answer our questions based on the extracted text from the given pages.\n'
 
@@ -12,10 +13,11 @@ class OcrContextBuilder(ContextBuilder):
 
     def build_mmlongbench(self, sample, **kwargs):
         question = sample['question']
+        benchmark_cfg = require_config_value(self.cfg, 'benchmarks')
 
         page_blocks = []
-        for page_index in range(int(self.cfg.benchmarks.max_pages)):
-            page_path = mmlongbench_ocr_page_path(self.cfg.benchmarks, sample['doc_id'], page_index)
+        for page_index in range(int(require_config_value(benchmark_cfg, 'max_pages'))):
+            page_path = mmlongbench_ocr_page_path(benchmark_cfg, sample['doc_id'], page_index)
             if not os.path.exists(page_path):
                 if page_index == 0:
                     raise FileNotFoundError(
@@ -45,10 +47,11 @@ class OcrContextBuilder(ContextBuilder):
         from benchmarks.longdocurl.eval.api_models.pure_ocr_utils import get_pure_ocr_prompt_pymupdf
 
         question = sample['question']
+        benchmark_cfg = require_config_value(self.cfg, 'benchmarks')
         ocr_prompt, ocr_pages_used = get_pure_ocr_prompt_pymupdf(
             sample['doc_no'],
             images=sample.get('images'),
-            ocr_json_dir=self.cfg.benchmarks.ocr_json_dir,
+            ocr_json_dir=require_config_value(benchmark_cfg, 'ocr_json_dir'),
             start_page=sample['start_end_idx'][0],
             end_page=sample['start_end_idx'][1],
         )

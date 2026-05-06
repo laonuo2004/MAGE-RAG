@@ -1,8 +1,9 @@
 import os
 
 from .base import ContextBuilder, ContextMessages
-from baselines.utils.baselines_utils import encode_image_file_to_base64, encode_pil_image_to_base64
+from baselines.utils.benchmarks_related import encode_image_file_to_base64, encode_pil_image_to_base64
 from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_png_page_path
+from utils.config_utils import require_config_value
 
 
 VISION_SYSTEM_PROMPT = 'You are an expert in visual document question-answering, please answer our questions based on the given images.\n'
@@ -15,9 +16,10 @@ class ImageContextBuilder(ContextBuilder):
         from PIL import Image
 
         question = sample['question']
+        benchmark_cfg = require_config_value(self.cfg, 'benchmarks')
         image_list = []
-        for index in range(int(self.cfg.benchmarks.max_pages)):
-            page_path = mmlongbench_png_page_path(self.cfg.benchmarks, sample['doc_id'], index)
+        for index in range(int(require_config_value(benchmark_cfg, 'max_pages'))):
+            page_path = mmlongbench_png_page_path(benchmark_cfg, sample['doc_id'], index)
             if not os.path.exists(page_path):
                 if index == 0:
                     raise FileNotFoundError(

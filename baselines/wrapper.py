@@ -1,6 +1,7 @@
 from .image import ImageContextBuilder
 from .ocr import OcrContextBuilder
 from .m3docrag import m3docragContextBuilder
+from utils.config_utils import require_config_value
 
 _CONTEXT_BUILDERS = {
     'image': ImageContextBuilder,
@@ -14,9 +15,7 @@ _CONTEXT_BUILDERS = {
 def build_context_builder(cfg):
     if cfg is None:
         raise ValueError('Config is required to build a context_builder.')
-    name = cfg.baselines.name
-    if name is None:
-        raise ValueError('Baseline name not found. Please specify baselines.name in the config.')
+    name = require_config_value(cfg, 'baselines.name')
     try:
         builder_cls = _CONTEXT_BUILDERS[name]
     except KeyError as exc:

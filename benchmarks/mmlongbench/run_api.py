@@ -3,7 +3,6 @@ import re
 import json
 import pathlib
 import logging
-from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from time import perf_counter
 
@@ -13,6 +12,8 @@ from tqdm import tqdm
 
 from benchmarks.mmlongbench.eval.extract_answer import extract_answer
 from benchmarks.mmlongbench.eval.eval_score import eval_score, eval_acc_and_f1, show_results
+from utils.config_utils import get_config_value, require_config_value
+from utils.llm_utils import build_openai_client, call_llm_messages
 from utils.logging_utils import apply_logging_config
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -77,10 +78,11 @@ def read_jsonl_results(path):
 
 
 def load_samples(cfg, output_path):
-    benchmark_cfg = cfg.benchmarks
-    with open(benchmark_cfg.input_path, "r", encoding="utf-8") as f:
+    benchmark_cfg = require_config_value(cfg, 'benchmarks')
+    input_path = require_config_value(benchmark_cfg, 'input_path')
+    with open(input_path, "r", encoding="utf-8") as f:
         samples = json.load(f)
-    logger.info("Loaded %s samples from %s", len(samples), benchmark_cfg.input_path)
+    logger.info("Loaded %s samples from %s", len(samples), input_path)
     
     existing_samples = read_jsonl_results(output_path)
     if existing_samples:
@@ -102,30 +104,17 @@ def load_samples(cfg, output_path):
 
 
 def request_llm(messages, model_name, client):
-    last_error = None
-    for attempt in range(1, MAX_TRY + 1):
-        try:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                max_tokens=MAX_TOKENS,
-                temperature=TEMPERATURE,
-            )
-            logger.debug("Raw LLM response: %s", response.choices[0].message)
-            content = response.choices[0].message.content
-            if content is None:
-                raise ValueError("LLM response content is None")
-            return content
-        except Exception as exc:
-            last_error = exc
-            logger.warning(
-                "MMLongBench generation failed. model=%s attempt=%s/%s error=%s",
-                model_name,
-                attempt,
-                MAX_TRY,
-                exc,
-            )
-    return f"Failed: {last_error}"
+    return call_llm_messages(
+        client,
+        model_name,
+        messages,
+        max_tokens=MAX_TOKENS,
+        temperature=TEMPERATURE,
+        retries=MAX_TRY,
+        logger=logger,
+        log_prefix="MMLongBench generation",
+        failure_value=lambda exc: f"Failed: {exc}",
+    )
 
 
 def process_one_sample(
@@ -161,10 +150,10 @@ def process_one_sample(
             **messages.metadata,
         }
     # =========================================================
-    benchmark_cfg = cfg.benchmarks
-    client = OpenAI(api_key=cfg.litellm.api_key, base_url=cfg.litellm.base_url)
-    qa_model_name = benchmark_cfg.qa_model_name
-    extractor_model_name = benchmark_cfg.extractor_model_name
+    benchmark_cfg = require_config_value(cfg, 'benchmarks')
+    client = build_openai_client(cfg)
+    qa_model_name = require_config_value(benchmark_cfg, 'qa_model_name')
+    extractor_model_name = require_config_value(benchmark_cfg, 'extractor_model_name')
     prep_seconds = perf_counter() - prep_start
 
     generation_start = perf_counter()
@@ -204,9 +193,10 @@ def process_one_sample(
 
 
 def build_default_results_file(cfg, benchmark_cfg):
-    baseline_name = cfg.baselines.name
-    model_name = benchmark_cfg.qa_model_name.replace("/", "_").replace(":free", "").replace("-", "_")
-    return os.path.join(benchmark_cfg.results_dir, f"res_{baseline_name}_{model_name}.jsonl")
+    baseline_name = require_config_value(cfg, 'baselines.name')
+    qa_model_name = require_config_value(benchmark_cfg, 'qa_model_name')
+    model_name = qa_model_name.replace("/", "_").replace(":free", "").replace("-", "_")
+    return os.path.join(require_config_value(benchmark_cfg, 'results_dir'), f"res_{baseline_name}_{model_name}.jsonl")
 
 
 def append_result(sample, output_path):
@@ -283,9 +273,9 @@ def log_sample_result(sample, samples):
 
 
 def evaluate(cfg, samples, output_path):
-    benchmark_cfg = cfg.benchmarks
-    process_mode = benchmark_cfg.process_mode
-    workers = int(benchmark_cfg.workers)
+    benchmark_cfg = require_config_value(cfg, 'benchmarks')
+    process_mode = require_config_value(benchmark_cfg, 'process_mode')
+    workers = int(require_config_value(benchmark_cfg, 'workers'))
 
     completed_count = sum(1 for s in samples if should_skip_sample(s))
     total_count = len(samples)
@@ -341,10 +331,10 @@ def evaluate(cfg, samples, output_path):
 def run_mmlongbench(cfg):
     apply_logging_config(cfg)
 
-    benchmark_cfg = cfg.benchmarks
-    output_path = benchmark_cfg.results_file or build_default_results_file(cfg, benchmark_cfg)
-    os.makedirs(benchmark_cfg.results_dir, exist_ok=True)
-    os.makedirs(benchmark_cfg.tmp_dir, exist_ok=True)
+    benchmark_cfg = require_config_value(cfg, 'benchmarks')
+    output_path = get_config_value(benchmark_cfg, 'results_file') or build_default_results_file(cfg, benchmark_cfg)
+    os.makedirs(require_config_value(benchmark_cfg, 'results_dir'), exist_ok=True)
+    os.makedirs(require_config_value(benchmark_cfg, 'tmp_dir'), exist_ok=True)
     output_dir = os.path.dirname(output_path)
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)

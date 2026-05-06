@@ -2,9 +2,9 @@ name: longdocurl
 qa_file: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl
 # process_mode: serial
 process_mode: parallel
-workers: 8 # only for parallel processing
+workers: 64 # only for parallel processing
 ocr_json_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_jsons/4000-4999
 image_prefix: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999
-qa_model_name: Gemini-2.5-Flash-Lite
+qa_model_name: Qwen3-VL-8B-Instruct
 extractor_model_name: Gemini-2.5-Flash-Lite
 results_file: null

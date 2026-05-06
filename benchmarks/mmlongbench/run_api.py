@@ -196,6 +196,9 @@ def build_default_results_file(cfg, benchmark_cfg):
     baseline_name = require_config_value(cfg, 'baselines.name')
     qa_model_name = require_config_value(benchmark_cfg, 'qa_model_name')
     model_name = qa_model_name.replace("/", "_").replace(":free", "").replace("-", "_")
+    if baseline_name == "m3docrag":
+        top_k = int(require_config_value(cfg, 'baselines.top_k'))
+        baseline_name = f"{baseline_name}_top_k_{top_k}"
     return os.path.join(require_config_value(benchmark_cfg, 'results_dir'), f"res_{baseline_name}_{model_name}.jsonl")
 
 

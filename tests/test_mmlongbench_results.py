@@ -34,6 +34,21 @@ class MMLongBenchResultsTests(unittest.TestCase):
             "/tmp/mmlongbench-results/res_image_Qwen_Qwen2.5_VL_7B_Instruct.jsonl",
         )
 
+    def test_default_results_file_includes_m3docrag_top_k(self):
+        cfg = OmegaConf.create({
+            "baselines": {"name": "m3docrag", "top_k": 3},
+            "benchmarks": {
+                "results_dir": "/tmp/mmlongbench-results",
+                "qa_model_name": "Qwen/Qwen2.5-VL-7B-Instruct",
+            },
+        })
+        benchmark_cfg = require_config_value(cfg, "benchmarks")
+
+        self.assertEqual(
+            build_default_results_file(cfg, benchmark_cfg),
+            "/tmp/mmlongbench-results/res_m3docrag_top_k_3_Qwen_Qwen2.5_VL_7B_Instruct.jsonl",
+        )
+
     def test_append_and_read_jsonl_results(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_path = os.path.join(tmp_dir, "results.jsonl")

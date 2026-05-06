@@ -144,6 +144,9 @@ def build_default_results_file(cfg, benchmark_cfg):
     # 我们不根据 extractor_model_name 来命名结果，因为没有太大影响
     qa_model_name = require_config_value(benchmark_cfg, 'qa_model_name')
     model_name = qa_model_name.replace("/", "_").replace(":free", "").replace("-", "_")
+    if baseline_name == "m3docrag":
+        top_k = int(require_config_value(cfg, 'baselines.top_k'))
+        baseline_name = f"{baseline_name}_top_k_{top_k}"
     return os.path.join(BENCHMARK_ROOT, f"evaluation_results/api_models/results_{baseline_name}_{model_name}.jsonl")
 
 

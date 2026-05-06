@@ -27,7 +27,7 @@ from baselines.wrapper import build_context_builder
 logger = logging.getLogger("mmlongbench.run_api")
 
 MAX_TRY = 10
-MAX_TOKENS = 4096
+MAX_TOKENS = 1024
 TEMPERATURE = 0.0
 MAX_RETRY_ROUNDS = 3
 EXTRACTOR_PROMPT_PATH = CURRENT_DIR / "eval" / "prompt_for_answer_extraction.md"

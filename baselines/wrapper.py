@@ -1,9 +1,13 @@
 from .image import ImageContextBuilder
 from .ocr import OcrContextBuilder
+from .m3docrag import m3docragContextBuilder
 
 _CONTEXT_BUILDERS = {
     'image': ImageContextBuilder,
     'ocr': OcrContextBuilder,
+    'bm25': None,
+    'colbertv2': None,
+    'm3docrag': m3docragContextBuilder,
 }
 
 

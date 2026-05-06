@@ -34,7 +34,7 @@ def extract_answer(
                 model=model_name,
                 messages=messages,
                 temperature=0.0,
-                max_tokens=4096,
+                max_tokens=256,
             )
             logger.debug("Raw response from LLM for answer extraction: %s", response.choices[0].message)
             response = response.choices[0].message.content

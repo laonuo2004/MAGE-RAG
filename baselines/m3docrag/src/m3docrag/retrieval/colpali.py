@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import torch
+import warnings
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 # from transformers import AutoProcessor
@@ -55,7 +56,25 @@ def init(
         **kwargs
     ).eval()
 
-    model.load_adapter(adapter_name_or_path)
+    try:
+        model.load_adapter(adapter_name_or_path)
+    except KeyError as exc:
+        if str(exc).strip("'\"") != "llava":
+            raise
+        warnings.warn(
+            "Falling back to peft.PeftModel.from_pretrained for ColPali adapter loading. "
+            "This avoids a Transformers adapter conversion KeyError for llava base models.",
+            RuntimeWarning,
+        )
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(model, adapter_name_or_path, is_trainable=False)
+        try:
+            base_model = model.base_model.model.model
+            if getattr(base_model.lm_head.weight, "is_meta", False):
+                base_model.lm_head.weight = base_model.model.language_model.embed_tokens.weight
+        except AttributeError:
+            pass
     processor = processor_class.from_pretrained(adapter_name_or_path)
 
     return model, processor

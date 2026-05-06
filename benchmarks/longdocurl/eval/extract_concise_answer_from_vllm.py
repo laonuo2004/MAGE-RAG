@@ -32,13 +32,13 @@ with open(config_file, "r", encoding="utf-8") as rf:
 client = OpenAI(api_key=config["gpt4o"]["access_key"], base_url=config["gpt4o"]["base_url"])
 
 
-def call_llm(prompt, urls, temperature=0.1, seed=42, max_tokens=4096):
+def call_llm(prompt, urls, temperature=0.1, seed=42, max_tokens=1024):
     msgs = get_msg_format(prompt, urls)
     response = None
     max_try = 6
     while response is None and max_try > 0:
         try:
-            completion = client.chat.completions.create(model="gpt-4o-0513", messages=msgs, temperature=0.)
+            completion = client.chat.completions.create(model="gpt-4o-0513", messages=msgs, temperature=0.1, max_tokens=max_tokens)
             response = completion.choices[0].message.content
         except Exception as e:
             print(f"Error With {e}, Response = {response}")

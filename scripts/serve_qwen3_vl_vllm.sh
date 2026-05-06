@@ -38,6 +38,11 @@ MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
 MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
 ENABLE_CHUNKED_PREFILL="${ENABLE_CHUNKED_PREFILL:-1}"
 LIMIT_MM_PER_PROMPT="${LIMIT_MM_PER_PROMPT:-}"
+LIMIT_MM_PER_PROMPT_VIDEO="${LIMIT_MM_PER_PROMPT_VIDEO:-0}"
+TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-1}"
+MM_PROCESSOR_CACHE_GB="${MM_PROCESSOR_CACHE_GB:-0}"
+ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
+ASYNC_SCHEDULING="${ASYNC_SCHEDULING:-1}"
 EXTRA_VLLM_ARGS="${EXTRA_VLLM_ARGS:-}"
 
 COMMON_ARGS=(
@@ -61,11 +66,10 @@ case "${PROFILE}" in
     DEFAULT_MAX_NUM_BATCHED_TOKENS="16384"
     ;;
   maxctx)
-    # 1M context usually requires tensor parallelism or extremely high VRAM.
     DEFAULT_GPU_MEMORY_UTILIZATION="0.9"
     DEFAULT_MAX_MODEL_LEN="262144"
-    DEFAULT_MAX_NUM_SEQS="8"
-    DEFAULT_MAX_NUM_BATCHED_TOKENS="8192"
+    DEFAULT_MAX_NUM_SEQS="2"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="4096"
     ;;
   *)
     echo "Unknown profile: ${PROFILE}" >&2
@@ -84,10 +88,24 @@ PROFILE_ARGS=(
   --max-model-len "${MAX_MODEL_LEN}"
   --max-num-seqs "${MAX_NUM_SEQS}"
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
+  --mm-processor-cache-gb "${MM_PROCESSOR_CACHE_GB}"
+  --limit-mm-per-prompt.video "${LIMIT_MM_PER_PROMPT_VIDEO}"
 )
 
 if [[ "${ENABLE_CHUNKED_PREFILL}" == "1" ]]; then
   PROFILE_ARGS+=(--enable-chunked-prefill)
+fi
+
+if [[ "${TRUST_REMOTE_CODE}" == "1" ]]; then
+  PROFILE_ARGS+=(--trust-remote-code)
+fi
+
+if [[ "${ENABLE_PREFIX_CACHING}" == "1" ]]; then
+  PROFILE_ARGS+=(--enable-prefix-caching)
+fi
+
+if [[ "${ASYNC_SCHEDULING}" == "1" ]]; then
+  PROFILE_ARGS+=(--async-scheduling)
 fi
 
 if [[ -n "${LIMIT_MM_PER_PROMPT}" ]]; then

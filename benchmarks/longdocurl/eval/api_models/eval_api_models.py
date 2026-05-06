@@ -123,12 +123,12 @@ def log_pending_samples(dataset):
         )
 
 
-def call_llm(model_name, prompt, urls, client_obj, temperature=0.1, seed=42, max_tokens=4096):
+def call_llm_extract(model_name, prompt, urls, client_obj, temperature=0.1, seed=42, max_tokens=256):
     msgs = get_msg_format(prompt, urls)
     return call_llm_messages(model_name, msgs, client_obj, temperature=temperature, seed=seed, max_tokens=max_tokens)
 
 
-def call_llm_messages(model_name, messages, client_obj, temperature=0.1, seed=42, max_tokens=4096):
+def call_llm_messages(model_name, messages, client_obj, temperature=0.1, seed=42, max_tokens=1024):
     response = None
     max_try = 3
     while response is None and max_try > 0:
@@ -195,7 +195,7 @@ def eval_per_record(task):
     
     logger.debug(f"Extractor prompt for question_id {case.get('question_id', 'unknown')}: {prompt}")
     extractor_start_time = time.time()
-    extractor_result = call_llm(extractor_model_name, prompt, None, client)
+    extractor_result = call_llm_extract(extractor_model_name, prompt, None, client)
     extractor_end_time = time.time()
     logger.debug(f"Time taken for Extractor LLM to answer question_id {case.get('question_id', 'unknown')}: {extractor_end_time - extractor_start_time:.2f} seconds")
     logger.debug(f"Extractor LLM response for question_id {case.get('question_id', 'unknown')}: {extractor_result}")

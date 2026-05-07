@@ -1,3 +1,4 @@
+from .bm25 import BM25ContextBuilder
 from .image import ImageContextBuilder
 from .ocr import OcrContextBuilder
 from .m3docrag import m3docragContextBuilder
@@ -6,7 +7,7 @@ from utils.config_utils import require_config_value
 _CONTEXT_BUILDERS = {
     'image': ImageContextBuilder,
     'ocr': OcrContextBuilder,
-    'bm25': None,
+    'bm25': BM25ContextBuilder,
     'colbertv2': None,
     'm3docrag': m3docragContextBuilder,
 }

@@ -18,9 +18,11 @@ class ContextBuilderTests(unittest.TestCase):
     def test_build_context_builder_selects_image_and_ocr(self):
         image_builder = build_context_builder(OmegaConf.create({'baselines': {'name': 'image'}}))
         ocr_builder = build_context_builder(OmegaConf.create({'baselines': {'name': 'ocr'}}))
+        bm25_builder = build_context_builder(OmegaConf.create({'baselines': {'name': 'bm25'}}))
 
         self.assertEqual(image_builder.name, 'image')
         self.assertEqual(ocr_builder.name, 'ocr')
+        self.assertEqual(bm25_builder.name, 'bm25')
 
     def test_longdocurl_image_context_matches_legacy_prompt_shape(self):
         png_bytes = base64.b64decode(
@@ -286,6 +288,87 @@ class ContextBuilderTests(unittest.TestCase):
     def test_m3docrag_requires_explicit_top_k(self):
         with self.assertRaisesRegex(ValueError, 'top_k'):
             build_context_builder(OmegaConf.create({'baselines': {'name': 'm3docrag'}}))
+
+    def test_bm25_mmlongbench_retrieves_matching_chunk(self):
+        builder = build_context_builder(OmegaConf.create({
+            'baselines': {
+                'name': 'bm25',
+                'top_k': 1,
+                'chunk_size': 4,
+                'chunk_overlap': 0,
+                'tokenizer': 'regex',
+            },
+            'benchmarks': {'name': 'mmlongbench'},
+        }))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            builder.cfg.benchmarks = {
+                'tmp_dir': tmp_dir,
+                'ocr_json_dir': os.path.join(tmp_dir, 'pdf_jsons'),
+                'max_pages': 2,
+            }
+            page_dir = os.path.join(tmp_dir, 'pdf_jsons', 'sample')
+            os.makedirs(page_dir)
+            with open(os.path.join(page_dir, 'page_0001.json'), 'w', encoding='utf-8') as f:
+                json.dump({'text': 'alpha beta gamma delta'}, f)
+            with open(os.path.join(page_dir, 'page_0002.json'), 'w', encoding='utf-8') as f:
+                json.dump({'text': 'needle evidence value answer'}, f)
+
+            messages = builder.build(
+                'mmlongbench',
+                {'doc_id': 'sample.pdf', 'question': 'Where is the needle evidence?'},
+            )
+
+        self.assertEqual(messages.metadata['retrieved_chunks'][0]['page_index'], 1)
+        self.assertEqual(messages.metadata['retrieved_pages'][0]['page_number'], 2)
+        self.assertIn('[Page 2 | Chunk 1', messages[0]['content'])
+        self.assertIn('needle evidence value answer', messages[0]['content'])
+
+    def test_bm25_longdocurl_uses_image_page_range(self):
+        builder = build_context_builder(OmegaConf.create({
+            'baselines': {
+                'name': 'bm25',
+                'top_k': 1,
+                'chunk_size': 8,
+                'chunk_overlap': 0,
+                'tokenizer': 'regex',
+            },
+            'benchmarks': {'name': 'longdocurl'},
+        }))
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ocr_json_dir = os.path.join(tmp_dir, 'pdf_jsons')
+            doc_dir = os.path.join(ocr_json_dir, '1234')
+            os.makedirs(doc_dir)
+            builder.cfg.benchmarks = {
+                'ocr_json_dir': ocr_json_dir,
+            }
+            record = {
+                'contents': [
+                    {'page_no': 0, 'block_no': 0, 'line_no': 0, 'word_no': 0, 'word': 'needle'},
+                    {'page_no': 0, 'block_no': 0, 'line_no': 0, 'word_no': 1, 'word': 'outside'},
+                    {'page_no': 1, 'block_no': 0, 'line_no': 0, 'word_no': 0, 'word': 'allowed'},
+                    {'page_no': 1, 'block_no': 0, 'line_no': 0, 'word_no': 1, 'word': 'target'},
+                ]
+            }
+            with open(os.path.join(doc_dir, '123456.json'), 'w', encoding='utf-8') as f:
+                json.dump(record, f)
+
+            image_path = os.path.join(tmp_dir, '123456_1.png')
+            messages = builder.build(
+                'longdocurl',
+                {
+                    'doc_no': '123456',
+                    'question': 'needle target',
+                    'start_end_idx': [0, 1],
+                    'images': [image_path],
+                },
+            )
+
+        self.assertEqual(messages.metadata['allowed_pages'], [1])
+        self.assertEqual(messages.metadata['retrieved_chunks'][0]['page_index'], 1)
+        self.assertNotIn('needle outside', messages[0]['content'][0]['text'])
+        self.assertIn('allowed target', messages[0]['content'][0]['text'])
 
     def _m3docrag_cfg(self, tmp_dir, max_pages=3):
         return OmegaConf.create({

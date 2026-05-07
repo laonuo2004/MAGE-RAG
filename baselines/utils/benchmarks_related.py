@@ -1,8 +1,10 @@
 import base64
+import json
 import os
 import re
 from io import BytesIO
 
+from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path
 from utils.config_utils import get_config_value, require_config_value
 
 
@@ -60,3 +62,54 @@ def allowed_page_indices(benchmark_name, sample, benchmark_cfg, page_count):
             raise ValueError('LongDocURL image-derived page mask is empty after clipping to embedding page count.')
         return page_indices
     raise ValueError(f'Unsupported benchmark for page mask: {benchmark_name}')
+
+
+def load_mmlongbench_ocr_pages(sample, benchmark_cfg):
+    max_pages = int(require_config_value(benchmark_cfg, 'max_pages'))
+    allowed_pages = allowed_page_indices('mmlongbench', sample, benchmark_cfg, max_pages)
+    pages = []
+    for page_index in allowed_pages:
+        page_path = mmlongbench_ocr_page_path(benchmark_cfg, sample['doc_id'], page_index)
+        if not os.path.exists(page_path):
+            if page_index == 0:
+                raise FileNotFoundError(
+                    f'Missing preprocessed OCR cache for doc_id={sample["doc_id"]}: {page_path}. '
+                    'Run benchmarks/mmlongbench/scripts/preprocess_mmlongbench.py before evaluating OCR-based baselines.'
+                )
+            break
+        with open(page_path, 'r', encoding='utf-8') as f:
+            page_payload = json.load(f)
+        pages.append({
+            'page_index': page_index,
+            'page_number': page_index + 1,
+            'text': str(page_payload.get('text') or '').strip() or '[EMPTY PAGE]',
+        })
+    return pages, allowed_pages
+
+
+def load_longdocurl_ocr_pages(sample, benchmark_cfg):
+    from benchmarks.longdocurl.eval.api_models.pure_ocr_utils import (
+        build_page_texts_from_contents,
+        load_pymupdf_record,
+    )
+
+    ocr_json_dir = require_config_value(benchmark_cfg, 'ocr_json_dir')
+    record = load_pymupdf_record(sample['doc_no'], ocr_json_dir)
+    contents = record['contents']
+    page_count = int(sample.get('total_pages') or 0)
+    if page_count <= 0 and contents:
+        page_count = max(int(item['page_no']) for item in contents) + 1
+
+    allowed_pages = allowed_page_indices('longdocurl', sample, benchmark_cfg, page_count)
+    page_texts = build_page_texts_from_contents(contents, allowed_pages)
+    pages = [
+        {
+            'page_index': page_no,
+            'page_number': page_no + 1,
+            'text': page_text.strip() or '[EMPTY PAGE]',
+        }
+        for page_no, page_text in page_texts
+    ]
+    if not pages:
+        raise ValueError(f'No LongDocURL OCR pages loaded for doc_no={sample["doc_no"]}.')
+    return pages, allowed_pages

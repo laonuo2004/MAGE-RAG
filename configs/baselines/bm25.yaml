@@ -1,13 +1,13 @@
 name: bm25
 top_k: 5
 chunk_size: 200
-chunk_overlap: 50
+chunk_overlap: 20
 bm25_k1: 1.5
 bm25_b: 0.75
 tokenizer: spacy
 spacy_model: en
 lowercase: true
 min_token_length: 1
-max_chunks_per_page: 1
+max_chunks_per_page: null
 allow_regex_tokenizer_fallback: true
 max_context_chars: null

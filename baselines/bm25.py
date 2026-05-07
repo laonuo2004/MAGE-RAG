@@ -1,11 +1,9 @@
-import json
 import math
-import os
 import re
 from collections import Counter
 
 from .base import ContextBuilder, ContextMessages
-from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path
+from baselines.utils.benchmarks_related import load_longdocurl_ocr_pages, load_mmlongbench_ocr_pages
 from utils.config_utils import get_config_value, require_config_value
 
 
@@ -50,8 +48,7 @@ class BM25ContextBuilder(ContextBuilder):
 
     def build_mmlongbench(self, sample, **kwargs):
         benchmark_cfg = require_config_value(self.cfg, 'benchmarks')
-        pages = self._load_mmlongbench_pages(sample, benchmark_cfg)
-        allowed_pages = [page['page_index'] for page in pages]
+        pages, allowed_pages = load_mmlongbench_ocr_pages(sample, benchmark_cfg)
         chunks = self._build_chunks(pages)
         retrieval = self._retrieve_chunks(sample['question'], chunks)
         prompt = self._build_prompt(sample['question'], retrieval)
@@ -62,8 +59,7 @@ class BM25ContextBuilder(ContextBuilder):
 
     def build_longdocurl(self, sample, **kwargs):
         benchmark_cfg = require_config_value(self.cfg, 'benchmarks')
-        pages = self._load_longdocurl_pages(sample, benchmark_cfg)
-        allowed_pages = [page['page_index'] for page in pages]
+        pages, allowed_pages = load_longdocurl_ocr_pages(sample, benchmark_cfg)
         chunks = self._build_chunks(pages)
         retrieval = self._retrieve_chunks(sample['question'], chunks)
         prompt = self._build_prompt(sample['question'], retrieval)
@@ -71,55 +67,6 @@ class BM25ContextBuilder(ContextBuilder):
             [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}],
             metadata=self._metadata(retrieval, allowed_pages),
         )
-
-    def _load_mmlongbench_pages(self, sample, benchmark_cfg):
-        pages = []
-        max_pages = int(require_config_value(benchmark_cfg, 'max_pages'))
-        for page_index in range(max_pages):
-            page_path = mmlongbench_ocr_page_path(benchmark_cfg, sample['doc_id'], page_index)
-            if not os.path.exists(page_path):
-                if page_index == 0:
-                    raise FileNotFoundError(
-                        f'Missing preprocessed OCR cache for doc_id={sample["doc_id"]}: {page_path}. '
-                        'Run benchmarks/mmlongbench/scripts/preprocess_mmlongbench.py before evaluating the bm25 baseline.'
-                    )
-                break
-            with open(page_path, 'r', encoding='utf-8') as f:
-                page_payload = json.load(f)
-            pages.append({
-                'page_index': page_index,
-                'page_number': page_index + 1,
-                'text': str(page_payload.get('text') or '').strip() or '[EMPTY PAGE]',
-            })
-        return pages
-
-    def _load_longdocurl_pages(self, sample, benchmark_cfg):
-        from benchmarks.longdocurl.eval.api_models.pure_ocr_utils import (
-            build_page_texts_from_contents,
-            extract_page_nos_from_images,
-            load_pymupdf_record,
-        )
-
-        images = sample.get('images')
-        if isinstance(images, str):
-            images = [images]
-        selected_pages = extract_page_nos_from_images(images or [])
-        if not selected_pages:
-            selected_pages = list(range(sample['start_end_idx'][0], sample['start_end_idx'][1] + 1))
-
-        record = load_pymupdf_record(sample['doc_no'], require_config_value(benchmark_cfg, 'ocr_json_dir'))
-        page_texts = build_page_texts_from_contents(record['contents'], selected_pages)
-        pages = [
-            {
-                'page_index': page_no,
-                'page_number': page_no + 1,
-                'text': page_text.strip() or '[EMPTY PAGE]',
-            }
-            for page_no, page_text in page_texts
-        ]
-        if not pages:
-            raise ValueError(f'No LongDocURL OCR pages loaded for doc_no={sample["doc_no"]}.')
-        return pages
 
     def _build_chunks(self, pages):
         chunks = []

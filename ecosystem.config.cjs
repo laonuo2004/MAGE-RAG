@@ -18,7 +18,7 @@ module.exports = {
       name: "vllm",
       script: "scripts/serve_qwen3_vl_vllm.sh",
       interpreter: "bash",
-      args: "throughput",
+      args: "longctx",
       cwd: "/root/autodl-tmp/ylz/NeurIPS_2026/code",
       env: {
         CUDA_VISIBLE_DEVICES: "1",

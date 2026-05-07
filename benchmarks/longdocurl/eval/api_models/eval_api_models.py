@@ -7,6 +7,7 @@ from omegaconf import DictConfig
 
 BENCHMARK_ROOT = pathlib.Path(__file__).resolve().parents[2]
 import json
+import ast
 from tqdm import tqdm
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -112,7 +113,7 @@ def log_pending_samples(dataset):
         )
 
 
-def call_llm_extract(model_name, prompt, urls, client_obj, temperature=0.1, seed=42, max_tokens=256):
+def call_llm_extract(model_name, prompt, urls, client_obj, temperature=0.1, seed=42, max_tokens=32768): # extractor 是调用外部的模型，所以 max_tokens 可以设置得更大一些
     msgs = get_msg_format(prompt, urls)
     return call_llm_messages(model_name, msgs, client_obj, temperature=temperature, seed=seed, max_tokens=max_tokens)
 
@@ -153,6 +154,17 @@ def build_default_results_file(cfg, benchmark_cfg):
 def append_result(sample, output_datapath):
     with open(output_datapath, "a", encoding="utf-8") as output_review_file:
         output_review_file.write(json.dumps(sample, ensure_ascii=False) + "\n")
+
+
+def parse_concise_answer(concise_answer):
+    text = str(concise_answer).strip()
+    try:
+        parsed_answer = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return text
+    if isinstance(parsed_answer, set):
+        return list(parsed_answer)
+    return parsed_answer
 
 
 def eval_per_record(task):
@@ -205,11 +217,7 @@ def eval_per_record(task):
         answer_format = "None"
 
     # calculate scores
-    try:
-        # pred_ans = eval(concise_answer)
-        pred_ans = eval(concise_answer) if not isinstance(eval(concise_answer), set) else list(eval(concise_answer))
-    except:
-        pred_ans = concise_answer
+    pred_ans = parse_concise_answer(concise_answer)
     if pred_ans == "Fail to extract":
         logger.warning(f"Failed to extract concise answer for question_id {case.get('question_id', 'unknown')}.")
         return None

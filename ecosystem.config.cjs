@@ -32,6 +32,24 @@ module.exports = {
       out_file: "logs/pm2-vllm.out.log",
       error_file: "logs/pm2-vllm.err.log",
       merge_logs: true
+    },
+    {
+      name: "pm2-log-rotate-local",
+      script: "scripts/pm2_log_rotate.sh",
+      interpreter: "bash",
+      cwd: "/root/autodl-tmp/ylz/NeurIPS_2026/code",
+      env: {
+        MAX_SIZE_MB: "100",
+        KEEP: "5",
+        INTERVAL_SECONDS: "300"
+      },
+      autorestart: true,
+      restart_delay: 5000,
+      max_restarts: 100000,
+      time: true,
+      out_file: "logs/pm2-log-rotate.out.log",
+      error_file: "logs/pm2-log-rotate.err.log",
+      merge_logs: true
     }
   ]
 };

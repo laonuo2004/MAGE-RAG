@@ -199,6 +199,11 @@ def build_default_results_file(cfg, benchmark_cfg):
     if baseline_name == "m3docrag":
         top_k = int(require_config_value(cfg, 'baselines.top_k'))
         baseline_name = f"{baseline_name}_top_k_{top_k}"
+    elif baseline_name == "bm25":
+        top_k = int(require_config_value(cfg, 'baselines.top_k'))
+        chunk_size = int(require_config_value(cfg, 'baselines.chunk_size'))
+        chunk_overlap = int(require_config_value(cfg, 'baselines.chunk_overlap'))
+        baseline_name = f"{baseline_name}_top_k_{top_k}_chunk_size_{chunk_size}_chunk_overlap_{chunk_overlap}"
     return os.path.join(require_config_value(benchmark_cfg, 'results_dir'), f"res_{baseline_name}_{model_name}.jsonl")
 
 

@@ -5,9 +5,9 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from benchmarks.report import generate_reports
-from benchmarks.results import RESULTS_ROOT, append_jsonl, build_results_file, sidecar_paths, write_json
-from benchmarks.runner import compact_results_file, merge_existing_samples, run_pending
+import benchmarks.runner as runner
+from benchmarks.runner import compact_results_file, merge_existing_samples, run_benchmark_with_adapter, run_pending
+from benchmarks.utils.results_utils import RESULTS_ROOT, append_jsonl, build_results_file
 
 
 class DummyAdapter:
@@ -19,7 +19,12 @@ class DummyAdapter:
     def is_successful_result(self, sample):
         return "score" in sample and sample.get("pred") != "Failed"
 
-    def process_sample(self, sample, cfg):
+    def load_samples(self, cfg):
+        return [{"id": "a"}, {"id": "b"}]
+
+    def process_sample(self, sample, cfg, context_builder, client):
+        sample["context_builder_id"] = id(context_builder)
+        sample["client_id"] = id(client)
         if sample.get("fail_once") and not sample.get("attempted"):
             sample["attempted"] = True
             return None
@@ -28,12 +33,18 @@ class DummyAdapter:
         result["score"] = 1.0
         return result
 
+    def build_metrics(self, samples, output_path):
+        return {}
+
 
 class RunnerResultsTests(unittest.TestCase):
     def test_stable_result_paths_partition_by_baseline_dir(self):
         cfg = OmegaConf.create({
             "benchmarks": {"name": "mmlongbench", "qa_model_name": "Qwen3-VL-8B-Instruct"},
-            "baselines": {"name": "bm25", "top_k": 3, "chunk_size": 150, "chunk_overlap": 0},
+            "baselines": {
+                "name": "bm25",
+                "params": {"top_k": 3, "chunk_size": 150, "chunk_overlap": 0},
+            },
         })
 
         self.assertEqual(
@@ -44,14 +55,31 @@ class RunnerResultsTests(unittest.TestCase):
     def test_parameter_changes_produce_different_filenames(self):
         cfg_a = OmegaConf.create({
             "benchmarks": {"name": "mmlongbench", "qa_model_name": "model"},
-            "baselines": {"name": "bm25", "top_k": 3, "chunk_size": 150, "chunk_overlap": 0},
+            "baselines": {
+                "name": "bm25",
+                "params": {"top_k": 3, "chunk_size": 150, "chunk_overlap": 0},
+            },
         })
         cfg_b = OmegaConf.create({
             "benchmarks": {"name": "mmlongbench", "qa_model_name": "model"},
-            "baselines": {"name": "bm25", "top_k": 5, "chunk_size": 150, "chunk_overlap": 0},
+            "baselines": {
+                "name": "bm25",
+                "params": {"top_k": 5, "chunk_size": 150, "chunk_overlap": 0},
+            },
         })
 
         self.assertNotEqual(build_results_file(cfg_a), build_results_file(cfg_b))
+
+    def test_no_params_baseline_uses_model_only_filename(self):
+        cfg = OmegaConf.create({
+            "benchmarks": {"name": "mmlongbench", "qa_model_name": "model"},
+            "baselines": {"name": "ocr"},
+        })
+
+        self.assertEqual(
+            str(build_results_file(cfg)),
+            str(RESULTS_ROOT / "mmlongbench/ocr/res_model.jsonl"),
+        )
 
     def test_merge_existing_successes_and_compact_jsonl(self):
         adapter = DummyAdapter()
@@ -78,48 +106,40 @@ class RunnerResultsTests(unittest.TestCase):
         samples = [{"id": "a", "fail_once": True}, {"id": "b"}]
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_path = Path(tmp_dir) / "results.jsonl"
-            run_pending(adapter, cfg, samples, output_path)
-            run_pending(adapter, cfg, samples, output_path)
+            context_builder = object()
+            client = object()
+            run_pending(adapter, cfg, samples, output_path, context_builder, client)
+            run_pending(adapter, cfg, samples, output_path, context_builder, client)
             written = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual([sample["id"] for sample in written], ["b", "a"])
 
-    def test_generate_reports_marks_missing_metrics(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            run_dir = root / "mmlongbench" / "image"
-            run_dir.mkdir(parents=True)
-            results_file = run_dir / "res_model.jsonl"
-            metrics_file, manifest_file = sidecar_paths(results_file)
-            write_json(metrics_file, {"overall_acc": 0.8, "sample_count": 2, "completed_count": 2, "failed_count": 0})
-            write_json(manifest_file, {
-                "benchmark": "mmlongbench",
-                "baseline": "image",
-                "qa_model_name": "model",
-                "parameters": {},
-                "results_file": str(results_file),
-                "metrics_file": str(metrics_file),
-                "generated_at": "now",
-            })
-            missing_dir = root / "longdocurl" / "ocr"
-            missing_dir.mkdir(parents=True)
-            missing_results = missing_dir / "res_model.jsonl"
-            _, missing_manifest = sidecar_paths(missing_results)
-            write_json(missing_manifest, {
-                "benchmark": "longdocurl",
-                "baseline": "ocr",
-                "qa_model_name": "model",
-                "parameters": {},
-                "results_file": str(missing_results),
-                "metrics_file": str(missing_dir / "res_model.metrics.json"),
-                "generated_at": "now",
-            })
+    def test_run_benchmark_reuses_single_context_builder_and_client(self):
+        adapter = DummyAdapter()
+        context_builder = object()
+        client = object()
+        original_build_context_builder = runner.build_context_builder
+        original_build_openai_client = runner.build_openai_client
+        try:
+            runner.build_context_builder = lambda cfg: context_builder
+            runner.build_openai_client = lambda cfg: client
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                cfg = OmegaConf.create({
+                    "benchmarks": {
+                        "process_mode": "serial",
+                        "workers": 1,
+                        "results_file": str(Path(tmp_dir) / "results.jsonl"),
+                    },
+                    "baselines": {"name": "dummy"},
+                })
+                result = run_benchmark_with_adapter(cfg, adapter)
+        finally:
+            runner.build_context_builder = original_build_context_builder
+            runner.build_openai_client = original_build_openai_client
 
-            report = generate_reports(root)
-
-        statuses = {run["benchmark"]: run["status"] for run in report["runs"]}
-        self.assertEqual(statuses["mmlongbench"], "ok")
-        self.assertEqual(statuses["longdocurl"], "missing_metrics")
+        samples = result["samples"]
+        self.assertEqual({sample["context_builder_id"] for sample in samples}, {id(context_builder)})
+        self.assertEqual({sample["client_id"] for sample in samples}, {id(client)})
 
 
 if __name__ == "__main__":

@@ -5,6 +5,11 @@ from openai import OpenAI
 from utils.config_utils import require_config_value
 
 
+def text_content_parts(text):
+    """Return OpenAI content-parts for a text-only prompt."""
+    return [{"type": "text", "text": "" if text is None else str(text)}]
+
+
 def build_openai_client(cfg):
     """Build the project-wide OpenAI-compatible client from Hydra config."""
     return OpenAI(

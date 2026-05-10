@@ -1,6 +1,6 @@
 import logging
 
-from utils.llm_utils import call_llm_messages
+from utils.llm_utils import call_llm_messages, text_content_parts
 
 logger = logging.getLogger("mmlongbench.extract_answer")
 
@@ -20,7 +20,7 @@ def extract_answer(
     messages=[
         {
             "role": "user",
-            "content": prompt,
+            "content": text_content_parts(prompt),
         }
     ]
     logger.debug("Prompt messages for answer extraction: %s", messages)

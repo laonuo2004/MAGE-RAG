@@ -4,6 +4,7 @@ import json
 from .base import ContextBuilder, ContextMessages
 from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path
 from utils.config_utils import require_config_value
+from utils.llm_utils import text_content_parts
 
 TEXT_SYSTEM_PROMPT = 'You are an expert in document question-answering, please answer our questions based on the extracted text from the given pages.\n'
 
@@ -39,7 +40,7 @@ class OcrContextBuilder(ContextBuilder):
             f'Document text:\n{document_text}'
         )
         return ContextMessages(
-            [{'role': 'user', 'content': prompt}],
+            [{'role': 'user', 'content': text_content_parts(prompt)}],
             metadata={'context_builder': self.name},
         )
 
@@ -63,6 +64,6 @@ class OcrContextBuilder(ContextBuilder):
             + ocr_prompt
         )
         return ContextMessages(
-            [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}],
+            [{'role': 'user', 'content': text_content_parts(prompt)}],
             metadata={'context_builder': self.name},
         )

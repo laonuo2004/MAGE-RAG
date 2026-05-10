@@ -5,6 +5,7 @@ from collections import Counter
 from .base import ContextBuilder, ContextMessages
 from baselines.utils.benchmarks_related import load_longdocurl_ocr_pages, load_mmlongbench_ocr_pages
 from utils.config_utils import get_config_value, require_config_value
+from utils.llm_utils import text_content_parts
 
 
 TEXT_SYSTEM_PROMPT = (
@@ -53,7 +54,7 @@ class BM25ContextBuilder(ContextBuilder):
         retrieval = self._retrieve_chunks(sample['question'], chunks)
         prompt = self._build_prompt(sample['question'], retrieval)
         return ContextMessages(
-            [{'role': 'user', 'content': prompt}],
+            [{'role': 'user', 'content': text_content_parts(prompt)}],
             metadata=self._metadata(retrieval, allowed_pages),
         )
 
@@ -64,7 +65,7 @@ class BM25ContextBuilder(ContextBuilder):
         retrieval = self._retrieve_chunks(sample['question'], chunks)
         prompt = self._build_prompt(sample['question'], retrieval)
         return ContextMessages(
-            [{'role': 'user', 'content': [{'type': 'text', 'text': prompt}]}],
+            [{'role': 'user', 'content': text_content_parts(prompt)}],
             metadata=self._metadata(retrieval, allowed_pages),
         )
 

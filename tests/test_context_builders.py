@@ -99,7 +99,8 @@ class ContextBuilderTests(unittest.TestCase):
 
             messages = builder.build('mmlongbench', {'doc_id': 'sample.pdf', 'question': 'Question?'})
 
-        prompt = messages[0]['content']
+        prompt = messages[0]['content'][0]['text']
+        self.assertEqual(messages[0]['content'][0]['type'], 'text')
         self.assertIn('[Page 1]\nfirst page text', prompt)
         self.assertIn('[Page 2]\nsecond page text', prompt)
         self.assertNotIn('[Page 3]', prompt)
@@ -294,9 +295,11 @@ class ContextBuilderTests(unittest.TestCase):
         builder = build_context_builder(OmegaConf.create({
             'baselines': {
                 'name': 'bm25',
-                'top_k': 1,
-                'chunk_size': 4,
-                'chunk_overlap': 0,
+                'params': {
+                    'top_k': 1,
+                    'chunk_size': 4,
+                    'chunk_overlap': 0,
+                },
                 'tokenizer': 'regex',
             },
             'benchmarks': {'name': 'mmlongbench'},
@@ -322,16 +325,20 @@ class ContextBuilderTests(unittest.TestCase):
 
         self.assertEqual(messages.metadata['retrieved_chunks'][0]['page_index'], 1)
         self.assertEqual(messages.metadata['retrieved_pages'][0]['page_number'], 2)
-        self.assertIn('[Page 2 | Chunk 1', messages[0]['content'])
-        self.assertIn('needle evidence value answer', messages[0]['content'])
+        prompt = messages[0]['content'][0]['text']
+        self.assertEqual(messages[0]['content'][0]['type'], 'text')
+        self.assertIn('[Page 2 | Chunk 1', prompt)
+        self.assertIn('needle evidence value answer', prompt)
 
     def test_bm25_longdocurl_uses_image_page_range(self):
         builder = build_context_builder(OmegaConf.create({
             'baselines': {
                 'name': 'bm25',
-                'top_k': 1,
-                'chunk_size': 8,
-                'chunk_overlap': 0,
+                'params': {
+                    'top_k': 1,
+                    'chunk_size': 8,
+                    'chunk_overlap': 0,
+                },
                 'tokenizer': 'regex',
             },
             'benchmarks': {'name': 'longdocurl'},
@@ -375,7 +382,7 @@ class ContextBuilderTests(unittest.TestCase):
         return OmegaConf.create({
             'baselines': {
                 'name': 'm3docrag',
-                'top_k': 1,
+                'params': {'top_k': 1},
                 'pdf_embeddings_colpali': {
                     'mmlongbench': os.path.join(tmp_dir, 'mmlong_pdf'),
                     'longdocurl': os.path.join(tmp_dir, 'longdoc_pdf'),

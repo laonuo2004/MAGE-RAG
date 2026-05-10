@@ -6,14 +6,12 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Protocol
 
-from benchmarks.longdocurl.eval.utils_api import get_msg_format
 from benchmarks.longdocurl.utils.calculate_metrics import calculate_accuracy as calculate_longdocurl_accuracy
 from benchmarks.longdocurl.utils.calculate_metrics_fine_grained import calculate_accuracy_fine_grained, generalize_score_dict
 from benchmarks.longdocurl.utils.utils_score_v3 import eval_score as eval_longdocurl_score
 from benchmarks.mmlongbench.eval.eval_score import eval_acc_and_f1, eval_score as eval_mmlongbench_score
-from benchmarks.mmlongbench.eval.extract_answer import extract_answer
 from utils.config_utils import get_config_value, require_config_value
-from utils.llm_utils import call_llm_messages
+from utils.llm_utils import call_llm_messages, text_content_parts
 
 logger = logging.getLogger(__name__)
 
@@ -85,20 +83,6 @@ def _prepare_messages(
     return messages, qa_model_name, extractor_model_name
 
 
-def _call_llm(messages, model_name: str, client, log_prefix: str, max_tokens: int = 1024) -> str:
-    return call_llm_messages(
-        client,
-        model_name,
-        messages,
-        max_tokens=max_tokens,
-        temperature=0.0,
-        retries=10,
-        logger=logger,
-        log_prefix=log_prefix,
-        failure_value=lambda exc: f"Failed: {exc}",
-    )
-
-
 def _generate_response(
     sample: Dict[str, Any],
     messages,
@@ -107,10 +91,46 @@ def _generate_response(
     log_prefix: str,
 ) -> str:
     generation_start = perf_counter()
-    response = _call_llm(messages, model_name, client, log_prefix)
+    response = call_llm_messages(
+        client,
+        model_name,
+        messages,
+        max_tokens=8192,
+        temperature=0.0,
+        retries=10,
+        logger=logger,
+        log_prefix=log_prefix,
+        failure_value=lambda exc: f"Failed: {exc}",
+    )
     sample["timing_generation_seconds"] = round(perf_counter() - generation_start, 3)
     sample["response"] = response
     return response
+
+
+def _extract_prediction(
+    sample: Dict[str, Any],
+    messages,
+    model_name: str,
+    client,
+    parse_extraction_result,
+    log_prefix: str,
+) -> Any:
+    extraction_start = perf_counter()
+    extracted_res = call_llm_messages(
+        client,
+        model_name,
+        messages,
+        max_tokens=4096,
+        temperature=0.0,
+        retries=10,
+        logger=logger,
+        log_prefix=log_prefix,
+        failure_value=lambda exc: f"Failed: {exc}",
+    )
+    sample["timing_extraction_seconds"] = round(perf_counter() - extraction_start, 3)
+    sample["extractor_model_name"] = model_name
+    sample["extracted_res"] = extracted_res
+    return parse_extraction_result(extracted_res)
 
 
 class MMLongBenchAdapter:
@@ -138,12 +158,24 @@ class MMLongBenchAdapter:
         return "score" in sample and sample.get("pred") != "Failed to extract"
 
     @staticmethod
-    def parse_extracted_answer(extracted_res: Any) -> str | None:
+    def parse_extraction_result(extracted_res: Any) -> str | None:
         text = str(extracted_res or "")
         match = re.search(r"Extracted answer:\s*(.*?)(?:\n+Answer format:|$)", text, flags=re.DOTALL)
         if not match:
             return None
         return match.group(1).strip()
+
+    def build_extraction_messages(self, sample: Dict[str, Any], response: Any) -> List[Dict[str, Any]]:
+        question = "" if sample.get("question") is None else str(sample.get("question"))
+        output = "" if response is None else str(response)
+        prompt = (
+            self.extractor_prompt
+            + "\n\nQuestion: "
+            + question
+            + "\nAnalysis: "
+            + output
+        )
+        return [{"role": "user", "content": text_content_parts(prompt)}]
 
     def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         sample = dict(sample)
@@ -157,18 +189,15 @@ class MMLongBenchAdapter:
         )
         response = _generate_response(sample, messages, qa_model_name, client, "MMLongBench generation")
 
-        extraction_start = perf_counter()
-        extracted_res = extract_answer(
-            sample["question"],
-            response,
-            self.extractor_prompt,
-            model_name=extractor_model_name,
-            client=client,
+        extractor_messages = self.build_extraction_messages(sample, response)
+        pred = _extract_prediction(
+            sample,
+            extractor_messages,
+            extractor_model_name,
+            client,
+            self.parse_extraction_result,
+            "MMLongBench extraction",
         )
-        sample["timing_extraction_seconds"] = round(perf_counter() - extraction_start, 3)
-        sample["extractor_model_name"] = extractor_model_name
-        sample["extracted_res"] = extracted_res
-        pred = self.parse_extracted_answer(extracted_res)
         if pred is None:
             logger.warning("Failed to extract MMLongBench answer. doc_id=%s", sample.get("doc_id"))
             return None
@@ -242,6 +271,17 @@ class LongDocURLAdapter:
             return list(parsed_answer)
         return parsed_answer
 
+    def build_extraction_messages(self, sample: Dict[str, Any], response: Any) -> List[Dict[str, Any]]:
+        prompt = f"{self.extractor_prompt}\nQuestion: {sample['question']}\nAnalysis: {response}"
+        return [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+
+    def parse_extraction_result(self, extracted_res: Any) -> Any:
+        try:
+            concise_answer = re.findall(r"<concise_answer>(.*?)</concise_answer>", str(extracted_res), re.DOTALL)[0]
+        except Exception:
+            return None
+        return self.parse_concise_answer(concise_answer)
+
     def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         sample = dict(sample)
         _reset_sample_fields(sample, COMMON_RESULT_FIELDS)
@@ -256,26 +296,18 @@ class LongDocURLAdapter:
         if response is None:
             return None
 
-        prompt = f"{self.extractor_prompt}\nQuestion: {sample['question']}\nAnalysis: {response}"
-        extraction_start = perf_counter()
-        extractor_messages = get_msg_format(prompt, None)
-        extractor_result = _call_llm(
+        extractor_messages = self.build_extraction_messages(sample, response)
+        pred = _extract_prediction(
+            sample,
             extractor_messages,
             extractor_model_name,
             client,
+            self.parse_extraction_result,
             "LongDocURL extraction",
-            max_tokens=8192,
         )
-        sample["timing_extraction_seconds"] = round(perf_counter() - extraction_start, 3)
-        sample["extractor_model_name"] = extractor_model_name
-        sample["extracted_res"] = extractor_result
-
-        try:
-            concise_answer = re.findall(r"<concise_answer>(.*?)</concise_answer>", extractor_result, re.DOTALL)[0]
-        except Exception:
+        if pred is None:
             logger.warning("Failed to extract LongDocURL answer. question_id=%s", sample.get("question_id"))
             return None
-        pred = self.parse_concise_answer(concise_answer)
         sample["pred"] = pred
         sample["score"] = eval_longdocurl_score(sample["answer"], pred, sample["answer_format"])
         return sample

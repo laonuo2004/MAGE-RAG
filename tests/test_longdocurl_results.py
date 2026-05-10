@@ -2,8 +2,7 @@ import unittest
 
 from omegaconf import OmegaConf
 
-from benchmarks.results import RESULTS_ROOT
-from benchmarks.longdocurl.eval.api_models.eval_api_models import build_default_results_file, parse_concise_answer
+from benchmarks.longdocurl.eval.api_models.eval_api_models import BENCHMARK_ROOT, build_default_results_file, parse_concise_answer
 from utils.config_utils import require_config_value
 
 
@@ -17,7 +16,7 @@ class LongDocURLResultsTests(unittest.TestCase):
 
         self.assertEqual(
             build_default_results_file(cfg, benchmark_cfg),
-            str(RESULTS_ROOT / "longdocurl/image/res_Qwen_Qwen2_5_VL_7B_Instruct.jsonl"),
+            str(BENCHMARK_ROOT / "evaluation_results/api_models/results_image_Qwen_Qwen2.5_VL_7B_Instruct.jsonl"),
         )
 
     def test_default_results_file_includes_m3docrag_top_k(self):
@@ -29,7 +28,7 @@ class LongDocURLResultsTests(unittest.TestCase):
 
         self.assertEqual(
             build_default_results_file(cfg, benchmark_cfg),
-            str(RESULTS_ROOT / "longdocurl/m3docrag/res_top_k_5_Qwen_Qwen2_5_VL_7B_Instruct.jsonl"),
+            str(BENCHMARK_ROOT / "evaluation_results/api_models/results_m3docrag_top_k_5_Qwen_Qwen2.5_VL_7B_Instruct.jsonl"),
         )
 
     def test_parse_concise_answer_keeps_bare_type_name_as_string(self):

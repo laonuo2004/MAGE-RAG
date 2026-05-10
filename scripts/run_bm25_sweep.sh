@@ -10,7 +10,7 @@ python main.py --multirun \
   benchmarks=longdocurl,mmlongbench \
   baselines=bm25 \
   benchmarks.workers=128 \
-  baselines.top_k=3,5 \
-  baselines.chunk_size=150,200 \
-  baselines.chunk_overlap=0,20,50 \
+  baselines.top_k=1,2,3,4,5 \
+  baselines.chunk_size=100,150,200,250,300 \
+  baselines.chunk_overlap=0,10,20,30,40,50 \
   baselines.max_chunks_per_page=null

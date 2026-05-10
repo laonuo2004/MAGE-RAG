@@ -62,17 +62,18 @@ class ContextBuilderTests(unittest.TestCase):
 
     def test_wrapper_routes_longdocurl_ocr_baseline(self):
         captured = []
-        original_run_longdocurl = wrapper._run_longdocurl
+        original_runner = wrapper.run_benchmark_with_adapter
         try:
-            wrapper._run_longdocurl = lambda cfg: captured.append(cfg)
+            wrapper.run_benchmark_with_adapter = lambda cfg, adapter: captured.append((cfg, adapter.name))
             wrapper.run_benchmark(OmegaConf.create({
                 'benchmarks': {'name': 'longdocurl', 'qa_file': 'qa.jsonl', 'model_name': 'model'},
                 'baselines': {'name': 'ocr'},
             }))
         finally:
-            wrapper._run_longdocurl = original_run_longdocurl
+            wrapper.run_benchmark_with_adapter = original_runner
 
-        self.assertEqual(captured[0].baselines.name, 'ocr')
+        self.assertEqual(captured[0][0].baselines.name, 'ocr')
+        self.assertEqual(captured[0][1], 'longdocurl')
 
     def test_mmlongbench_ocr_reads_preprocessed_json_pages(self):
         builder = build_context_builder(OmegaConf.create({

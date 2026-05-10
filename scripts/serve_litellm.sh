@@ -17,4 +17,4 @@ if [[ -f "${CODE_ROOT}/.env" ]]; then
 fi
 
 cd "${CODE_ROOT}"
-exec "${LITELLM_BIN}" --config "${CONFIG_PATH}" --port "${PORT}"
+exec "${LITELLM_BIN}" --config "${CONFIG_PATH}" --port "${PORT}" --debug

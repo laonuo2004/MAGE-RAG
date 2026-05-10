@@ -7,6 +7,7 @@ from omegaconf import OmegaConf
 
 import benchmarks.mmlongbench.run_api as run_api
 from baselines.base import ContextMessages
+from benchmarks.results import RESULTS_ROOT
 from benchmarks.mmlongbench.run_api import (
     append_result,
     build_default_results_file,
@@ -23,6 +24,7 @@ class MMLongBenchResultsTests(unittest.TestCase):
         cfg = OmegaConf.create({
             "baselines": {"name": "image"},
             "benchmarks": {
+                "name": "mmlongbench",
                 "results_dir": "/tmp/mmlongbench-results",
                 "qa_model_name": "Qwen/Qwen2.5-VL-7B-Instruct",
             },
@@ -31,13 +33,14 @@ class MMLongBenchResultsTests(unittest.TestCase):
 
         self.assertEqual(
             build_default_results_file(cfg, benchmark_cfg),
-            "/tmp/mmlongbench-results/res_image_Qwen_Qwen2.5_VL_7B_Instruct.jsonl",
+            str(RESULTS_ROOT / "mmlongbench/image/res_Qwen_Qwen2_5_VL_7B_Instruct.jsonl"),
         )
 
     def test_default_results_file_includes_m3docrag_top_k(self):
         cfg = OmegaConf.create({
             "baselines": {"name": "m3docrag", "top_k": 3},
             "benchmarks": {
+                "name": "mmlongbench",
                 "results_dir": "/tmp/mmlongbench-results",
                 "qa_model_name": "Qwen/Qwen2.5-VL-7B-Instruct",
             },
@@ -46,7 +49,7 @@ class MMLongBenchResultsTests(unittest.TestCase):
 
         self.assertEqual(
             build_default_results_file(cfg, benchmark_cfg),
-            "/tmp/mmlongbench-results/res_m3docrag_top_k_3_Qwen_Qwen2.5_VL_7B_Instruct.jsonl",
+            str(RESULTS_ROOT / "mmlongbench/m3docrag/res_top_k_3_Qwen_Qwen2_5_VL_7B_Instruct.jsonl"),
         )
 
     def test_append_and_read_jsonl_results(self):

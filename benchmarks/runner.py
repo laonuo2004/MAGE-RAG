@@ -8,16 +8,15 @@ from typing import Any, Dict, List
 from tqdm import tqdm
 
 from benchmarks.adapters import BenchmarkAdapter
-from benchmarks.report import generate_reports
-from benchmarks.results import (
+from benchmarks.utils.results_utils import (
     append_jsonl,
-    build_manifest,
     build_results_file,
     read_jsonl,
-    sidecar_paths,
     write_json,
 )
+from baselines.wrapper import build_context_builder
 from utils.config_utils import get_config_value
+from utils.llm_utils import build_openai_client
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +57,17 @@ def merge_existing_samples(adapter: BenchmarkAdapter, samples: List[Dict[str, An
     return merged
 
 
-def run_pending(adapter: BenchmarkAdapter, cfg, samples: List[Dict[str, Any]], output_path: Path) -> None:
+def run_pending(
+    adapter: BenchmarkAdapter,
+    cfg,
+    samples: List[Dict[str, Any]],
+    output_path: Path,
+    context_builder,
+    client,
+) -> None:
     process_mode = get_config_value(cfg, "benchmarks.process_mode", "serial")
     workers = int(get_config_value(cfg, "benchmarks.workers", 1))
     pending_indices = [idx for idx, sample in enumerate(samples) if not adapter.is_successful_result(sample)]
-    logger.info("Progress: %s/%s completed", len(samples) - len(pending_indices), len(samples))
     logger.info("Evaluation Process Mode: %s", process_mode)
     if process_mode == "parallel":
         logger.info("Number Of Worker Threads: %s", workers)
@@ -73,7 +78,7 @@ def run_pending(adapter: BenchmarkAdapter, cfg, samples: List[Dict[str, Any]], o
     def run_index(idx: int) -> Dict[str, Any] | None:
         started = perf_counter()
         try:
-            result = adapter.process_sample(samples[idx], cfg)
+            result = adapter.process_sample(samples[idx], cfg, context_builder, client)
         except Exception:
             logger.exception(
                 "%s sample failed. idx=%s sample_key=%s",
@@ -120,6 +125,8 @@ def run_benchmark_with_adapter(cfg, adapter: BenchmarkAdapter) -> Dict[str, Any]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Output Datapath: %s", output_path)
     compact_results_file(adapter, output_path)
+    context_builder = build_context_builder(cfg)
+    client = build_openai_client(cfg)
 
     samples: List[Dict[str, Any]] = []
     for round_id in range(1, MAX_RETRY_ROUNDS + 1):
@@ -134,7 +141,7 @@ def run_benchmark_with_adapter(cfg, adapter: BenchmarkAdapter) -> Dict[str, Any]
             completed,
             len(samples),
         )
-        run_pending(adapter, cfg, samples, output_path)
+        run_pending(adapter, cfg, samples, output_path, context_builder, client)
 
     samples = merge_existing_samples(adapter, adapter.load_samples(cfg), output_path)
     completed = sum(1 for sample in samples if adapter.is_successful_result(sample))
@@ -147,15 +154,12 @@ def run_benchmark_with_adapter(cfg, adapter: BenchmarkAdapter) -> Dict[str, Any]
     metrics.setdefault("completed_count", completed)
     metrics.setdefault("failed_count", failed)
 
-    metrics_path, manifest_path = sidecar_paths(output_path)
+    metrics_path = output_path.with_suffix(".metrics.json")
     write_json(metrics_path, metrics)
-    write_json(manifest_path, build_manifest(cfg, output_path, metrics_path))
-    generate_reports(output_path.parents[2])
 
     return {
         "results_file": str(output_path),
         "metrics_file": str(metrics_path),
-        "manifest_file": str(manifest_path),
         "metrics": metrics,
         "samples": samples,
     }

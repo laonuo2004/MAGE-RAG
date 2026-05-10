@@ -19,9 +19,9 @@ class BM25ContextBuilder(ContextBuilder):
 
     def __init__(self, cfg=None):
         super().__init__(cfg)
-        self.top_k = int(get_config_value(self.cfg, 'baselines.top_k', 5))
-        self.chunk_size = int(get_config_value(self.cfg, 'baselines.chunk_size', 200))
-        self.chunk_overlap = int(get_config_value(self.cfg, 'baselines.chunk_overlap', 50))
+        self.top_k = int(get_config_value(self.cfg, 'baselines.params.top_k', 5))
+        self.chunk_size = int(get_config_value(self.cfg, 'baselines.params.chunk_size', 200))
+        self.chunk_overlap = int(get_config_value(self.cfg, 'baselines.params.chunk_overlap', 50))
         self.k1 = float(get_config_value(self.cfg, 'baselines.bm25_k1', 1.5))
         self.b = float(get_config_value(self.cfg, 'baselines.bm25_b', 0.75))
         self.lowercase = bool(get_config_value(self.cfg, 'baselines.lowercase', True))
@@ -37,11 +37,11 @@ class BM25ContextBuilder(ContextBuilder):
             self.max_context_chars = int(self.max_context_chars)
 
         if self.top_k <= 0:
-            raise ValueError('BM25 baseline requires cfg.baselines.top_k > 0.')
+            raise ValueError('BM25 baseline requires cfg.baselines.params.top_k > 0.')
         if self.chunk_size <= 0:
-            raise ValueError('BM25 baseline requires cfg.baselines.chunk_size > 0.')
+            raise ValueError('BM25 baseline requires cfg.baselines.params.chunk_size > 0.')
         if self.chunk_overlap < 0 or self.chunk_overlap >= self.chunk_size:
-            raise ValueError('BM25 baseline requires 0 <= cfg.baselines.chunk_overlap < chunk_size.')
+            raise ValueError('BM25 baseline requires 0 <= cfg.baselines.params.chunk_overlap < chunk_size.')
         if self.max_chunks_per_page is not None and self.max_chunks_per_page <= 0:
             raise ValueError('BM25 baseline requires cfg.baselines.max_chunks_per_page > 0 when set.')
         self._nlp = self._load_tokenizer()

@@ -6,7 +6,6 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Protocol
 
-from baselines.wrapper import build_context_builder
 from benchmarks.longdocurl.eval.utils_api import get_msg_format
 from benchmarks.longdocurl.utils.calculate_metrics import calculate_accuracy as calculate_longdocurl_accuracy
 from benchmarks.longdocurl.utils.calculate_metrics_fine_grained import calculate_accuracy_fine_grained, generalize_score_dict
@@ -14,7 +13,7 @@ from benchmarks.longdocurl.utils.utils_score_v3 import eval_score as eval_longdo
 from benchmarks.mmlongbench.eval.eval_score import eval_acc_and_f1, eval_score as eval_mmlongbench_score
 from benchmarks.mmlongbench.eval.extract_answer import extract_answer
 from utils.config_utils import get_config_value, require_config_value
-from utils.llm_utils import build_openai_client, call_llm_messages
+from utils.llm_utils import call_llm_messages
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +22,18 @@ LONGDOCURL_ROOT = Path(__file__).resolve().parent / "longdocurl"
 MMLONGBENCH_EXTRACTOR_PROMPT = MMLONGBENCH_ROOT / "eval" / "prompt_for_answer_extraction.md"
 LONGDOCURL_EXTRACTOR_PROMPT = LONGDOCURL_ROOT / "eval" / "prompt_for_answer_extraction.md"
 LONGDOCURL_SCORE_SAMPLE_FILE = LONGDOCURL_ROOT / "evaluation_results" / "scores_sample_fine_grained.json"
+COMMON_RESULT_FIELDS = (
+    "context_metadata",
+    "timing_prepare_seconds",
+    "timing_generation_seconds",
+    "timing_extraction_seconds",
+    "timing_total_seconds",
+    "response",
+    "extractor_model_name",
+    "extracted_res",
+    "pred",
+    "score",
+)
 
 
 class BenchmarkAdapter(Protocol):
@@ -37,7 +48,7 @@ class BenchmarkAdapter(Protocol):
     def is_successful_result(self, sample: Dict[str, Any]) -> bool:
         ...
 
-    def process_sample(self, sample: Dict[str, Any], cfg) -> Dict[str, Any] | None:
+    def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         ...
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:
@@ -54,7 +65,27 @@ def _merge_context_metadata(sample: Dict[str, Any], messages) -> None:
     sample["context_metadata"] = {**existing, **metadata}
 
 
-def _request_llm(messages, model_name: str, client, log_prefix: str, max_tokens: int = 1024) -> str:
+def _reset_sample_fields(sample: Dict[str, Any], keys) -> None:
+    for key in keys:
+        sample.pop(key, None)
+
+
+def _prepare_messages(
+    sample: Dict[str, Any],
+    cfg,
+    context_builder,
+    benchmark_name: str,
+) -> tuple[Any, str, str]:
+    prep_start = perf_counter()
+    messages = context_builder.build(benchmark_name, sample)
+    _merge_context_metadata(sample, messages)
+    qa_model_name = require_config_value(cfg, "benchmarks.qa_model_name")
+    extractor_model_name = require_config_value(cfg, "benchmarks.extractor_model_name")
+    sample["timing_prepare_seconds"] = round(perf_counter() - prep_start, 3)
+    return messages, qa_model_name, extractor_model_name
+
+
+def _call_llm(messages, model_name: str, client, log_prefix: str, max_tokens: int = 1024) -> str:
     return call_llm_messages(
         client,
         model_name,
@@ -66,6 +97,20 @@ def _request_llm(messages, model_name: str, client, log_prefix: str, max_tokens:
         log_prefix=log_prefix,
         failure_value=lambda exc: f"Failed: {exc}",
     )
+
+
+def _generate_response(
+    sample: Dict[str, Any],
+    messages,
+    model_name: str,
+    client,
+    log_prefix: str,
+) -> str:
+    generation_start = perf_counter()
+    response = _call_llm(messages, model_name, client, log_prefix)
+    sample["timing_generation_seconds"] = round(perf_counter() - generation_start, 3)
+    sample["response"] = response
+    return response
 
 
 class MMLongBenchAdapter:
@@ -100,24 +145,17 @@ class MMLongBenchAdapter:
             return None
         return match.group(1).strip()
 
-    def process_sample(self, sample: Dict[str, Any], cfg) -> Dict[str, Any] | None:
+    def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         sample = dict(sample)
-        for key in ("score", "pred", "extracted_res", "error", "failure_stage", "status"):
-            sample.pop(key, None)
+        _reset_sample_fields(sample, COMMON_RESULT_FIELDS)
 
-        prep_start = perf_counter()
-        context_builder = build_context_builder(cfg)
-        messages = context_builder.build("mmlongbench", sample)
-        _merge_context_metadata(sample, messages)
-        client = build_openai_client(cfg)
-        qa_model_name = require_config_value(cfg, "benchmarks.qa_model_name")
-        extractor_model_name = require_config_value(cfg, "benchmarks.extractor_model_name")
-        sample["timing_prepare_seconds"] = round(perf_counter() - prep_start, 3)
-
-        generation_start = perf_counter()
-        response = _request_llm(messages, qa_model_name, client, "MMLongBench generation")
-        sample["timing_generation_seconds"] = round(perf_counter() - generation_start, 3)
-        sample["response"] = response
+        messages, qa_model_name, extractor_model_name = _prepare_messages(
+            sample,
+            cfg,
+            context_builder,
+            "mmlongbench",
+        )
+        response = _generate_response(sample, messages, qa_model_name, client, "MMLongBench generation")
 
         extraction_start = perf_counter()
         extracted_res = extract_answer(
@@ -204,36 +242,29 @@ class LongDocURLAdapter:
             return list(parsed_answer)
         return parsed_answer
 
-    def process_sample(self, sample: Dict[str, Any], cfg) -> Dict[str, Any] | None:
+    def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         sample = dict(sample)
-        for key in ("score", "score_v3", "pred", "detailed_response", "response", "extracted_res"):
-            sample.pop(key, None)
+        _reset_sample_fields(sample, COMMON_RESULT_FIELDS)
 
-        prep_start = perf_counter()
-        context_builder = build_context_builder(cfg)
-        messages = context_builder.build("longdocurl", sample)
-        _merge_context_metadata(sample, messages)
-        client = build_openai_client(cfg)
-        qa_model_name = require_config_value(cfg, "benchmarks.qa_model_name")
-        extractor_model_name = require_config_value(cfg, "benchmarks.extractor_model_name")
-        sample["timing_prepare_seconds"] = round(perf_counter() - prep_start, 3)
-
-        generation_start = perf_counter()
-        response = _request_llm(messages, qa_model_name, client, "LongDocURL generation")
-        sample["timing_generation_seconds"] = round(perf_counter() - generation_start, 3)
+        messages, qa_model_name, extractor_model_name = _prepare_messages(
+            sample,
+            cfg,
+            context_builder,
+            "longdocurl",
+        )
+        response = _generate_response(sample, messages, qa_model_name, client, "LongDocURL generation")
         if response is None:
             return None
-        sample["response"] = response
 
         prompt = f"{self.extractor_prompt}\nQuestion: {sample['question']}\nAnalysis: {response}"
         extraction_start = perf_counter()
         extractor_messages = get_msg_format(prompt, None)
-        extractor_result = _request_llm(
+        extractor_result = _call_llm(
             extractor_messages,
             extractor_model_name,
             client,
             "LongDocURL extraction",
-            max_tokens=32768,
+            max_tokens=8192,
         )
         sample["timing_extraction_seconds"] = round(perf_counter() - extraction_start, 3)
         sample["extractor_model_name"] = extractor_model_name

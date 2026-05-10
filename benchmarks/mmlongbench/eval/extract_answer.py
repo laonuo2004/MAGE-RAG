@@ -29,7 +29,7 @@ def extract_answer(
         model_name,
         messages,
         temperature=0.0,
-        max_tokens=32768,
+        max_tokens=8192,
         retries=3,
         logger=logger,
         log_prefix="MMLongBench answer extraction",

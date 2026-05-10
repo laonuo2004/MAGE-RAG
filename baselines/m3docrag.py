@@ -23,10 +23,10 @@ class m3docragContextBuilder(ContextBuilder):
 
     def __init__(self, cfg=None):
         super().__init__(cfg)
-        top_k = require_config_value(self.cfg, 'baselines.top_k')
+        top_k = require_config_value(self.cfg, 'baselines.params.top_k')
         self.top_k = int(top_k)
         if self.top_k <= 0:
-            raise ValueError('M3DocRAG baseline requires cfg.baselines.top_k > 0.')
+            raise ValueError('M3DocRAG baseline requires cfg.baselines.params.top_k > 0.')
 
     def build_mmlongbench(self, sample, **kwargs):
         doc_id = sample['doc_id']

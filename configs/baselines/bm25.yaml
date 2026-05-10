@@ -1,7 +1,8 @@
 name: bm25
-top_k: 5
-chunk_size: 200
-chunk_overlap: 20
+params:
+  top_k: 5
+  chunk_size: 200
+  chunk_overlap: 20
 bm25_k1: 1.5
 bm25_b: 0.75
 tokenizer: spacy

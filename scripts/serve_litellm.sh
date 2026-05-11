@@ -5,6 +5,7 @@ set -euo pipefail
 LITELLM_BIN="${LITELLM_BIN:-/root/autodl-tmp/conda/envs/logma-rag-py12/bin/litellm}"
 CONFIG_PATH="${1:-configs/litellm_config.yaml}"
 PORT="${2:-4000}"
+LITELLM_DEBUG="${LITELLM_DEBUG:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -17,4 +18,10 @@ if [[ -f "${CODE_ROOT}/.env" ]]; then
 fi
 
 cd "${CODE_ROOT}"
-exec "${LITELLM_BIN}" --config "${CONFIG_PATH}" --port "${PORT}" --debug
+ARGS=(--config "${CONFIG_PATH}" --port "${PORT}")
+
+if [[ "${LITELLM_DEBUG}" == "1" ]]; then
+  ARGS+=(--debug)
+fi
+
+exec "${LITELLM_BIN}" "${ARGS[@]}"

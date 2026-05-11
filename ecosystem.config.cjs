@@ -16,17 +16,23 @@ module.exports = {
     },
     {
       name: "vllm",
-      script: "scripts/serve_qwen3_vl_vllm.sh",
+      script: "scripts/pm2_vllm_wrapper.sh",
       interpreter: "bash",
-      args: "maxctx",
+      args: "longctx",
       cwd: "/root/autodl-tmp/ylz/NeurIPS_2026/code",
       env: {
         CUDA_VISIBLE_DEVICES: "1",
         PORT: "8000",
-        GPU_MEMORY_UTILIZATION: "0.70"
+        GPU_MEMORY_UTILIZATION: "0.70",
+        VLLM_SERVE_SCRIPT: "scripts/serve_qwen3_vl_vllm.sh",
+        VLLM_STOP_GRACE_SECONDS: "20",
+        CLEAN_STALE_ON_START: "1"
       },
       autorestart: true,
-      restart_delay: 10000,
+      min_uptime: "60s",
+      restart_delay: 30000,
+      exp_backoff_restart_delay: 10000,
+      kill_timeout: 60000,
       max_restarts: 100000,
       time: true,
       out_file: "logs/pm2-vllm.out.log",

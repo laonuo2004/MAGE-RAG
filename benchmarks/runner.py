@@ -56,6 +56,27 @@ def merge_existing_samples(adapter: BenchmarkAdapter, samples: List[Dict[str, An
     return merged
 
 
+def finalize_metrics(adapter: BenchmarkAdapter, cfg, output_path: str | Path) -> Dict[str, Any]:
+    output_path = Path(output_path)
+    samples = merge_existing_samples(adapter, adapter.load_samples(cfg), output_path)
+    completed = sum(1 for sample in samples if adapter.is_successful_result(sample))
+    failed = len(samples) - completed
+
+    metrics = adapter.build_metrics(samples, output_path)
+    metrics.setdefault("sample_count", len(samples))
+    metrics.setdefault("completed_count", completed)
+    metrics.setdefault("failed_count", failed)
+
+    metrics_path = output_path.with_suffix(".metrics.json")
+    write_json(metrics_path, metrics)
+    logger.info("Metrics saved to %s", metrics_path)
+    return {
+        "metrics_file": str(metrics_path),
+        "metrics": metrics,
+        "samples": samples,
+    }
+
+
 def run_pending(
     adapter: BenchmarkAdapter,
     cfg,
@@ -138,24 +159,19 @@ def run_benchmark_with_adapter(cfg, adapter: BenchmarkAdapter) -> Dict[str, Any]
             len(samples),
         )
         run_pending(adapter, cfg, samples, output_path, context_builder, client)
+        finalize_metrics(adapter, cfg, output_path)
 
-    samples = merge_existing_samples(adapter, adapter.load_samples(cfg), output_path)
-    completed = sum(1 for sample in samples if adapter.is_successful_result(sample))
-    failed = len(samples) - completed
+    final = finalize_metrics(adapter, cfg, output_path)
+    samples = final["samples"]
+    metrics = final["metrics"]
+    completed = metrics["completed_count"]
+    failed = metrics["failed_count"]
     if failed:
         logger.warning("%s stopped with %s/%s successful samples.", adapter.name, completed, len(samples))
 
-    metrics = adapter.build_metrics(samples, output_path)
-    metrics.setdefault("sample_count", len(samples))
-    metrics.setdefault("completed_count", completed)
-    metrics.setdefault("failed_count", failed)
-
-    metrics_path = output_path.with_suffix(".metrics.json")
-    write_json(metrics_path, metrics)
-
     return {
         "results_file": str(output_path),
-        "metrics_file": str(metrics_path),
+        "metrics_file": final["metrics_file"],
         "metrics": metrics,
         "samples": samples,
     }

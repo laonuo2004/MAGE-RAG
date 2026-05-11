@@ -37,6 +37,16 @@ class DummyAdapter:
         return {}
 
 
+class PartiallyFailingAdapter(DummyAdapter):
+    def load_samples(self, cfg):
+        return [{"id": "a"}, {"id": "b", "always_fail": True}]
+
+    def process_sample(self, sample, cfg, context_builder, client):
+        if sample.get("always_fail"):
+            return None
+        return super().process_sample(sample, cfg, context_builder, client)
+
+
 class RunnerResultsTests(unittest.TestCase):
     def test_stable_result_paths_partition_by_baseline_dir(self):
         cfg = OmegaConf.create({
@@ -140,6 +150,35 @@ class RunnerResultsTests(unittest.TestCase):
         samples = result["samples"]
         self.assertEqual({sample["context_builder_id"] for sample in samples}, {id(context_builder)})
         self.assertEqual({sample["client_id"] for sample in samples}, {id(client)})
+
+    def test_run_benchmark_writes_partial_metrics_when_samples_fail(self):
+        adapter = PartiallyFailingAdapter()
+        original_build_context_builder = runner.build_context_builder
+        original_build_openai_client = runner.build_openai_client
+        try:
+            runner.build_context_builder = lambda cfg: object()
+            runner.build_openai_client = lambda cfg: object()
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                output_path = Path(tmp_dir) / "results.jsonl"
+                cfg = OmegaConf.create({
+                    "benchmarks": {
+                        "process_mode": "serial",
+                        "workers": 1,
+                        "results_file": str(output_path),
+                    },
+                    "baselines": {"name": "dummy"},
+                })
+                result = run_benchmark_with_adapter(cfg, adapter)
+                metrics_path = output_path.with_suffix(".metrics.json")
+                metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        finally:
+            runner.build_context_builder = original_build_context_builder
+            runner.build_openai_client = original_build_openai_client
+
+        self.assertEqual(result["metrics_file"], str(metrics_path))
+        self.assertEqual(metrics["sample_count"], 2)
+        self.assertEqual(metrics["completed_count"], 1)
+        self.assertEqual(metrics["failed_count"], 1)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import ast
 import json
 import logging
 import re
+from collections import defaultdict
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Dict, List, Protocol
@@ -224,6 +225,11 @@ class MMLongBenchAdapter:
             "overall_acc": overall_acc,
             "overall_f1": overall_f1,
         }
+
+        def group_metrics(group_samples: List[Dict[str, Any]]) -> Dict[str, Any]:
+            acc, f1 = eval_acc_and_f1(group_samples)
+            return {"acc": acc, "f1": f1, "count": len(group_samples)}
+
         single_page = [
             sample for sample in completed
             if len(_ensure_list(sample.get("evidence_pages"))) == 1
@@ -234,10 +240,33 @@ class MMLongBenchAdapter:
         ]
         unanswerable = [sample for sample in completed if sample.get("answer") == "Not answerable"]
         metrics["breakdowns"] = {
-            "single_page": {"acc": eval_acc_and_f1(single_page)[0], "count": len(single_page)},
-            "cross_page": {"acc": eval_acc_and_f1(cross_page)[0], "count": len(cross_page)},
-            "unanswerable": {"acc": eval_acc_and_f1(unanswerable)[0], "count": len(unanswerable)},
+            "single_page": group_metrics(single_page),
+            "cross_page": group_metrics(cross_page),
+            "unanswerable": group_metrics(unanswerable),
         }
+
+        evidence_source_samples: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        document_type_samples: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        answer_format_samples: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for sample in completed:
+            for source in _ensure_list(sample.get("evidence_sources")):
+                evidence_source_samples[str(source)].append(sample)
+            document_type_samples[str(sample.get("doc_type", "unknown"))].append(sample)
+            answer_format_samples[str(sample.get("answer_format", "unknown"))].append(sample)
+
+        metrics["evidence_source_breakdowns"] = {
+            key: group_metrics(group_samples)
+            for key, group_samples in sorted(evidence_source_samples.items())
+        }
+        metrics["document_type_breakdowns"] = {
+            key: group_metrics(group_samples)
+            for key, group_samples in sorted(document_type_samples.items())
+        }
+        metrics["answer_format_breakdowns"] = {
+            key: group_metrics(group_samples)
+            for key, group_samples in sorted(answer_format_samples.items())
+        }
+
         return metrics
 
 

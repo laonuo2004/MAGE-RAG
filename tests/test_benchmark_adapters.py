@@ -85,6 +85,51 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertTrue(LongDocURLAdapter().is_successful_result({"pred": "ok", "score": 1.0}))
         self.assertFalse(LongDocURLAdapter().is_successful_result({"pred": "ok", "score_v3": 1.0}))
 
+    def test_mmlongbench_metrics_include_fine_grained_json_breakdowns(self):
+        samples = [
+            {
+                "answer": "alpha",
+                "pred": "alpha",
+                "score": 1.0,
+                "evidence_pages": "[1]",
+                "evidence_sources": "['Figure', 'Table']",
+                "doc_type": "Guidebook",
+                "answer_format": "Str",
+            },
+            {
+                "answer": "beta",
+                "pred": "Not answerable",
+                "score": 0.0,
+                "evidence_pages": "[1, 2]",
+                "evidence_sources": "['Figure']",
+                "doc_type": "Guidebook",
+                "answer_format": "Str",
+            },
+            {
+                "answer": "Not answerable",
+                "pred": "Not answerable",
+                "score": 1.0,
+                "evidence_pages": "[]",
+                "evidence_sources": "[]",
+                "doc_type": "Financial report",
+                "answer_format": "None",
+            },
+            {"answer": "gamma", "pred": "Failed to extract"},
+        ]
+
+        metrics = MMLongBenchAdapter().build_metrics(samples, Path("result.jsonl"))
+
+        self.assertEqual(metrics["breakdowns"]["single_page"]["count"], 1)
+        self.assertEqual(metrics["breakdowns"]["cross_page"]["count"], 1)
+        self.assertEqual(metrics["breakdowns"]["unanswerable"]["count"], 1)
+        self.assertEqual(metrics["evidence_source_breakdowns"]["Figure"]["count"], 2)
+        self.assertEqual(metrics["evidence_source_breakdowns"]["Figure"]["acc"], 0.5)
+        self.assertEqual(metrics["evidence_source_breakdowns"]["Table"]["count"], 1)
+        self.assertEqual(metrics["document_type_breakdowns"]["Guidebook"]["count"], 2)
+        self.assertEqual(metrics["document_type_breakdowns"]["Guidebook"]["acc"], 0.5)
+        self.assertEqual(metrics["answer_format_breakdowns"]["Str"]["count"], 2)
+        self.assertNotIn("text_metrics_file", metrics)
+
     def test_mmlongbench_process_sample_uses_shared_llm_call_and_fields(self):
         calls = []
         original_call_llm_messages = adapters.call_llm_messages

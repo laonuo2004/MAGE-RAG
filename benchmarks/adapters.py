@@ -11,7 +11,8 @@ from benchmarks.longdocurl.utils.calculate_metrics_fine_grained import calculate
 from benchmarks.longdocurl.utils.utils_score_v3 import eval_score as eval_longdocurl_score
 from benchmarks.mmlongbench.eval.eval_score import eval_acc_and_f1, eval_score as eval_mmlongbench_score
 from utils.config_utils import get_config_value, require_config_value
-from utils.llm_utils import call_llm_messages, text_content_parts
+from utils.llm_utils import call_llm_messages, completion_content, text_content_parts
+from utils.serialization_utils import to_plain_data
 
 logger = logging.getLogger(__name__)
 
@@ -21,15 +22,11 @@ MMLONGBENCH_EXTRACTOR_PROMPT = MMLONGBENCH_ROOT / "eval" / "prompt_for_answer_ex
 LONGDOCURL_EXTRACTOR_PROMPT = LONGDOCURL_ROOT / "eval" / "prompt_for_answer_extraction.md"
 LONGDOCURL_SCORE_SAMPLE_FILE = LONGDOCURL_ROOT / "evaluation_results" / "scores_sample_fine_grained.json"
 COMMON_RESULT_FIELDS = (
-    "context_metadata",
-    "timing_prepare_seconds",
-    "timing_generation_seconds",
-    "timing_extraction_seconds",
-    "timing_total_seconds",
-    "response",
-    "extractor_model_name",
-    "extracted_res",
+    "prepare_metadata",
+    "generation_metadata",
+    "extraction_metadata",
     "pred",
+    "pred_format",
     "score",
 )
 
@@ -53,19 +50,23 @@ class BenchmarkAdapter(Protocol):
         ...
 
 
-def _merge_context_metadata(sample: Dict[str, Any], messages) -> None:
-    metadata = getattr(messages, "metadata", None)
-    if not metadata:
-        return
-    existing = sample.get("context_metadata")
-    if not isinstance(existing, dict):
-        existing = {}
-    sample["context_metadata"] = {**existing, **metadata}
-
-
 def _reset_sample_fields(sample: Dict[str, Any], keys) -> None:
     for key in keys:
         sample.pop(key, None)
+
+
+def _completion_metadata(completion: Any, model_name: str) -> Dict[str, Any]:
+    if isinstance(completion, str):
+        return {"model": model_name}
+    choice = completion.choices[0] if getattr(completion, "choices", None) else None
+    metadata = {
+        "id": getattr(completion, "id", None),
+        "model": getattr(completion, "model", None) or model_name,
+        "created": getattr(completion, "created", None),
+        "finish_reason": getattr(choice, "finish_reason", None) if choice is not None else None,
+        "usage": to_plain_data(getattr(completion, "usage", None)),
+    }
+    return {key: value for key, value in metadata.items() if value is not None}
 
 
 def _prepare_messages(
@@ -76,10 +77,11 @@ def _prepare_messages(
 ) -> tuple[Any, str, str]:
     prep_start = perf_counter()
     messages = context_builder.build(benchmark_name, sample)
-    _merge_context_metadata(sample, messages)
+    prepare_metadata = to_plain_data(getattr(messages, "metadata", None)) or {}
+    prepare_metadata["duration_seconds"] = round(perf_counter() - prep_start, 3)
+    sample["prepare_metadata"] = prepare_metadata
     qa_model_name = require_config_value(cfg, "benchmarks.qa_model_name")
     extractor_model_name = require_config_value(cfg, "benchmarks.extractor_model_name")
-    sample["timing_prepare_seconds"] = round(perf_counter() - prep_start, 3)
     return messages, qa_model_name, extractor_model_name
 
 
@@ -91,7 +93,7 @@ def _generate_response(
     log_prefix: str,
 ) -> str:
     generation_start = perf_counter()
-    response = call_llm_messages(
+    completion = call_llm_messages(
         client,
         model_name,
         messages,
@@ -102,8 +104,12 @@ def _generate_response(
         log_prefix=log_prefix,
         failure_value=lambda exc: f"Failed: {exc}",
     )
-    sample["timing_generation_seconds"] = round(perf_counter() - generation_start, 3)
-    sample["response"] = response
+    response = completion_content(completion)
+    sample["generation_metadata"] = {
+        **_completion_metadata(completion, model_name),
+        "response": response,
+        "duration_seconds": round(perf_counter() - generation_start, 3),
+    }
     return response
 
 
@@ -114,9 +120,9 @@ def _extract_prediction(
     client,
     parse_extraction_result,
     log_prefix: str,
-) -> Any:
+) -> tuple[Any, str | None]:
     extraction_start = perf_counter()
-    extracted_res = call_llm_messages(
+    completion = call_llm_messages(
         client,
         model_name,
         messages,
@@ -127,9 +133,12 @@ def _extract_prediction(
         log_prefix=log_prefix,
         failure_value=lambda exc: f"Failed: {exc}",
     )
-    sample["timing_extraction_seconds"] = round(perf_counter() - extraction_start, 3)
-    sample["extractor_model_name"] = model_name
-    sample["extracted_res"] = extracted_res
+    extracted_res = completion_content(completion)
+    sample["extraction_metadata"] = {
+        **_completion_metadata(completion, model_name),
+        "extracted_res": extracted_res,
+        "duration_seconds": round(perf_counter() - extraction_start, 3),
+    }
     return parse_extraction_result(extracted_res)
 
 
@@ -158,12 +167,14 @@ class MMLongBenchAdapter:
         return "score" in sample and sample.get("pred") != "Failed to extract"
 
     @staticmethod
-    def parse_extraction_result(extracted_res: Any) -> str | None:
+    def parse_extraction_result(extracted_res: Any) -> tuple[str | None, str | None]:
         text = str(extracted_res or "")
-        match = re.search(r"Extracted answer:\s*(.*?)(?:\n+Answer format:|$)", text, flags=re.DOTALL)
-        if not match:
-            return None
-        return match.group(1).strip()
+        answer_match = re.search(r"Extracted answer:\s*(.*?)(?:\n+Answer format:|$)", text, flags=re.DOTALL)
+        if not answer_match:
+            return None, None
+        format_match = re.search(r"Answer format:\s*(.*?)(?:\n|$)", text, flags=re.DOTALL)
+        pred_format = format_match.group(1).strip() if format_match else None
+        return answer_match.group(1).strip(), pred_format
 
     def build_extraction_messages(self, sample: Dict[str, Any], response: Any) -> List[Dict[str, Any]]:
         question = "" if sample.get("question") is None else str(sample.get("question"))
@@ -190,7 +201,7 @@ class MMLongBenchAdapter:
         response = _generate_response(sample, messages, qa_model_name, client, "MMLongBench generation")
 
         extractor_messages = self.build_extraction_messages(sample, response)
-        pred = _extract_prediction(
+        pred, pred_format = _extract_prediction(
             sample,
             extractor_messages,
             extractor_model_name,
@@ -202,6 +213,7 @@ class MMLongBenchAdapter:
             logger.warning("Failed to extract MMLongBench answer. doc_id=%s", sample.get("doc_id"))
             return None
         sample["pred"] = pred
+        sample["pred_format"] = pred_format
         sample["score"] = eval_mmlongbench_score(sample["answer"], pred, sample["answer_format"])
         return sample
 
@@ -275,12 +287,14 @@ class LongDocURLAdapter:
         prompt = f"{self.extractor_prompt}\nQuestion: {sample['question']}\nAnalysis: {response}"
         return [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
 
-    def parse_extraction_result(self, extracted_res: Any) -> Any:
+    def parse_extraction_result(self, extracted_res: Any) -> tuple[Any, str | None]:
         try:
             concise_answer = re.findall(r"<concise_answer>(.*?)</concise_answer>", str(extracted_res), re.DOTALL)[0]
         except Exception:
-            return None
-        return self.parse_concise_answer(concise_answer)
+            return None, None
+        format_match = re.search(r"<answer_format>(.*?)</answer_format>", str(extracted_res), re.DOTALL)
+        pred_format = format_match.group(1).strip() if format_match else None
+        return self.parse_concise_answer(concise_answer), pred_format
 
     def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         sample = dict(sample)
@@ -297,7 +311,7 @@ class LongDocURLAdapter:
             return None
 
         extractor_messages = self.build_extraction_messages(sample, response)
-        pred = _extract_prediction(
+        pred, pred_format = _extract_prediction(
             sample,
             extractor_messages,
             extractor_model_name,
@@ -309,6 +323,7 @@ class LongDocURLAdapter:
             logger.warning("Failed to extract LongDocURL answer. question_id=%s", sample.get("question_id"))
             return None
         sample["pred"] = pred
+        sample["pred_format"] = pred_format
         sample["score"] = eval_longdocurl_score(sample["answer"], pred, sample["answer_format"])
         return sample
 

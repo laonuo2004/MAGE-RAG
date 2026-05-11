@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from omegaconf import OmegaConf
 
@@ -17,6 +18,26 @@ class StubContextBuilder:
             [{"role": "user", "content": text_content_parts(f"{benchmark_name}:{sample['question']}")}],
             metadata={"context_builder": "stub", "sample_question": sample["question"]},
         )
+
+
+def completion(content, *, model="served-model", prompt_tokens=10, completion_tokens=2):
+    return SimpleNamespace(
+        id="cmpl-test",
+        model=model,
+        created=123,
+        system_fingerprint="fp-test",
+        usage={
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+        choices=[
+            SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content=content),
+            )
+        ],
+    )
 
 
 class BenchmarkAdapterTests(unittest.TestCase):
@@ -71,8 +92,13 @@ class BenchmarkAdapterTests(unittest.TestCase):
             def fake_call_llm_messages(*args, **kwargs):
                 calls.append((args, kwargs))
                 if len(calls) == 1:
-                    return "raw answer"
-                return "Extracted answer: answer\nAnswer format: String"
+                    return completion("raw answer", model="qa-served", prompt_tokens=11, completion_tokens=3)
+                return completion(
+                    "Extracted answer: answer\nAnswer format: String",
+                    model="extractor-served",
+                    prompt_tokens=7,
+                    completion_tokens=5,
+                )
 
             adapters.call_llm_messages = fake_call_llm_messages
             cfg = OmegaConf.create({
@@ -86,10 +112,9 @@ class BenchmarkAdapterTests(unittest.TestCase):
                 "question": "q",
                 "answer": "answer",
                 "answer_format": "String",
-                "context_metadata": {"stale": True},
+                "prepare_metadata": {"stale": True},
                 "pred": "stale",
                 "score": 0.0,
-                "timing_total_seconds": 99.0,
             }
 
             result = MMLongBenchAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
@@ -100,15 +125,21 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertEqual(calls[1][0][2][0]["content"][0]["type"], "text")
         self.assertIn("Question: q", calls[1][0][2][0]["content"][0]["text"])
         self.assertIn("Analysis: raw answer", calls[1][0][2][0]["content"][0]["text"])
-        self.assertEqual(result["response"], "raw answer")
+        self.assertEqual(result["generation_metadata"]["response"], "raw answer")
         self.assertEqual(result["pred"], "answer")
+        self.assertEqual(result["pred_format"], "String")
+        self.assertEqual(result["prepare_metadata"]["context_builder"], "stub")
+        self.assertEqual(result["generation_metadata"]["model"], "qa-served")
+        self.assertEqual(result["generation_metadata"]["finish_reason"], "stop")
+        self.assertEqual(result["generation_metadata"]["usage"]["total_tokens"], 14)
+        self.assertEqual(result["extraction_metadata"]["model"], "extractor-served")
+        self.assertEqual(result["extraction_metadata"]["extracted_res"], "Extracted answer: answer\nAnswer format: String")
+        self.assertEqual(result["extraction_metadata"]["usage"]["total_tokens"], 12)
         self.assertIn("score", result)
-        self.assertIn("timing_prepare_seconds", result)
-        self.assertIn("timing_generation_seconds", result)
-        self.assertIn("timing_extraction_seconds", result)
-        self.assertEqual(result["context_metadata"]["context_builder"], "stub")
-        self.assertNotIn("stale", result["context_metadata"])
-        self.assertNotIn("timing_total_seconds", result)
+        self.assertIn("duration_seconds", result["prepare_metadata"])
+        self.assertIn("duration_seconds", result["generation_metadata"])
+        self.assertIn("duration_seconds", result["extraction_metadata"])
+        self.assertNotIn("stale", result["prepare_metadata"])
 
     def test_longdocurl_process_sample_uses_shared_llm_call_and_fields(self):
         calls = []
@@ -117,8 +148,13 @@ class BenchmarkAdapterTests(unittest.TestCase):
             def fake_call_llm_messages(*args, **kwargs):
                 calls.append((args, kwargs))
                 if len(calls) == 1:
-                    return "analysis"
-                return "<concise_answer>'answer'</concise_answer>"
+                    return completion("analysis", model="qa-served", prompt_tokens=13, completion_tokens=4)
+                return completion(
+                    "<concise_answer>'answer'</concise_answer><answer_format>String</answer_format>",
+                    model="extractor-served",
+                    prompt_tokens=8,
+                    completion_tokens=6,
+                )
 
             adapters.call_llm_messages = fake_call_llm_messages
             cfg = OmegaConf.create({
@@ -132,10 +168,9 @@ class BenchmarkAdapterTests(unittest.TestCase):
                 "question": "q",
                 "answer": "answer",
                 "answer_format": "String",
-                "context_metadata": {"stale": True},
+                "prepare_metadata": {"stale": True},
                 "pred": "stale",
                 "score": 0.0,
-                "timing_total_seconds": 99.0,
             }
 
             result = LongDocURLAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
@@ -145,15 +180,19 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertEqual([call[0][1] for call in calls], ["qa-model", "extractor-model"])
         self.assertEqual(calls[1][0][2][0]["content"][0]["type"], "text")
         self.assertIn("Analysis: analysis", calls[1][0][2][0]["content"][0]["text"])
-        self.assertEqual(result["response"], "analysis")
+        self.assertEqual(result["generation_metadata"]["response"], "analysis")
         self.assertEqual(result["pred"], "answer")
+        self.assertEqual(result["pred_format"], "String")
+        self.assertEqual(result["prepare_metadata"]["sample_question"], "q")
+        self.assertEqual(result["generation_metadata"]["model"], "qa-served")
+        self.assertEqual(result["generation_metadata"]["usage"]["total_tokens"], 17)
+        self.assertEqual(result["extraction_metadata"]["model"], "extractor-served")
+        self.assertEqual(result["extraction_metadata"]["finish_reason"], "stop")
         self.assertIn("score", result)
-        self.assertIn("timing_prepare_seconds", result)
-        self.assertIn("timing_generation_seconds", result)
-        self.assertIn("timing_extraction_seconds", result)
-        self.assertEqual(result["context_metadata"]["sample_question"], "q")
-        self.assertNotIn("stale", result["context_metadata"])
-        self.assertNotIn("timing_total_seconds", result)
+        self.assertIn("duration_seconds", result["prepare_metadata"])
+        self.assertIn("duration_seconds", result["generation_metadata"])
+        self.assertIn("duration_seconds", result["extraction_metadata"])
+        self.assertNotIn("stale", result["prepare_metadata"])
 
 
 if __name__ == "__main__":

@@ -18,12 +18,15 @@ def build_openai_client(cfg):
     )
 
 
-def _completion_content(completion):
+def completion_content(completion):
+    """Return the first message content from a chat completion."""
+    if isinstance(completion, str):
+        return completion
     message = completion.choices[0].message
     content = message.content
     if content is None:
         raise ValueError("LLM response content is None")
-    return content, message
+    return content
 
 
 def call_llm_messages(
@@ -53,10 +56,10 @@ def call_llm_messages(
                 max_tokens=max_tokens,
                 temperature=temperature,
             )
-            content, message = _completion_content(completion)
+            completion_content(completion)
             if logger is not None:
-                logger.debug("Raw LLM response: %s", message)
-            return content
+                logger.debug("Raw LLM completion: %s", completion)
+            return completion
         except Exception as exc:
             last_error = exc
             if logger is not None:

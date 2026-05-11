@@ -39,13 +39,6 @@ module.exports = {
       script: "scripts/run_image_ocr.sh",
       out_file: "logs/pm2-job-image-ocr.out.log",
       error_file: "logs/pm2-job-image-ocr.err.log"
-    },
-    {
-      ...jobDefaults,
-      name: "job-llm-ocr",
-      script: "scripts/run_llm_ocr.sh",
-      out_file: "logs/pm2-job-llm-ocr.out.log",
-      error_file: "logs/pm2-job-llm-ocr.err.log"
     }
   ]
 };

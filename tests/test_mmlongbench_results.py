@@ -16,6 +16,7 @@ from benchmarks.mmlongbench.run_api import (
     request_llm,
 )
 from utils.config_utils import require_config_value
+from utils.llm_utils import completion_content
 
 
 class MMLongBenchResultsTests(unittest.TestCase):
@@ -167,7 +168,7 @@ class MMLongBenchResultsTests(unittest.TestCase):
         client = Client()
 
         with self.assertLogs("mmlongbench.run_api", level="WARNING"):
-            self.assertEqual(request_llm([], "model", client), "ok")
+            self.assertEqual(completion_content(request_llm([], "model", client)), "ok")
         self.assertEqual(client.chat.completions.calls, 2)
 
     def test_process_one_sample_persists_context_metadata(self):

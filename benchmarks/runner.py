@@ -2,7 +2,6 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from time import perf_counter
 from typing import Any, Dict, List
 
 from tqdm import tqdm
@@ -76,7 +75,6 @@ def run_pending(
         return
 
     def run_index(idx: int) -> Dict[str, Any] | None:
-        started = perf_counter()
         try:
             result = adapter.process_sample(samples[idx], cfg, context_builder, client)
         except Exception:
@@ -87,8 +85,6 @@ def run_pending(
                 adapter.sample_key(samples[idx]),
             )
             return None
-        if result is not None:
-            result.setdefault("timing_total_seconds", round(perf_counter() - started, 3))
         return result
 
     def handle_result(idx: int, result: Dict[str, Any] | None) -> None:

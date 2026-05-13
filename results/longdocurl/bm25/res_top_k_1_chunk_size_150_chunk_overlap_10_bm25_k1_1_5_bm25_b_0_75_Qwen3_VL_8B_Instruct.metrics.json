@@ -1,0 +1,66 @@
+{
+  "overall_acc": 0.2941691930222253,
+  "avg_acc": 0.2941691930222253,
+  "rectified_avg_acc": 0.2941691930222253,
+  "fine_grained_metrics": {
+    "Main_Task": {
+      "Understanding": 0.3650487652012935,
+      "Reasoning": 0.20399055617078873,
+      "Locating": 0.2176164221487347
+    },
+    "Element_Type": {
+      "Text": 0.3829106164784822,
+      "Layout": 0.24617934898352017,
+      "Figure": 0.3117202890082581,
+      "Table": 0.22429270955108113
+    },
+    "Evidence_Pages": {
+      "Single_Page": 0.32487447049743956,
+      "Multi_Page": 0.26736225814875775
+    },
+    "Num_of_Element_Types": {
+      "Cross_Element": 0.29148882484121535
+    },
+    "Fine_Grained": {
+      "Understanding": {
+        "Single_Page": {
+          "Text": 0.43146679324248755,
+          "Layout": 0.4870201153475332,
+          "Figure": 0.35217189700898244,
+          "Table": 0.3000527407662351
+        },
+        "Multi_Page": {
+          "Text": 0.4071310394069917,
+          "Layout": 0.34991861542794395,
+          "Figure": 0.3144816653596418,
+          "Table": 0.24591390085524156
+        }
+      },
+      "Reasoning": {
+        "Single_Page": {
+          "Text": 0.28292410714285715,
+          "Layout": 0.44308035714285715,
+          "Figure": 0.32142857142857145,
+          "Table": 0.13137755102040816
+        },
+        "Multi_Page": {
+          "Text": 0.3108902691511387,
+          "Layout": 0.175,
+          "Figure": 0.2447058823529412,
+          "Table": 0.06956521739130435
+        }
+      },
+      "Locating": {
+        "Cross_Element": {
+          "Cross_Title": 0.14226726199309597,
+          "Cross_Table": 0.03905824545388503,
+          "Para_Title": 0.30244421630959367,
+          "Figure_Table": 0.3302662215201495
+        }
+      }
+    }
+  },
+  "sample_count": 2325,
+  "completed_count": 2325,
+  "failed_count": 0
+}

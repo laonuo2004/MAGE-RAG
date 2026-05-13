@@ -18,7 +18,7 @@ module.exports = {
       name: "vllm",
       script: "scripts/pm2_vllm_wrapper.sh",
       interpreter: "bash",
-      args: "longctx",
+      args: "maxctx",
       cwd: "/root/autodl-tmp/ylz/NeurIPS_2026/code",
       env: {
         CUDA_VISIBLE_DEVICES: "1",

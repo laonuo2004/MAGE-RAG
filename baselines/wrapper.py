@@ -1,4 +1,5 @@
 from .bm25 import BM25ContextBuilder
+from .colbertv2 import ColBERTv2ContextBuilder
 from .image import ImageContextBuilder
 from .ocr import OcrContextBuilder
 from .m3docrag import m3docragContextBuilder
@@ -8,7 +9,7 @@ _CONTEXT_BUILDERS = {
     'image': ImageContextBuilder,
     'ocr': OcrContextBuilder,
     'bm25': BM25ContextBuilder,
-    'colbertv2': None,
+    'colbertv2': ColBERTv2ContextBuilder,
     'm3docrag': m3docragContextBuilder,
 }
 

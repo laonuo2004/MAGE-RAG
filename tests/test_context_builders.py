@@ -19,10 +19,20 @@ class ContextBuilderTests(unittest.TestCase):
         image_builder = build_context_builder(OmegaConf.create({'baselines': {'name': 'image'}}))
         ocr_builder = build_context_builder(OmegaConf.create({'baselines': {'name': 'ocr'}}))
         bm25_builder = build_context_builder(OmegaConf.create({'baselines': {'name': 'bm25'}}))
+        colbert_builder = build_context_builder(OmegaConf.create({
+            'baselines': {
+                'name': 'colbertv2',
+                'params': {'top_k': 1, 'chunk_size': 8, 'chunk_overlap': 0},
+                'doc_embeddings_colbertv2': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
+                'query_embeddings_colbertv2': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
+                'chunk_metadata_colbertv2': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
+            }
+        }))
 
         self.assertEqual(image_builder.name, 'image')
         self.assertEqual(ocr_builder.name, 'ocr')
         self.assertEqual(bm25_builder.name, 'bm25')
+        self.assertEqual(colbert_builder.name, 'colbertv2')
 
     def test_longdocurl_image_context_matches_legacy_prompt_shape(self):
         png_bytes = base64.b64decode(
@@ -377,6 +387,91 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertEqual(messages.metadata['retrieved_chunks'][0]['page_index'], 1)
         self.assertNotIn('needle outside', messages[0]['content'][0]['text'])
         self.assertIn('allowed target', messages[0]['content'][0]['text'])
+
+    def test_colbertv2_mmlongbench_retrieves_expected_chunk(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            doc_dir = os.path.join(tmp_dir, 'doc_embeddings')
+            query_dir = os.path.join(tmp_dir, 'query_embeddings')
+            meta_dir = os.path.join(tmp_dir, 'chunk_metadata')
+            os.makedirs(doc_dir)
+            os.makedirs(query_dir)
+            os.makedirs(meta_dir)
+
+            save_file(
+                {'embeddings': torch.tensor([[[1.0, 0.0]], [[5.0, 0.0]], [[0.0, 1.0]]])},
+                os.path.join(doc_dir, 'sample.safetensors'),
+            )
+            save_file(
+                {'query_embedding': torch.tensor([[1.0, 0.0]])},
+                os.path.join(query_dir, 'q1.safetensors'),
+            )
+            with open(os.path.join(meta_dir, 'sample.json'), 'w', encoding='utf-8') as f:
+                json.dump([
+                    {
+                        'chunk_id': 0,
+                        'chunk_index': 0,
+                        'text': 'alpha',
+                        'start_page_index': 0,
+                        'end_page_index': 0,
+                        'start_page_number': 1,
+                        'end_page_number': 1,
+                        'covered_page_indices': [0],
+                        'covered_page_numbers': [1],
+                    },
+                    {
+                        'chunk_id': 1,
+                        'chunk_index': 1,
+                        'text': 'needle evidence',
+                        'start_page_index': 1,
+                        'end_page_index': 1,
+                        'start_page_number': 2,
+                        'end_page_number': 2,
+                        'covered_page_indices': [1],
+                        'covered_page_numbers': [2],
+                    },
+                    {
+                        'chunk_id': 2,
+                        'chunk_index': 2,
+                        'text': 'beta',
+                        'start_page_index': 2,
+                        'end_page_index': 2,
+                        'start_page_number': 3,
+                        'end_page_number': 3,
+                        'covered_page_indices': [2],
+                        'covered_page_numbers': [3],
+                    },
+                ], f, ensure_ascii=False, indent=2)
+
+            builder = build_context_builder(OmegaConf.create({
+                'baselines': {
+                    'name': 'colbertv2',
+                    'params': {'top_k': 1, 'chunk_size': 8, 'chunk_overlap': 0},
+                    'doc_embeddings_colbertv2': {'mmlongbench': doc_dir, 'longdocurl': doc_dir},
+                    'query_embeddings_colbertv2': {'mmlongbench': query_dir, 'longdocurl': query_dir},
+                    'chunk_metadata_colbertv2': {'mmlongbench': meta_dir, 'longdocurl': meta_dir},
+                },
+                'benchmarks': {
+                    'name': 'mmlongbench',
+                    'tmp_dir': tmp_dir,
+                    'ocr_json_dir': os.path.join(tmp_dir, 'pdf_jsons'),
+                    'max_pages': 3,
+                }
+            }))
+
+            page_dir = os.path.join(tmp_dir, 'pdf_jsons', 'sample')
+            os.makedirs(page_dir)
+            for page_no, text in ((1, 'page one'), (2, 'page two'), (3, 'page three')):
+                with open(os.path.join(page_dir, f'page_{page_no:04d}.json'), 'w', encoding='utf-8') as f:
+                    json.dump({'text': text}, f)
+
+            messages = builder.build(
+                'mmlongbench',
+                {'doc_id': 'sample.pdf', 'question_id': 'q1', 'question': 'needle?'},
+            )
+
+        self.assertEqual(messages.metadata['retrieved_chunks'][0]['chunk_id'], 1)
+        self.assertEqual(messages.metadata['retrieved_pages'][0]['page_number'], 2)
+        self.assertIn('needle evidence', messages[0]['content'][0]['text'])
 
     def _m3docrag_cfg(self, tmp_dir, max_pages=3):
         return OmegaConf.create({

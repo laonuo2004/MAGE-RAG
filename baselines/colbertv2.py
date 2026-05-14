@@ -1,0 +1,261 @@
+import json
+import os
+from pathlib import Path
+
+import torch
+from safetensors.torch import load_file
+
+from baselines.base import ContextBuilder, ContextMessages
+from utils.config_utils import get_config_value, require_config_value
+from utils.llm_utils import text_content_parts
+
+
+TEXT_SYSTEM_PROMPT = (
+    "You are an expert in document question-answering. "
+    "Answer the question using only the retrieved OCR/text chunks from the document. "
+    "If the answer cannot be found, say Not answerable.\n"
+)
+
+
+class ColBERTv2ContextBuilder(ContextBuilder):
+    name = "colbertv2"
+
+    def __init__(self, cfg=None):
+        super().__init__(cfg)
+        self.top_k = int(get_config_value(self.cfg, "baselines.params.top_k", 5))
+        self.chunk_size = int(get_config_value(self.cfg, "baselines.params.chunk_size", 200))
+        self.chunk_overlap = int(get_config_value(self.cfg, "baselines.params.chunk_overlap", 20))
+        self.allow_cross_page = bool(get_config_value(self.cfg, "baselines.params.allow_cross_page", True))
+        self.max_cross_pages = get_config_value(self.cfg, "baselines.params.max_cross_pages", None)
+        if self.max_cross_pages is not None:
+            self.max_cross_pages = int(self.max_cross_pages)
+        self.doc_embeddings_root = require_config_value(self.cfg, "baselines.doc_embeddings_colbertv2")
+        self.query_embeddings_root = require_config_value(self.cfg, "baselines.query_embeddings_colbertv2")
+        self.chunk_metadata_root = require_config_value(self.cfg, "baselines.chunk_metadata_colbertv2")
+        self.max_context_chars = get_config_value(self.cfg, "baselines.max_context_chars", None)
+        if self.max_context_chars is not None:
+            self.max_context_chars = int(self.max_context_chars)
+
+        if self.top_k <= 0:
+            raise ValueError("ColBERTv2 baseline requires cfg.baselines.params.top_k > 0.")
+        if self.chunk_size <= 0:
+            raise ValueError("ColBERTv2 baseline requires cfg.baselines.params.chunk_size > 0.")
+        if self.chunk_overlap < 0 or self.chunk_overlap >= self.chunk_size:
+            raise ValueError(
+                "ColBERTv2 baseline requires 0 <= cfg.baselines.params.chunk_overlap < chunk_size."
+            )
+
+    def build_mmlongbench(self, sample, **kwargs):
+        doc_key = self._mmlongbench_doc_key(sample["doc_id"])
+        query_key = str(sample["question_id"])
+        allowed_pages = None
+        retrieval = self._retrieve(
+            benchmark_name="mmlongbench",
+            question=sample["question"],
+            doc_key=doc_key,
+            query_key=query_key,
+            allowed_pages=None,
+        )
+        prompt = self._build_prompt(sample["question"], retrieval)
+        return ContextMessages(
+            [{"role": "user", "content": text_content_parts(prompt)}],
+            metadata=self._metadata(retrieval, allowed_pages, doc_key, query_key),
+        )
+
+    def build_longdocurl(self, sample, **kwargs):
+        allowed_pages = sample.get("start_end_idx")
+        doc_key = str(sample["question_id"])
+        query_key = str(sample["question_id"])
+        retrieval = self._retrieve(
+            benchmark_name="longdocurl",
+            question=sample["question"],
+            doc_key=doc_key,
+            query_key=query_key,
+            allowed_pages=allowed_pages,
+        )
+        prompt = self._build_prompt(sample["question"], retrieval)
+        return ContextMessages(
+            [{"role": "user", "content": text_content_parts(prompt)}],
+            metadata=self._metadata(retrieval, allowed_pages, doc_key, query_key),
+        )
+
+    def _retrieve(self, benchmark_name, question, doc_key, query_key, allowed_pages):
+        doc_embedding_path = self._resolve_path(self.doc_embeddings_root, benchmark_name, doc_key, ".safetensors")
+        query_embedding_path = self._resolve_path(self.query_embeddings_root, benchmark_name, query_key, ".safetensors")
+        chunk_metadata_path = self._resolve_path(self.chunk_metadata_root, benchmark_name, doc_key, ".json")
+
+        doc_embeddings, doclens, query_embedding = self._load_embeddings(doc_embedding_path, query_embedding_path)
+        metadata = self._load_chunk_metadata(chunk_metadata_path)
+        candidate_indices = self._candidate_chunk_indices(metadata, allowed_pages)
+        if not candidate_indices:
+            candidate_indices = list(range(len(metadata)))
+        selected_metadata = [metadata[idx] for idx in candidate_indices]
+        selected_doclens = [int(doclens[idx]) for idx in candidate_indices]
+
+        flat_start = 0
+        pieces = []
+        for idx, doclen in enumerate(doclens.tolist()):
+            flat_end = flat_start + int(doclen)
+            if idx in set(candidate_indices):
+                pieces.append(doc_embeddings[flat_start:flat_end])
+            flat_start = flat_end
+        candidate_doc_embs = torch.cat(pieces, dim=0) if pieces else torch.empty((0, doc_embeddings.shape[-1]), dtype=doc_embeddings.dtype)
+        scores = self._maxsim_scores(query_embedding, candidate_doc_embs, selected_doclens)
+        top_count = min(self.top_k, len(candidate_indices))
+        top_scores, top_offsets = torch.topk(scores, k=top_count, largest=True, sorted=True)
+
+        retrieval = []
+        for rank, (score, offset) in enumerate(zip(top_scores.tolist(), top_offsets.tolist()), start=1):
+            record = selected_metadata[int(offset)]
+            chunk_id = int(record["chunk_id"])
+            retrieval.append({
+                "rank": rank,
+                "chunk_id": chunk_id,
+                "score": float(score),
+                "text": record["text"],
+                "chunk_index": int(record["chunk_index"]),
+                "start_page_index": int(record["start_page_index"]),
+                "end_page_index": int(record["end_page_index"]),
+                "start_page_number": int(record["start_page_number"]),
+                "end_page_number": int(record["end_page_number"]),
+                "covered_page_indices": [int(v) for v in record["covered_page_indices"]],
+                "covered_page_numbers": [int(v) for v in record["covered_page_numbers"]],
+            })
+        return retrieval
+
+    def _load_embeddings(self, doc_embedding_path, query_embedding_path):
+        if not os.path.exists(doc_embedding_path):
+            raise FileNotFoundError(f"Missing ColBERTv2 document embeddings: {doc_embedding_path}")
+        if not os.path.exists(query_embedding_path):
+            raise FileNotFoundError(f"Missing ColBERTv2 query embeddings: {query_embedding_path}")
+
+        doc_tensors = load_file(doc_embedding_path, device="cpu")
+        query_tensors = load_file(query_embedding_path, device="cpu")
+        if "embeddings" not in doc_tensors:
+            raise KeyError(f'Document embedding file missing "embeddings": {doc_embedding_path}')
+        if "doclens" not in doc_tensors:
+            raise KeyError(f'Document embedding file missing "doclens": {doc_embedding_path}')
+        if "query_embedding" not in query_tensors:
+            raise KeyError(f'Query embedding file missing "query_embedding": {query_embedding_path}')
+
+        doc_embeddings = doc_tensors["embeddings"].to(dtype=torch.float32)
+        doclens = doc_tensors["doclens"].to(dtype=torch.int32)
+        query_embedding = query_tensors["query_embedding"].to(dtype=torch.float32)
+        if doc_embeddings.ndim != 2:
+            raise ValueError(
+                f"Expected document embeddings shape [sum_doc_tokens, dim], got {tuple(doc_embeddings.shape)}"
+            )
+        if doclens.ndim != 1:
+            raise ValueError(f"Expected doclens shape [n_chunks], got {tuple(doclens.shape)}")
+        if query_embedding.ndim == 3 and query_embedding.shape[0] == 1:
+            query_embedding = query_embedding[0]
+        if query_embedding.ndim != 2:
+            raise ValueError(
+                f"Expected query embedding shape [q_tokens, dim], got {tuple(query_embedding.shape)}"
+            )
+        if doc_embeddings.shape[-1] != query_embedding.shape[-1]:
+            raise ValueError(
+                "Document and query embedding dims differ: "
+                f"{doc_embeddings.shape[-1]} != {query_embedding.shape[-1]}"
+            )
+        return doc_embeddings, doclens, query_embedding
+
+    def _load_chunk_metadata(self, chunk_metadata_path):
+        if not os.path.exists(chunk_metadata_path):
+            raise FileNotFoundError(f"Missing ColBERTv2 chunk metadata: {chunk_metadata_path}")
+        with open(chunk_metadata_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    def _candidate_chunk_indices(self, metadata, allowed_pages):
+        if allowed_pages is None:
+            return list(range(len(metadata)))
+        if isinstance(allowed_pages, (list, tuple)) and len(allowed_pages) == 2 and all(
+            isinstance(value, int) for value in allowed_pages
+        ):
+            allowed_page_set = set(range(int(allowed_pages[0]), int(allowed_pages[1]) + 1))
+        else:
+            allowed_page_set = set(int(page) for page in allowed_pages)
+        indices = []
+        for idx, record in enumerate(metadata):
+            covered_pages = {int(page) for page in record["covered_page_indices"]}
+            if covered_pages & allowed_page_set:
+                indices.append(idx)
+        return indices
+
+    def _maxsim_scores(self, query_embedding, doc_embeddings_packed, doclens):
+        if doc_embeddings_packed.numel() == 0:
+            return torch.empty(0, dtype=torch.float32)
+        scores = doc_embeddings_packed @ query_embedding.to(dtype=doc_embeddings_packed.dtype).T
+        offset = 0
+        reduced = []
+        for doclen in doclens:
+            doclen = int(doclen)
+            doc_scores = scores[offset:offset + doclen]
+            reduced.append(doc_scores.max(dim=0).values.sum())
+            offset += doclen
+        return torch.stack(reduced)
+
+    def _build_prompt(self, question, retrieval):
+        chunk_blocks = []
+        total_chars = 0
+        for item in retrieval:
+            if item["start_page_number"] == item["end_page_number"]:
+                page_label = f'Page {item["start_page_number"]}'
+            else:
+                page_label = f'Pages {item["start_page_number"]}-{item["end_page_number"]}'
+            block = (
+                f'[{page_label} | Chunk {item["chunk_index"] + 1} | ColBERTv2 score {item["score"]:.4f}]\n'
+                f'{item["text"]}'
+            )
+            if self.max_context_chars is not None and total_chars + len(block) > self.max_context_chars:
+                break
+            chunk_blocks.append(block)
+            total_chars += len(block)
+
+        retrieved_text = "\n\n".join(chunk_blocks)
+        return (
+            TEXT_SYSTEM_PROMPT
+            + "\nQuestion:\n"
+            + str(question)
+            + "\n\nRetrieved OCR/text chunks:\n"
+            + retrieved_text
+        )
+
+    def _metadata(self, retrieval, allowed_pages, doc_key, query_key):
+        retrieved_pages = []
+        best_by_page = {}
+        for item in retrieval:
+            for page_index, page_number in zip(item["covered_page_indices"], item["covered_page_numbers"]):
+                current = best_by_page.get(page_index)
+                if current is None or item["score"] > current["score"]:
+                    best_by_page[page_index] = {
+                        "page_index": page_index,
+                        "page_number": page_number,
+                        "score": item["score"],
+                    }
+        for page_index in sorted(best_by_page):
+            retrieved_pages.append(best_by_page[page_index])
+        return {
+            "context_builder": self.name,
+            "retrieved_chunks": retrieval,
+            "retrieved_pages": retrieved_pages,
+            "allowed_pages": list(allowed_pages),
+            "top_k": self.top_k,
+            "chunk_size": self.chunk_size,
+            "chunk_overlap": self.chunk_overlap,
+            "allow_cross_page": self.allow_cross_page,
+            "max_cross_pages": self.max_cross_pages,
+            "doc_key": doc_key,
+            "query_key": query_key,
+        }
+
+    def _resolve_path(self, roots, benchmark_name, stem, suffix):
+        root = roots if isinstance(roots, str) else get_config_value(roots, benchmark_name)
+        if not root:
+            raise ValueError(f"Missing ColBERTv2 cache root for {benchmark_name}.")
+        return os.path.join(str(root), f"{stem}{suffix}")
+
+    def _mmlongbench_doc_key(self, doc_id):
+        filename = Path(str(doc_id)).name
+        stem = filename.rsplit(".", 1)[0]
+        return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in stem).strip("._") or "document"

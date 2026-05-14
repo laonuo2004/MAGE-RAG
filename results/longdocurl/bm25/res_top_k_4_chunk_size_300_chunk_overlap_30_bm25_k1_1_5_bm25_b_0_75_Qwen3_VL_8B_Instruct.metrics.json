@@ -1,6 +1,6 @@
 {
-  "overall_acc": 0.4537751957445903,
-  "avg_acc": 0.4537751957445903,
+  "overall_acc": 0.45358002361738836,
+  "avg_acc": 0.45358002361738836,
   "rectified_avg_acc": 0.45358002361738836,
   "fine_grained_metrics": {
     "Main_Task": {
@@ -61,6 +61,6 @@
     }
   },
   "sample_count": 2325,
-  "completed_count": 2324,
-  "failed_count": 1
+  "completed_count": 2325,
+  "failed_count": 0
 }

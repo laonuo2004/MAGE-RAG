@@ -7,6 +7,7 @@ from pathlib import Path
 
 CODE_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(CODE_DIR))
+from baselines.utils.benchmarks_related import colbertv2_doc_cache_variant, colbertv2_query_cache_variant
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Verify ColBERTv2 cache coverage before running evaluation.")
@@ -15,6 +16,11 @@ def parse_args():
     parser.add_argument("--doc-embeddings-root", required=True)
     parser.add_argument("--query-embeddings-root", required=True)
     parser.add_argument("--chunk-metadata-root", required=True)
+    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--chunk-size", type=int, required=True)
+    parser.add_argument("--chunk-overlap", type=int, required=True)
+    parser.add_argument("--allow-cross-page", required=True)
+    parser.add_argument("--max-cross-pages", default=None)
     parser.add_argument("--report-path", default=None, help="Optional JSON report path.")
     return parser.parse_args()
 
@@ -49,9 +55,21 @@ def required_paths(benchmark, sample):
 
 def verify(args):
     samples = load_samples(args.benchmark, args.input_path)
-    doc_root = Path(args.doc_embeddings_root)
-    query_root = Path(args.query_embeddings_root)
-    meta_root = Path(args.chunk_metadata_root)
+    doc_root = Path(args.doc_embeddings_root) / colbertv2_doc_cache_variant(
+        args.checkpoint,
+        args.chunk_size,
+        args.chunk_overlap,
+        str(args.allow_cross_page).lower() == "true",
+        None if args.max_cross_pages in (None, "", "null", "None") else int(args.max_cross_pages),
+    )
+    query_root = Path(args.query_embeddings_root) / colbertv2_query_cache_variant(args.checkpoint)
+    meta_root = Path(args.chunk_metadata_root) / colbertv2_doc_cache_variant(
+        args.checkpoint,
+        args.chunk_size,
+        args.chunk_overlap,
+        str(args.allow_cross_page).lower() == "true",
+        None if args.max_cross_pages in (None, "", "null", "None") else int(args.max_cross_pages),
+    )
 
     missing = []
     for sample in samples:

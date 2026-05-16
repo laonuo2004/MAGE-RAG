@@ -159,6 +159,24 @@ def build_token_chunks_from_pages(
     )
 
 
+def colbertv2_doc_cache_variant(checkpoint, chunk_size, chunk_overlap, allow_cross_page, max_cross_pages):
+    checkpoint_name = Path(str(checkpoint)).name or "checkpoint"
+    checkpoint_name = re.sub(r"[^A-Za-z0-9._-]+", "_", checkpoint_name).strip("._") or "checkpoint"
+    return (
+        f"ckpt_{checkpoint_name}"
+        f"_chunk_size_{int(chunk_size)}"
+        f"_chunk_overlap_{int(chunk_overlap)}"
+        f"_allow_cross_page_{bool(allow_cross_page)}"
+        f"_max_cross_pages_{max_cross_pages}"
+    )
+
+
+def colbertv2_query_cache_variant(checkpoint):
+    checkpoint_name = Path(str(checkpoint)).name or "checkpoint"
+    checkpoint_name = re.sub(r"[^A-Za-z0-9._-]+", "_", checkpoint_name).strip("._") or "checkpoint"
+    return f"ckpt_{checkpoint_name}"
+
+
 def _build_single_page_chunks(pages, tokenize_with_spans, chunk_size, chunk_overlap):
     chunks = []
     step = chunk_size - chunk_overlap

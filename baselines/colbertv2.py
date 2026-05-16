@@ -6,6 +6,10 @@ import torch
 from safetensors.torch import load_file
 
 from baselines.base import ContextBuilder, ContextMessages
+from baselines.utils.benchmarks_related import (
+    colbertv2_doc_cache_variant,
+    colbertv2_query_cache_variant,
+)
 from utils.config_utils import get_config_value, require_config_value
 from utils.llm_utils import text_content_parts
 
@@ -29,6 +33,7 @@ class ColBERTv2ContextBuilder(ContextBuilder):
         self.max_cross_pages = get_config_value(self.cfg, "baselines.params.max_cross_pages", None)
         if self.max_cross_pages is not None:
             self.max_cross_pages = int(self.max_cross_pages)
+        self.checkpoint = require_config_value(self.cfg, "baselines.checkpoint")
         self.doc_embeddings_root = require_config_value(self.cfg, "baselines.doc_embeddings_colbertv2")
         self.query_embeddings_root = require_config_value(self.cfg, "baselines.query_embeddings_colbertv2")
         self.chunk_metadata_root = require_config_value(self.cfg, "baselines.chunk_metadata_colbertv2")
@@ -44,6 +49,14 @@ class ColBERTv2ContextBuilder(ContextBuilder):
             raise ValueError(
                 "ColBERTv2 baseline requires 0 <= cfg.baselines.params.chunk_overlap < chunk_size."
             )
+        self.doc_cache_variant = colbertv2_doc_cache_variant(
+            self.checkpoint,
+            self.chunk_size,
+            self.chunk_overlap,
+            self.allow_cross_page,
+            self.max_cross_pages,
+        )
+        self.query_cache_variant = colbertv2_query_cache_variant(self.checkpoint)
 
     def build_mmlongbench(self, sample, **kwargs):
         doc_key = self._mmlongbench_doc_key(sample["doc_id"])
@@ -95,9 +108,27 @@ class ColBERTv2ContextBuilder(ContextBuilder):
         )
 
     def _retrieve(self, benchmark_name, question, doc_key, query_key, allowed_pages):
-        doc_embedding_path = self._resolve_path(self.doc_embeddings_root, benchmark_name, doc_key, ".safetensors")
-        query_embedding_path = self._resolve_path(self.query_embeddings_root, benchmark_name, query_key, ".safetensors")
-        chunk_metadata_path = self._resolve_path(self.chunk_metadata_root, benchmark_name, doc_key, ".json")
+        doc_embedding_path = self._resolve_path(
+            self.doc_embeddings_root,
+            benchmark_name,
+            self.doc_cache_variant,
+            doc_key,
+            ".safetensors",
+        )
+        query_embedding_path = self._resolve_path(
+            self.query_embeddings_root,
+            benchmark_name,
+            self.query_cache_variant,
+            query_key,
+            ".safetensors",
+        )
+        chunk_metadata_path = self._resolve_path(
+            self.chunk_metadata_root,
+            benchmark_name,
+            self.doc_cache_variant,
+            doc_key,
+            ".json",
+        )
 
         doc_embeddings, doclens, query_embedding = self._load_embeddings(doc_embedding_path, query_embedding_path)
         metadata = self._load_chunk_metadata(chunk_metadata_path)
@@ -260,15 +291,17 @@ class ColBERTv2ContextBuilder(ContextBuilder):
             "chunk_overlap": self.chunk_overlap,
             "allow_cross_page": self.allow_cross_page,
             "max_cross_pages": self.max_cross_pages,
+            "doc_cache_variant": self.doc_cache_variant,
+            "query_cache_variant": self.query_cache_variant,
             "doc_key": doc_key,
             "query_key": query_key,
         }
 
-    def _resolve_path(self, roots, benchmark_name, stem, suffix):
+    def _resolve_path(self, roots, benchmark_name, variant, stem, suffix):
         root = roots if isinstance(roots, str) else get_config_value(roots, benchmark_name)
         if not root:
             raise ValueError(f"Missing ColBERTv2 cache root for {benchmark_name}.")
-        return os.path.join(str(root), f"{stem}{suffix}")
+        return os.path.join(str(root), variant, f"{stem}{suffix}")
 
     def _mmlongbench_doc_key(self, doc_id):
         filename = Path(str(doc_id)).name

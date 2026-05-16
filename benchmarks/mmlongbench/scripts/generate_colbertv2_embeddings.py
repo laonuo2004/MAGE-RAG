@@ -14,6 +14,7 @@ CODE_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CODE_DIR))
 
 from baselines.utils.benchmarks_related import build_token_chunks_from_pages, load_mmlongbench_ocr_pages
+from baselines.utils.benchmarks_related import colbertv2_doc_cache_variant, colbertv2_query_cache_variant
 
 
 DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "samples.json"
@@ -195,6 +196,21 @@ def main():
     Path(args.query_output_dir).mkdir(parents=True, exist_ok=True)
     Path(args.metadata_output_dir).mkdir(parents=True, exist_ok=True)
 
+    doc_variant = colbertv2_doc_cache_variant(
+        args.checkpoint,
+        args.chunk_size,
+        args.chunk_overlap,
+        args.allow_cross_page,
+        args.max_cross_pages,
+    )
+    query_variant = colbertv2_query_cache_variant(args.checkpoint)
+    doc_output_dir = Path(args.doc_output_dir) / doc_variant
+    query_output_dir = Path(args.query_output_dir) / query_variant
+    metadata_output_dir = Path(args.metadata_output_dir) / doc_variant
+    doc_output_dir.mkdir(parents=True, exist_ok=True)
+    query_output_dir.mkdir(parents=True, exist_ok=True)
+    metadata_output_dir.mkdir(parents=True, exist_ok=True)
+
     checkpoint = load_checkpoint(args.checkpoint, device)
     tokenize_with_spans = tokenize_with_spans_factory(checkpoint)
     cfg = build_cfg(args)
@@ -220,8 +236,8 @@ def main():
             encode_doc_chunks(
                 checkpoint,
                 chunks,
-                Path(args.doc_output_dir) / f"{doc_key}.safetensors",
-                Path(args.metadata_output_dir) / f"{doc_key}.json",
+                doc_output_dir / f"{doc_key}.safetensors",
+                metadata_output_dir / f"{doc_key}.json",
                 args.batch_size,
                 args.overwrite,
             )
@@ -231,7 +247,7 @@ def main():
             encode_query(
                 checkpoint,
                 sample["question"],
-                Path(args.query_output_dir) / f"{sample['question_id']}.safetensors",
+                query_output_dir / f"{sample['question_id']}.safetensors",
                 args.batch_size,
                 args.overwrite,
             )

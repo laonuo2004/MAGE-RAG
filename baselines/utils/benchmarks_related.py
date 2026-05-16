@@ -4,6 +4,7 @@ import os
 import re
 from collections import OrderedDict
 from io import BytesIO
+from pathlib import Path
 
 from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path
 from utils.config_utils import get_config_value, require_config_value

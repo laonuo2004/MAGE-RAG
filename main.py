@@ -5,6 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
+from baselines.colbertv2_cache import prepare_colbertv2_cache
 from benchmarks.wrapper import run_benchmark
 from utils.logging_utils import apply_logging_config
 
@@ -19,7 +20,8 @@ def main(cfg: DictConfig) -> None:
     logger = logging.getLogger(__name__)
     logger.info("Starting Benchmark With The Following Configuration:")
     logger.info("\n" + OmegaConf.to_yaml(cfg, resolve=True))
-    
+
+    prepare_colbertv2_cache(cfg)
     run_benchmark(cfg)
 
     # Useful when checking where Hydra stores per-run artifacts.

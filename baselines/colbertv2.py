@@ -63,7 +63,22 @@ class ColBERTv2ContextBuilder(ContextBuilder):
         )
 
     def build_longdocurl(self, sample, **kwargs):
-        allowed_pages = sample.get("start_end_idx")
+        images = sample.get("images")
+        allowed_pages = None
+        if isinstance(images, str):
+            images = [images]
+        if images:
+            allowed_pages = []
+            for image_path in images:
+                filename = os.path.basename(str(image_path))
+                if "_" not in filename:
+                    continue
+                page_part = filename.rsplit("_", 1)[-1].split(".", 1)[0]
+                if page_part.isdigit():
+                    allowed_pages.append(int(page_part))
+            allowed_pages = sorted(set(allowed_pages)) or None
+        if allowed_pages is None:
+            allowed_pages = sample.get("start_end_idx")
         doc_key = str(sample["question_id"])
         query_key = str(sample["question_id"])
         retrieval = self._retrieve(
@@ -239,7 +254,7 @@ class ColBERTv2ContextBuilder(ContextBuilder):
             "context_builder": self.name,
             "retrieved_chunks": retrieval,
             "retrieved_pages": retrieved_pages,
-            "allowed_pages": list(allowed_pages),
+            "allowed_pages": [] if allowed_pages is None else list(allowed_pages),
             "top_k": self.top_k,
             "chunk_size": self.chunk_size,
             "chunk_overlap": self.chunk_overlap,

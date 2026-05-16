@@ -103,11 +103,18 @@ def mmlongbench_doc_key(doc_id):
 
 
 def load_checkpoint(checkpoint_path, device):
+    from colbert.infra import ColBERTConfig
+    from transformers.modeling_utils import PreTrainedModel
     from colbert.modeling.checkpoint import Checkpoint
 
-    checkpoint = Checkpoint(checkpoint_path)
-    checkpoint.colbert.to(device)
-    checkpoint.colbert.eval()
+    # ColBERT's dynamically created HuggingFace wrapper lags behind newer
+    # Transformers, which now expects all_tied_weights_keys during model
+    # finalization. Patching the base class keeps the dynamic subclass happy.
+    if not hasattr(PreTrainedModel, "all_tied_weights_keys"):
+        PreTrainedModel.all_tied_weights_keys = {}
+
+    config = ColBERTConfig(checkpoint=checkpoint_path)
+    checkpoint = Checkpoint(checkpoint_path, colbert_config=config)
     return checkpoint
 
 
@@ -137,13 +144,12 @@ def encode_doc_chunks(checkpoint, chunks, output_path, metadata_path, batch_size
         return "skipped"
 
     texts = [chunk["text"] for chunk in chunks]
-    doc_embs = checkpoint.docFromText(texts, bsize=batch_size, keep_dims=False, to_cpu=True)
-    if isinstance(doc_embs, tuple):
-        embs, doclens = doc_embs
-    else:
+    doc_embs = checkpoint.docFromText(texts, bsize=batch_size, keep_dims="flatten", to_cpu=False)
+    if not isinstance(doc_embs, tuple) or len(doc_embs) < 2:
         raise ValueError("Unexpected ColBERTv2 docFromText return value.")
+    embs, doclens = doc_embs[:2]
 
-    embs = embs.to(dtype=torch.float32, device="cpu")
+    embs = embs.detach().to(dtype=torch.float32, device="cpu")
     doclens = torch.as_tensor(doclens, dtype=torch.int32, device="cpu")
     save_file({"embeddings": embs, "doclens": doclens}, output_path)
     with metadata_path.open("w", encoding="utf-8") as f:
@@ -157,13 +163,17 @@ def encode_query(checkpoint, question, output_path, batch_size, overwrite):
         logger.info("Skipping existing ColBERTv2 query embeddings: %s", output_path)
         return "skipped"
 
-    query_emb = checkpoint.queryFromText([question], bsize=batch_size, to_cpu=True)
+    query_emb = checkpoint.queryFromText([question], bsize=batch_size, to_cpu=False)
+    if isinstance(query_emb, (list, tuple)):
+        query_emb = query_emb[0]
     if isinstance(query_emb, torch.Tensor):
-        if query_emb.ndim == 3:
+        if query_emb.ndim == 3 and query_emb.shape[0] == 1:
             query_emb = query_emb[0]
     else:
-        query_emb = torch.as_tensor(query_emb[0] if isinstance(query_emb, (list, tuple)) else query_emb)
-    query_emb = query_emb.to(dtype=torch.float32, device="cpu")
+        query_emb = torch.as_tensor(query_emb)
+    query_emb = query_emb.detach().to(dtype=torch.float32, device="cpu")
+    if query_emb.ndim != 2:
+        raise ValueError(f"Unexpected ColBERTv2 query embedding shape: {tuple(query_emb.shape)}")
     save_file({"query_embedding": query_emb}, output_path)
     logger.info("Saved %s", output_path)
     return "generated"

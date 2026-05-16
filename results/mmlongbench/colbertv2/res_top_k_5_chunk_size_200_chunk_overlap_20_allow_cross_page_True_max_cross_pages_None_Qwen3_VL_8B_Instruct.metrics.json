@@ -1,0 +1,90 @@
+{
+  "overall_acc": 0.24615384615384617,
+  "overall_f1": 0.2435897435897436,
+  "breakdowns": {
+    "single_page": {
+      "acc": 0.2657342657342658,
+      "f1": 0.38974358974358975,
+      "count": 11
+    },
+    "cross_page": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 7
+    },
+    "unanswerable": {
+      "acc": 1.0,
+      "f1": 0.0,
+      "count": 2
+    }
+  },
+  "evidence_source_breakdowns": {
+    "Chart": {
+      "acc": 0.09230769230769231,
+      "f1": 0.14201183431952663,
+      "count": 10
+    },
+    "Figure": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    },
+    "Generalized-text (Layout)": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    },
+    "Pure-text (Plain-text)": {
+      "acc": 0.4,
+      "f1": 0.5714285714285715,
+      "count": 5
+    },
+    "Table": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    }
+  },
+  "document_type_breakdowns": {
+    "Research report / Introduction": {
+      "acc": 0.22485207100591717,
+      "f1": 0.1230769230769231,
+      "count": 13
+    },
+    "Tutorial/Workshop": {
+      "acc": 0.2857142857142857,
+      "f1": 0.4444444444444445,
+      "count": 7
+    }
+  },
+  "answer_format_breakdowns": {
+    "Float": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    },
+    "Int": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 4
+    },
+    "List": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    },
+    "None": {
+      "acc": 1.0,
+      "f1": 0.0,
+      "count": 2
+    },
+    "Str": {
+      "acc": 0.2923076923076923,
+      "f1": 0.38974358974358975,
+      "count": 10
+    }
+  },
+  "sample_count": 20,
+  "completed_count": 20,
+  "failed_count": 0
+}

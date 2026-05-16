@@ -1,22 +1,22 @@
 {
-  "overall_acc": 0.4411670065670467,
-  "avg_acc": 0.4411670065670467,
-  "rectified_avg_acc": 0.44078750806677397,
+  "overall_acc": 0.4411474218714124,
+  "avg_acc": 0.4411474218714124,
+  "rectified_avg_acc": 0.4409576810448011,
   "fine_grained_metrics": {
     "Main_Task": {
       "Understanding": 0.501773110849012,
       "Reasoning": 0.37182529256937663,
-      "Locating": 0.3701159586267315
+      "Locating": 0.37068524233020356
     },
     "Element_Type": {
       "Text": 0.5422992248371288,
-      "Layout": 0.379820043499024,
+      "Layout": 0.3803279410265118,
       "Figure": 0.4513496339824475,
       "Table": 0.3673932058612772
     },
     "Evidence_Pages": {
       "Single_Page": 0.47304111494101264,
-      "Multi_Page": 0.41284310375993677
+      "Multi_Page": 0.41316477219401243
     },
     "Num_of_Element_Types": {
       "Cross_Element": 0.4340044232793932
@@ -52,7 +52,7 @@
       },
       "Locating": {
         "Cross_Element": {
-          "Cross_Title": 0.27254872551937837,
+          "Cross_Title": 0.27451714429506513,
           "Cross_Table": 0.07818300932933633,
           "Para_Title": 0.5298420270555751,
           "Figure_Table": 0.519518963350966
@@ -61,6 +61,6 @@
     }
   },
   "sample_count": 2325,
-  "completed_count": 2323,
-  "failed_count": 2
+  "completed_count": 2324,
+  "failed_count": 1
 }

@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -45,6 +46,14 @@ class PartiallyFailingAdapter(DummyAdapter):
         if sample.get("always_fail"):
             return None
         return super().process_sample(sample, cfg, context_builder, client)
+
+
+class WriteFailureAdapter(DummyAdapter):
+    def process_sample(self, sample, cfg, context_builder, client):
+        if sample["id"] == "bad":
+            return {"id": "bad", "pred": "ok", "score": 1.0, "not_json": {"x"}}
+        time.sleep(0.05)
+        return {"id": sample["id"], "pred": "ok", "score": 1.0}
 
 
 class RunnerResultsTests(unittest.TestCase):
@@ -123,6 +132,19 @@ class RunnerResultsTests(unittest.TestCase):
             written = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
 
         self.assertEqual([sample["id"] for sample in written], ["b", "a"])
+
+    def test_parallel_write_failure_does_not_stop_later_results(self):
+        adapter = WriteFailureAdapter()
+        cfg = OmegaConf.create({"benchmarks": {"process_mode": "parallel", "workers": 2}})
+        samples = [{"id": "bad"}, {"id": "good"}]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = Path(tmp_dir) / "results.jsonl"
+            run_pending(adapter, cfg, samples, output_path, object(), object())
+            written = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(written, [{"id": "good", "pred": "ok", "score": 1.0}])
+        self.assertNotIn("score", samples[0])
+        self.assertEqual(samples[1]["score"], 1.0)
 
     def test_run_benchmark_reuses_single_context_builder_and_client(self):
         adapter = DummyAdapter()

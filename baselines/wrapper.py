@@ -3,6 +3,7 @@ from .colbertv2 import ColBERTv2ContextBuilder
 from .image import ImageContextBuilder
 from .ocr import OcrContextBuilder
 from .m3docrag import m3docragContextBuilder
+from .m3docrag_iterate import M3DocRAGIterateContextBuilder
 from utils.config_utils import require_config_value
 
 _CONTEXT_BUILDERS = {
@@ -11,6 +12,7 @@ _CONTEXT_BUILDERS = {
     'bm25': BM25ContextBuilder,
     'colbertv2': ColBERTv2ContextBuilder,
     'm3docrag': m3docragContextBuilder,
+    'm3docrag-iterate': M3DocRAGIterateContextBuilder,
 }
 
 

@@ -39,6 +39,13 @@ module.exports = {
       script: "scripts/run_image_ocr.sh",
       out_file: "logs/pm2-job-image-ocr.out.log",
       error_file: "logs/pm2-job-image-ocr.err.log"
-    }
+    },
+    {
+      ...jobDefaults,
+      name: "job-m3docrag-iterate",
+      script: "scripts/run_m3docrag-iterate.sh",
+      out_file: "logs/pm2-job-m3docrag-iterate.out.log",
+      error_file: "logs/pm2-job-m3docrag-iterate.err.log"
+    },    
   ]
 };

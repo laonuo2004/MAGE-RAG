@@ -18,12 +18,11 @@ module.exports = {
       name: "vllm",
       script: "scripts/pm2_vllm_wrapper.sh",
       interpreter: "bash",
-      args: "maxctx",
+      args: "64k",
       cwd: "/root/autodl-tmp/ylz/NeurIPS_2026/code",
       env: {
         CUDA_VISIBLE_DEVICES: "1",
-        PORT: "8000",
-        GPU_MEMORY_UTILIZATION: "0.70",
+        PORT: "8010",
         VLLM_SERVE_SCRIPT: "scripts/serve_qwen3_vl_vllm.sh",
         VLLM_STOP_GRACE_SECONDS: "20",
         CLEAN_STALE_ON_START: "1"

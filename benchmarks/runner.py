@@ -117,8 +117,17 @@ def run_pending(
                 adapter.sample_key(samples[idx]),
             )
             return
+        try:
+            append_jsonl(result, output_path)
+        except Exception:
+            logger.exception(
+                "Failed to write %s sample JSONL. idx=%s sample_key=%s",
+                adapter.name,
+                idx,
+                adapter.sample_key(samples[idx]),
+            )
+            return
         samples[idx] = result
-        append_jsonl(result, output_path)
 
     if process_mode == "serial":
         for idx in pending_indices:

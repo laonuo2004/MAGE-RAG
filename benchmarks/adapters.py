@@ -75,9 +75,10 @@ def _prepare_messages(
     cfg,
     context_builder,
     benchmark_name: str,
+    client,
 ) -> tuple[Any, str, str]:
     prep_start = perf_counter()
-    messages = context_builder.build(benchmark_name, sample)
+    messages = context_builder.build(benchmark_name, sample, client=client)
     prepare_metadata = to_plain_data(getattr(messages, "metadata", None)) or {}
     prepare_metadata["duration_seconds"] = round(perf_counter() - prep_start, 3)
     sample["prepare_metadata"] = prepare_metadata
@@ -198,6 +199,7 @@ class MMLongBenchAdapter:
             cfg,
             context_builder,
             "mmlongbench",
+            client,
         )
         response = _generate_response(sample, messages, qa_model_name, client, "MMLongBench generation")
 
@@ -334,6 +336,7 @@ class LongDocURLAdapter:
             cfg,
             context_builder,
             "longdocurl",
+            client,
         )
         response = _generate_response(sample, messages, qa_model_name, client, "LongDocURL generation")
         if response is None:

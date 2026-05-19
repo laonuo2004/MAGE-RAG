@@ -13,7 +13,8 @@ from utils.llm_utils import text_content_parts
 
 
 class StubContextBuilder:
-    def build(self, benchmark_name, sample):
+    def build(self, benchmark_name, sample, **kwargs):
+        self.last_kwargs = kwargs
         return ContextMessages(
             [{"role": "user", "content": text_content_parts(f"{benchmark_name}:{sample['question']}")}],
             metadata={"context_builder": "stub", "sample_question": sample["question"]},
@@ -162,10 +163,13 @@ class BenchmarkAdapterTests(unittest.TestCase):
                 "score": 0.0,
             }
 
-            result = MMLongBenchAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
+            stub_builder = StubContextBuilder()
+            client = object()
+            result = MMLongBenchAdapter().process_sample(sample, cfg, stub_builder, client)
         finally:
             adapters.call_llm_messages = original_call_llm_messages
 
+        self.assertIs(stub_builder.last_kwargs["client"], client)
         self.assertEqual([call[0][1] for call in calls], ["qa-model", "extractor-model"])
         self.assertEqual(calls[1][0][2][0]["content"][0]["type"], "text")
         self.assertIn("Question: q", calls[1][0][2][0]["content"][0]["text"])

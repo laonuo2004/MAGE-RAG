@@ -45,6 +45,7 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--max-length", type=int, default=8192)
     parser.add_argument("--chunk-size", type=int, default=200)
     parser.add_argument("--chunk-overlap", type=int, default=20)
     parser.add_argument("--allow-cross-page", action="store_true", default=True)
@@ -205,6 +206,8 @@ def main():
         sample_by_doc.setdefault(sample["doc_id"], sample)
 
     if args.mode in {"doc", "both"}:
+        if args.text_source != "ocr":
+            raise ValueError("MMLongBench BGEM3 script currently only supports text_source=ocr.")
         for doc_id in tqdm(doc_ids, desc="MMLongBench BGEM3 doc embeddings"):
             sample = sample_by_doc[doc_id]
             pages, _ = load_mmlongbench_ocr_pages(sample, cfg["benchmarks"])

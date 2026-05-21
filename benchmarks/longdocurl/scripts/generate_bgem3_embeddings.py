@@ -18,6 +18,7 @@ from baselines.utils.benchmarks_related import (
     bgem3_query_cache_variant,
     build_token_chunks_from_pages,
     load_longdocurl_ocr_pages,
+    load_longdocurl_vlm_text_pages,
 )
 
 
@@ -28,6 +29,7 @@ DEFAULT_METADATA_OUTPUT_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "tmp" / "
 DEFAULT_CHECKPOINT = "/root/autodl-tmp/ylz/models/bge-m3"
 DEFAULT_OCR_JSON_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdf_jsons" / "4000-4999"
 DEFAULT_IMAGE_PREFIX = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdf_pngs" / "4000-4999"
+DEFAULT_MINERU_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdfs_mineru" / "4000-4999"
 
 logger = logging.getLogger("generate_longdocurl_bgem3_embeddings")
 
@@ -47,6 +49,7 @@ def parse_args():
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--max-length", type=int, default=8192)
     parser.add_argument("--chunk-size", type=int, default=200)
     parser.add_argument("--chunk-overlap", type=int, default=20)
     parser.add_argument("--allow-cross-page", action="store_true", default=True)
@@ -54,6 +57,7 @@ def parse_args():
     parser.add_argument("--max-cross-pages", type=int, default=None)
     parser.add_argument("--ocr-json-dir", default=str(DEFAULT_OCR_JSON_DIR))
     parser.add_argument("--image-prefix", default=str(DEFAULT_IMAGE_PREFIX))
+    parser.add_argument("--mineru-dir", default=str(DEFAULT_MINERU_DIR))
     parser.add_argument("--mode-name", default="dense")
     parser.add_argument("--text-source", default="ocr")
     parser.add_argument("--use-fp16", action="store_true", default=True)
@@ -127,6 +131,7 @@ def build_cfg(args):
             "name": "longdocurl",
             "ocr_json_dir": args.ocr_json_dir,
             "image_prefix": args.image_prefix,
+            "mineru_dir": args.mineru_dir,
         }
     }
 
@@ -197,7 +202,12 @@ def main():
 
     for sample in tqdm(selected, desc="LongDocURL BGEM3 embeddings"):
         if args.mode in {"doc", "both"}:
-            pages, _ = load_longdocurl_ocr_pages(sample, cfg["benchmarks"])
+            if args.text_source == "ocr":
+                pages, _ = load_longdocurl_ocr_pages(sample, cfg["benchmarks"])
+            elif args.text_source == "vlm_text":
+                pages, _ = load_longdocurl_vlm_text_pages(sample, cfg["benchmarks"])
+            else:
+                raise ValueError(f"Unsupported text_source for LongDocURL BGEM3: {args.text_source}")
             chunks = build_token_chunks_from_pages(
                 pages,
                 tokenize_with_spans,

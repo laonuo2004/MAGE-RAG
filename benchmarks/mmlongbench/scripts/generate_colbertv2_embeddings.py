@@ -48,6 +48,7 @@ def parse_args():
     parser.add_argument("--max-pages", type=int, default=120)
     parser.add_argument("--ocr-json-dir", default=str(CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "pdf_jsons"))
     parser.add_argument("--tmp-dir", default=str(CODE_DIR / "benchmarks" / "mmlongbench" / "tmp"))
+    parser.add_argument("--text-source", default="ocr")
     return parser.parse_args()
 
 
@@ -219,6 +220,8 @@ def main():
         sample_by_doc.setdefault(sample["doc_id"], sample)
 
     if args.mode in {"doc", "both"}:
+        if args.text_source != "ocr":
+            raise ValueError("MMLongBench ColBERTv2 script currently only supports text_source=ocr.")
         for doc_id in tqdm(doc_ids, desc="MMLongBench ColBERTv2 doc embeddings"):
             sample = sample_by_doc[doc_id]
             pages, _ = load_mmlongbench_ocr_pages(sample, cfg["benchmarks"])

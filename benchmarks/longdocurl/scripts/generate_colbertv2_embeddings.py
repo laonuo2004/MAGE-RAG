@@ -14,6 +14,7 @@ CODE_DIR = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CODE_DIR))
 
 from baselines.utils.benchmarks_related import build_token_chunks_from_pages, load_longdocurl_ocr_pages
+from baselines.utils.benchmarks_related import load_longdocurl_vlm_text_pages
 from baselines.utils.benchmarks_related import colbertv2_doc_cache_variant, colbertv2_query_cache_variant
 
 
@@ -24,6 +25,7 @@ DEFAULT_METADATA_OUTPUT_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "tmp" / "
 DEFAULT_CHECKPOINT = "/root/autodl-tmp/ylz/models/colbertv2.0"
 DEFAULT_OCR_JSON_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdf_jsons" / "4000-4999"
 DEFAULT_IMAGE_PREFIX = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdf_pngs" / "4000-4999"
+DEFAULT_MINERU_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdfs_mineru" / "4000-4999"
 
 logger = logging.getLogger("generate_longdocurl_colbertv2_embeddings")
 
@@ -49,6 +51,8 @@ def parse_args():
     parser.add_argument("--max-cross-pages", type=int, default=None)
     parser.add_argument("--ocr-json-dir", default=str(DEFAULT_OCR_JSON_DIR))
     parser.add_argument("--image-prefix", default=str(DEFAULT_IMAGE_PREFIX))
+    parser.add_argument("--mineru-dir", default=str(DEFAULT_MINERU_DIR))
+    parser.add_argument("--text-source", default="ocr")
     return parser.parse_args()
 
 
@@ -132,6 +136,7 @@ def build_cfg(args):
             "name": "longdocurl",
             "ocr_json_dir": args.ocr_json_dir,
             "image_prefix": args.image_prefix,
+            "mineru_dir": args.mineru_dir,
         }
     }
 
@@ -209,7 +214,12 @@ def main():
 
     for sample in tqdm(selected, desc="LongDocURL ColBERTv2 embeddings"):
         if args.mode in {"doc", "both"}:
-            pages, _ = load_longdocurl_ocr_pages(sample, cfg["benchmarks"])
+            if args.text_source == "ocr":
+                pages, _ = load_longdocurl_ocr_pages(sample, cfg["benchmarks"])
+            elif args.text_source == "vlm_text":
+                pages, _ = load_longdocurl_vlm_text_pages(sample, cfg["benchmarks"])
+            else:
+                raise ValueError(f"Unsupported text_source for LongDocURL ColBERTv2: {args.text_source}")
             chunks = build_token_chunks_from_pages(
                 pages,
                 tokenize_with_spans,

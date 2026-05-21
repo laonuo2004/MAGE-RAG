@@ -8,6 +8,7 @@ MODE="${1:-full}"
 CHECKPOINT="${CHECKPOINT:-/root/autodl-tmp/ylz/models/bge-m3}"
 TOKENIZER_NAME="${TOKENIZER_NAME:-/root/autodl-tmp/ylz/models/bge-m3}"
 BATCH_SIZE="${BATCH_SIZE:-8}"
+MAX_LENGTH="${MAX_LENGTH:-8192}"
 TOP_K="${TOP_K:-5}"
 CHUNK_SIZE="${CHUNK_SIZE:-200}"
 CHUNK_OVERLAP="${CHUNK_OVERLAP:-20}"
@@ -44,6 +45,7 @@ GEN_ARGS=(
   --checkpoint "${CHECKPOINT}"
   --tokenizer-name "${TOKENIZER_NAME}"
   --batch-size "${BATCH_SIZE}"
+  --max-length "${MAX_LENGTH}"
   --chunk-size "${CHUNK_SIZE}"
   --chunk-overlap "${CHUNK_OVERLAP}"
   --mode-name "${MODE_NAME}"
@@ -86,4 +88,5 @@ python main.py \
   "baselines.checkpoint=${CHECKPOINT}" \
   "baselines.tokenizer_name=${TOKENIZER_NAME}" \
   "baselines.batch_size=${BATCH_SIZE}" \
+  "baselines.max_length=${MAX_LENGTH}" \
   "baselines.use_fp16=${USE_FP16}"

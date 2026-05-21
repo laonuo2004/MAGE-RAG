@@ -39,6 +39,7 @@ def parse_args():
     parser.add_argument("--metadata-output-dir", default=str(DEFAULT_METADATA_OUTPUT_DIR))
     parser.add_argument("--checkpoint", default=DEFAULT_CHECKPOINT)
     parser.add_argument("--tokenizer-name", default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--devices", default="cuda:0")
     parser.add_argument("--doc-id", action="append", default=None)
     parser.add_argument("--question-id", action="append", default=None)
     parser.add_argument("--limit", type=int, default=None)
@@ -104,10 +105,10 @@ def mmlongbench_doc_key(doc_id):
     return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in stem).strip("._") or "document"
 
 
-def load_model(checkpoint, use_fp16):
+def load_model(checkpoint, use_fp16, devices):
     from FlagEmbedding import BGEM3FlagModel
 
-    return BGEM3FlagModel(checkpoint, use_fp16=use_fp16)
+    return BGEM3FlagModel(checkpoint, use_fp16=use_fp16, devices=devices)
 
 
 def tokenize_with_spans_factory(tokenizer_name):
@@ -132,12 +133,19 @@ def tokenize_with_spans_factory(tokenizer_name):
     return tokenize_with_spans
 
 
-def encode_doc_chunks(model, chunks, output_path, metadata_path, overwrite):
+def encode_doc_chunks(model, chunks, output_path, metadata_path, overwrite, batch_size, max_length):
     if output_path.exists() and metadata_path.exists() and not overwrite:
         logger.info("Skipping existing BGEM3 doc embeddings: %s", output_path)
         return
     texts = [chunk["text"] for chunk in chunks]
-    outputs = model.encode(texts, return_dense=True, return_sparse=False, return_colbert_vecs=False)
+    outputs = model.encode(
+        texts,
+        batch_size=batch_size,
+        max_length=max_length,
+        return_dense=True,
+        return_sparse=False,
+        return_colbert_vecs=False,
+    )
     dense_vecs = torch.as_tensor(outputs["dense_vecs"], dtype=torch.float32, device="cpu")
     save_file({"dense_vecs": dense_vecs}, output_path)
     with metadata_path.open("w", encoding="utf-8") as f:
@@ -145,11 +153,18 @@ def encode_doc_chunks(model, chunks, output_path, metadata_path, overwrite):
     logger.info("Saved %s and %s", output_path, metadata_path)
 
 
-def encode_query(model, question, output_path, overwrite):
+def encode_query(model, question, output_path, overwrite, batch_size, max_length):
     if output_path.exists() and not overwrite:
         logger.info("Skipping existing BGEM3 query embeddings: %s", output_path)
         return
-    outputs = model.encode([question], return_dense=True, return_sparse=False, return_colbert_vecs=False)
+    outputs = model.encode(
+        [question],
+        batch_size=batch_size,
+        max_length=max_length,
+        return_dense=True,
+        return_sparse=False,
+        return_colbert_vecs=False,
+    )
     query_dense = torch.as_tensor(outputs["dense_vecs"][0], dtype=torch.float32, device="cpu")
     save_file({"query_dense_vec": query_dense}, output_path)
     logger.info("Saved %s", output_path)
@@ -182,7 +197,7 @@ def main():
     query_output_dir.mkdir(parents=True, exist_ok=True)
     metadata_output_dir.mkdir(parents=True, exist_ok=True)
 
-    model = load_model(args.checkpoint, args.use_fp16)
+    model = load_model(args.checkpoint, args.use_fp16, args.devices)
     tokenize_with_spans = tokenize_with_spans_factory(args.tokenizer_name)
     cfg = build_cfg(args)
     sample_by_doc = {}
@@ -210,6 +225,8 @@ def main():
                 doc_output_dir / f"{doc_key}.safetensors",
                 metadata_output_dir / f"{doc_key}.json",
                 args.overwrite,
+                args.batch_size,
+                args.max_length,
             )
 
     if args.mode in {"query", "both"}:
@@ -219,6 +236,8 @@ def main():
                 sample["question"],
                 query_output_dir / f"{sample['question_id']}.safetensors",
                 args.overwrite,
+                args.batch_size,
+                args.max_length,
             )
 
 

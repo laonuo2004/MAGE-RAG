@@ -9,6 +9,7 @@ params:
   max_cross_pages: null
 checkpoint: /root/autodl-tmp/ylz/models/bge-m3
 tokenizer_name: /root/autodl-tmp/ylz/models/bge-m3
+devices: cuda:0
 doc_embeddings_bgem3:
   mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/bgem3/doc_embeddings
   longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/tmp/bgem3/doc_embeddings

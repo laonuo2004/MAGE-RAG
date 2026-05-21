@@ -29,6 +29,8 @@ def prepare_bgem3_cache(cfg):
         return
 
     model = _load_model(cfg)
+    batch_size = int(get_config_value(cfg, "baselines.batch_size", 8))
+    max_length = int(get_config_value(cfg, "baselines.max_length", 8192))
     tokenize_with_spans = _tokenize_with_spans_factory(cfg)
     doc_variant = bgem3_doc_cache_variant(
         require_config_value(cfg, "baselines.checkpoint"),
@@ -61,13 +63,13 @@ def prepare_bgem3_cache(cfg):
                 )
                 for idx, chunk in enumerate(chunks):
                     chunk["chunk_id"] = idx
-                _encode_doc_chunks(model, chunks, doc_output_path, metadata_output_path)
+                _encode_doc_chunks(model, chunks, doc_output_path, metadata_output_path, batch_size, max_length)
 
         for sample in samples:
             query_key = str(sample["question_id"])
             query_output_path = _variant_root(cfg, "baselines.query_embeddings_bgem3", benchmark_name, query_variant) / f"{query_key}.safetensors"
             if not query_output_path.exists():
-                _encode_query(model, sample["question"], query_output_path)
+                _encode_query(model, sample["question"], query_output_path, batch_size, max_length)
         return
 
     if benchmark_name == "longdocurl":
@@ -89,9 +91,9 @@ def prepare_bgem3_cache(cfg):
                 )
                 for idx, chunk in enumerate(chunks):
                     chunk["chunk_id"] = idx
-                _encode_doc_chunks(model, chunks, doc_output_path, metadata_output_path)
+                _encode_doc_chunks(model, chunks, doc_output_path, metadata_output_path, batch_size, max_length)
             if not query_output_path.exists():
-                _encode_query(model, sample["question"], query_output_path)
+                _encode_query(model, sample["question"], query_output_path, batch_size, max_length)
         return
 
     raise ValueError(f"Unsupported benchmark for BGEM3 cache preparation: {benchmark_name}")
@@ -112,7 +114,8 @@ def _load_model(cfg):
 
     checkpoint = require_config_value(cfg, "baselines.checkpoint")
     use_fp16 = bool(get_config_value(cfg, "baselines.use_fp16", True))
-    return BGEM3FlagModel(checkpoint, use_fp16=use_fp16)
+    devices = get_config_value(cfg, "baselines.devices", "cuda:0")
+    return BGEM3FlagModel(checkpoint, use_fp16=use_fp16, devices=devices)
 
 
 def _tokenize_with_spans_factory(cfg):
@@ -137,9 +140,16 @@ def _tokenize_with_spans_factory(cfg):
     return tokenize_with_spans
 
 
-def _encode_doc_chunks(model, chunks, output_path, metadata_path):
+def _encode_doc_chunks(model, chunks, output_path, metadata_path, batch_size, max_length):
     texts = [chunk["text"] for chunk in chunks]
-    outputs = model.encode(texts, return_dense=True, return_sparse=False, return_colbert_vecs=False)
+    outputs = model.encode(
+        texts,
+        batch_size=batch_size,
+        max_length=max_length,
+        return_dense=True,
+        return_sparse=False,
+        return_colbert_vecs=False,
+    )
     dense_vecs = torch.as_tensor(outputs["dense_vecs"], dtype=torch.float32, device="cpu")
     save_file({"dense_vecs": dense_vecs}, output_path)
     with metadata_path.open("w", encoding="utf-8") as f:
@@ -147,8 +157,15 @@ def _encode_doc_chunks(model, chunks, output_path, metadata_path):
     logger.info("Saved %s and %s", output_path, metadata_path)
 
 
-def _encode_query(model, question, output_path):
-    outputs = model.encode([question], return_dense=True, return_sparse=False, return_colbert_vecs=False)
+def _encode_query(model, question, output_path, batch_size, max_length):
+    outputs = model.encode(
+        [question],
+        batch_size=batch_size,
+        max_length=max_length,
+        return_dense=True,
+        return_sparse=False,
+        return_colbert_vecs=False,
+    )
     query_dense = torch.as_tensor(outputs["dense_vecs"][0], dtype=torch.float32, device="cpu")
     save_file({"query_dense_vec": query_dense}, output_path)
     logger.info("Saved %s", output_path)

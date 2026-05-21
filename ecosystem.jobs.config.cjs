@@ -4,7 +4,7 @@ const jobDefaults = {
   interpreter: "bash",
   cwd,
   autorestart: true,
-  stop_exit_codes: [0],
+  stop_exit_codes: [],
   min_uptime: "60s",
   restart_delay: 30000,
   exp_backoff_restart_delay: 10000,
@@ -47,5 +47,12 @@ module.exports = {
       out_file: "logs/pm2-job-m3docrag-iterate.out.log",
       error_file: "logs/pm2-job-m3docrag-iterate.err.log"
     },    
+    {
+      ...jobDefaults,
+      name: "job-m3docrag-iterate-query",
+      script: "scripts/run_m3docrag-iterate-query.sh",
+      out_file: "logs/pm2-job-m3docrag-iterate-query.out.log",
+      error_file: "logs/pm2-job-m3docrag-iterate-query.err.log"
+    },        
   ]
 };

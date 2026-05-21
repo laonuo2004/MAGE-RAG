@@ -1,31 +1,6 @@
-#!/usr/bin/env bash
-
-# ### Serving Qwen3-VL-8B with vLLM
-
-# For local OpenAI-compatible serving on a single GPU, this repo provides three presets for `Qwen/Qwen3-VL-8B-Instruct`:
-
-# ```bash
-# # Throughput-oriented default profile.
-# bash scripts/serve_qwen3_vl_vllm.sh throughput
-
-# # Long-context profile for 256k token requests.
-# bash scripts/serve_qwen3_vl_vllm.sh longctx
-
-# # Maximum-context profile for up to 1M token requests.
-# # Note: 1M context requires massive VRAM or specific optimizations.
-# bash scripts/serve_qwen3_vl_vllm.sh maxctx
-# ```
-
-# Notes:
-# - `throughput` uses `--max-model-len 32768`.
-# - `longctx` uses `--max-model-len 262144` (256K).
-# - `maxctx` uses `--max-model-len 1048576` (1M).
-# - All presets enable chunked prefill.
-# - Override GPU or port when needed, for example: `CUDA_VISIBLE_DEVICES=1 PORT=8001 bash scripts/serve_qwen3_vl_vllm.sh longctx`.
-
 set -euo pipefail
 
-PROFILE="${1:-throughput}"
+PROFILE="${1:-64k}"
 
 CUDA_VISIBLE_DEVICES_VALUE="${CUDA_VISIBLE_DEVICES:-1}"
 VLLM_BIN="${VLLM_BIN:-/root/autodl-tmp/conda/envs/logma-rag/bin/vllm}"
@@ -53,27 +28,39 @@ COMMON_ARGS=(
 )
 
 case "${PROFILE}" in
-  throughput)
-    DEFAULT_GPU_MEMORY_UTILIZATION="0.6"
+  16k)
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.5"
     DEFAULT_MAX_MODEL_LEN="16384"
     DEFAULT_MAX_NUM_SEQS="64"
     DEFAULT_MAX_NUM_BATCHED_TOKENS="32768"
     ;;
-  longctx)
+  32k)
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.55"
+    DEFAULT_MAX_MODEL_LEN="32768"
+    DEFAULT_MAX_NUM_SEQS="48"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="24576"
+    ;;
+  64k)
     DEFAULT_GPU_MEMORY_UTILIZATION="0.6"
-    DEFAULT_MAX_MODEL_LEN="131072"
+    DEFAULT_MAX_MODEL_LEN="65536"
     DEFAULT_MAX_NUM_SEQS="32"
     DEFAULT_MAX_NUM_BATCHED_TOKENS="16384"
     ;;
-  maxctx)
-    DEFAULT_GPU_MEMORY_UTILIZATION="0.8"
-    DEFAULT_MAX_MODEL_LEN="262144"
+  128k)
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.65"
+    DEFAULT_MAX_MODEL_LEN="131072"
     DEFAULT_MAX_NUM_SEQS="16"
-    DEFAULT_MAX_NUM_BATCHED_TOKENS="16384"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="8192"
+    ;;
+  256k)
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.7"
+    DEFAULT_MAX_MODEL_LEN="262144"
+    DEFAULT_MAX_NUM_SEQS="8"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="4096"
     ;;
   *)
     echo "Unknown profile: ${PROFILE}" >&2
-    echo "Usage: $0 [throughput|longctx|maxctx]" >&2
+    echo "Usage: $0 [16k|32k|64k|128k|256k]" >&2
     exit 1
     ;;
 esac

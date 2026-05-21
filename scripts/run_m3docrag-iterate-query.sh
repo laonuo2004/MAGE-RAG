@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${CODE_ROOT}"
-exec "${PYTHON_BIN}" main.py --multirun baselines=m3docrag-iterate \
-    baselines.params.max_iterations=2,3,4,5,6,8,10,12,15 \
+exec "${PYTHON_BIN}" main.py --multirun baselines=m3docrag-iterate-query \
+    baselines.params.max_iterations=5,10,15 \
     benchmarks=longdocurl,mmlongbench \
     benchmarks.workers=64

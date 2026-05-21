@@ -10,6 +10,7 @@ from safetensors.torch import save_file
 import torch
 
 import baselines.m3docrag_iterate as m3docrag_iterate
+import baselines.m3docrag_iterate_query as m3docrag_iterate_query
 from baselines.utils.benchmarks_related import (
     colbertv2_doc_cache_variant,
     colbertv2_query_cache_variant,
@@ -48,7 +49,17 @@ class ContextBuilderTests(unittest.TestCase):
         }))
 
         self.assertEqual(colbert_builder.name, 'colbertv2')
+        iterate_query_builder = build_context_builder(OmegaConf.create({
+            'baselines': {
+                'name': 'm3docrag-iterate-query',
+                'params': {'max_iterations': 5, 'evaluator_model_name': 'eval-model'},
+                'pdf_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
+                'question_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
+            }
+        }))
+
         self.assertEqual(iterate_builder.name, 'm3docrag-iterate')
+        self.assertEqual(iterate_query_builder.name, 'm3docrag-iterate-query')
 
     def test_longdocurl_image_context_matches_legacy_prompt_shape(self):
         png_bytes = base64.b64decode(
@@ -357,6 +368,84 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertEqual(len(messages.metadata['iteration_trace']), 3)
         self.assertEqual(len(messages[0]['content']), 4)
 
+    def test_m3docrag_iterate_query_retrieves_next_page_from_search_query(self):
+        messages = self._build_m3docrag_iterate_query_mmlongbench(
+            [
+                '{"answerable": false, "reason": "need linked page", "missing_evidence": "table", "search_query": "table evidence"}',
+                '{"answerable": true, "reason": "enough", "missing_evidence": "", "search_query": ""}',
+            ],
+            [torch.tensor([[0.0, 1.0]])],
+        )
+
+        self.assertEqual([page['page_index'] for page in messages.metadata['retrieved_pages']], [2, 1])
+        self.assertEqual(messages.metadata['stopped_by'], 'answerable')
+        self.assertEqual(messages.metadata['iteration_trace'][0]['search_query'], 'table evidence')
+        self.assertEqual(messages.metadata['iteration_trace'][0]['added_page']['page_index'], 1)
+        self.assertEqual(messages.metadata['online_colpali']['backbone_path'], '/test/backbone')
+        self.assertEqual(len(messages[0]['content']), 3)
+
+    def test_m3docrag_iterate_query_answerable_does_not_load_online_colpali(self):
+        messages = self._build_m3docrag_iterate_query_mmlongbench([
+            '{"answerable": true, "reason": "enough", "missing_evidence": "", "search_query": ""}',
+        ])
+
+        self.assertEqual([page['page_index'] for page in messages.metadata['retrieved_pages']], [2])
+        self.assertEqual(messages.metadata['stopped_by'], 'answerable')
+        self.assertIsNone(messages.metadata['online_colpali']['resolved_device'])
+        self.assertEqual(len(messages.metadata['iteration_trace']), 1)
+
+    def test_m3docrag_iterate_query_invalid_json_returns_current_page(self):
+        messages = self._build_m3docrag_iterate_query_mmlongbench(['not-json'])
+
+        self.assertEqual([page['page_index'] for page in messages.metadata['retrieved_pages']], [2])
+        self.assertEqual(messages.metadata['stopped_by'], 'fallback_evaluator_error')
+        self.assertIn('error', messages.metadata['iteration_trace'][0])
+
+    def test_m3docrag_iterate_query_empty_search_query_returns_current_page(self):
+        messages = self._build_m3docrag_iterate_query_mmlongbench([
+            '{"answerable": false, "reason": "no", "missing_evidence": "more", "search_query": ""}',
+        ])
+
+        self.assertEqual([page['page_index'] for page in messages.metadata['retrieved_pages']], [2])
+        self.assertEqual(messages.metadata['stopped_by'], 'fallback_empty_search_query')
+        self.assertEqual(messages.metadata['iteration_trace'][0]['search_query'], '')
+
+    def test_m3docrag_iterate_query_loads_online_model_per_search_query(self):
+        builder = build_context_builder(OmegaConf.create({
+            'baselines': {
+                'name': 'm3docrag-iterate-query',
+                'params': {'max_iterations': 3, 'evaluator_model_name': 'eval-model'},
+                'online_colpali': {
+                    'backbone_path': '/test/backbone',
+                    'adapter_path': '/test/adapter',
+                    'device': 'cpu',
+                    'query_batch_size': 1,
+                },
+                'pdf_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
+                'question_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
+            }
+        }))
+        calls = {'load': 0, 'release': 0}
+
+        class FakeRetrievalModel:
+            def encode_queries(self, queries, batch_size, to_cpu):
+                return [torch.tensor([[float(len(queries[0])), 0.0]])]
+
+        def fake_load_online_retrieval_model():
+            calls['load'] += 1
+            return FakeRetrievalModel()
+
+        def fake_release_online_model_memory():
+            calls['release'] += 1
+
+        builder._load_online_retrieval_model = fake_load_online_retrieval_model
+        builder._release_online_model_memory = fake_release_online_model_memory
+
+        builder._encode_search_query('first')
+        builder._encode_search_query('second')
+
+        self.assertEqual(calls, {'load': 2, 'release': 2})
+
     def test_bm25_mmlongbench_retrieves_matching_chunk(self):
         builder = build_context_builder(OmegaConf.create({
             'baselines': {
@@ -537,6 +626,62 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertEqual(messages.metadata['retrieved_chunks'][0]['chunk_id'], 1)
         self.assertEqual(messages.metadata['retrieved_pages'][0]['page_number'], 2)
         self.assertIn('needle evidence', messages[0]['content'][0]['text'])
+
+    def _m3docrag_iterate_query_cfg(self, tmp_dir, max_pages=3):
+        cfg = self._m3docrag_iterate_cfg(tmp_dir, max_pages=max_pages)
+        cfg.baselines.name = 'm3docrag-iterate-query'
+        cfg.baselines.online_colpali = {
+            'backbone_path': '/test/backbone',
+            'adapter_path': '/test/adapter',
+            'device': 'cpu',
+            'query_batch_size': 1,
+        }
+        return cfg
+
+    def _build_m3docrag_iterate_query_mmlongbench(self, evaluator_responses, online_query_embeddings=None):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self._write_embeddings(
+                tmp_dir,
+                benchmark_name='mmlongbench',
+                doc_stem='sample',
+                question_id='q1',
+                doc_embeddings=torch.tensor([
+                    [[1.0, 0.0]],
+                    [[0.0, 5.0]],
+                    [[3.0, 0.0]],
+                ]),
+                query_embedding=torch.tensor([[1.0, 0.0]]),
+            )
+            page_dir = os.path.join(tmp_dir, 'pdf_pngs', 'sample')
+            os.makedirs(page_dir)
+            for page_no in (1, 2, 3):
+                Image.new('RGB', (1, 1), color='white').save(
+                    os.path.join(page_dir, f'page_{page_no:04d}_dpi144.png')
+                )
+            builder = build_context_builder(self._m3docrag_iterate_query_cfg(tmp_dir))
+            responses = list(evaluator_responses)
+            query_embeddings = list(online_query_embeddings or [])
+            original_call_llm_messages = m3docrag_iterate_query.call_llm_messages
+            try:
+                def fake_call_llm_messages(*args, **kwargs):
+                    return responses.pop(0)
+
+                def fake_encode_search_query(search_query):
+                    if not query_embeddings:
+                        raise AssertionError(f'unexpected online ColPali query encoding: {search_query}')
+                    return query_embeddings.pop(0)
+
+                m3docrag_iterate_query.call_llm_messages = fake_call_llm_messages
+                builder._encode_search_query = fake_encode_search_query
+                return builder.build(
+                    'mmlongbench',
+                    {'doc_id': 'sample.pdf', 'question_id': 'q1', 'question': 'Question?'},
+                    client=object(),
+                )
+            finally:
+                m3docrag_iterate_query.call_llm_messages = original_call_llm_messages
 
     def _m3docrag_iterate_cfg(self, tmp_dir, max_pages=3):
         return OmegaConf.create({

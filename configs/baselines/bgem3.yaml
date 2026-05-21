@@ -1,0 +1,24 @@
+name: bgem3
+params:
+  mode: dense
+  text_source: ocr
+  top_k: 5
+  chunk_size: 200
+  chunk_overlap: 20
+  allow_cross_page: true
+  max_cross_pages: null
+checkpoint: /root/autodl-tmp/ylz/models/bge-m3
+tokenizer_name: /root/autodl-tmp/ylz/models/bge-m3
+doc_embeddings_bgem3:
+  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/bgem3/doc_embeddings
+  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/tmp/bgem3/doc_embeddings
+query_embeddings_bgem3:
+  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/bgem3/query_embeddings
+  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/tmp/bgem3/query_embeddings
+chunk_metadata_bgem3:
+  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/bgem3/chunk_metadata
+  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/tmp/bgem3/chunk_metadata
+batch_size: 8
+max_length: 8192
+use_fp16: true
+max_context_chars: null

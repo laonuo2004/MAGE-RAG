@@ -1,3 +1,4 @@
+from baselines.bgem3 import BGEM3ContextBuilder
 from baselines.bm25 import BM25ContextBuilder
 from baselines.colbertv2 import ColBERTv2ContextBuilder
 from baselines.image import ImageContextBuilder
@@ -10,6 +11,7 @@ from utils.config_utils import require_config_value
 _CONTEXT_BUILDERS = {
     'image': ImageContextBuilder,
     'ocr': OcrContextBuilder,
+    'bgem3': BGEM3ContextBuilder,
     'bm25': BM25ContextBuilder,
     'colbertv2': ColBERTv2ContextBuilder,
     'm3docrag': m3docragContextBuilder,

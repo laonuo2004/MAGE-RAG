@@ -25,12 +25,33 @@ if [[ "${MODE}" == "debug20" ]]; then
   INPUT_PATH="benchmarks/longdocurl/tmp/colbertv2/debug_inputs/longdocurl_colbert_debug20.jsonl"
   mkdir -p "$(dirname "${INPUT_PATH}")"
   python - <<'PY'
+import os
 src = "benchmarks/longdocurl/data/LongDocURL.jsonl"
 dst = "benchmarks/longdocurl/tmp/colbertv2/debug_inputs/longdocurl_colbert_debug20.jsonl"
+text_source = os.environ.get("TEXT_SOURCE", "ocr")
+mineru_dir = os.environ.get(
+    "MINERU_DIR",
+    "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs_mineru/4000-4999",
+)
+selected = []
 with open(src, "r", encoding="utf-8") as f:
-    lines = [line for line in f if line.strip()]
+    for line in f:
+        if not line.strip():
+            continue
+        if text_source == "vlm_text":
+            import json
+            sample = json.loads(line)
+            doc_dir = os.path.join(mineru_dir, str(sample["doc_no"]))
+            if not (
+                os.path.exists(os.path.join(doc_dir, "content_list_v2.json"))
+                or os.path.exists(os.path.join(doc_dir, "full.md"))
+            ):
+                continue
+        selected.append(line)
+        if len(selected) >= 20:
+            break
 with open(dst, "w", encoding="utf-8") as f:
-    f.writelines(lines[:20])
+    f.writelines(selected)
 print(dst)
 PY
 fi

@@ -29,6 +29,7 @@ class ColBERTv2ContextBuilder(ContextBuilder):
         self.top_k = int(get_config_value(self.cfg, "baselines.params.top_k", 5))
         self.chunk_size = int(get_config_value(self.cfg, "baselines.params.chunk_size", 200))
         self.chunk_overlap = int(get_config_value(self.cfg, "baselines.params.chunk_overlap", 20))
+        self.text_source = str(get_config_value(self.cfg, "baselines.params.text_source", "ocr"))
         self.allow_cross_page = bool(get_config_value(self.cfg, "baselines.params.allow_cross_page", True))
         self.max_cross_pages = get_config_value(self.cfg, "baselines.params.max_cross_pages", None)
         if self.max_cross_pages is not None:
@@ -289,6 +290,7 @@ class ColBERTv2ContextBuilder(ContextBuilder):
             "top_k": self.top_k,
             "chunk_size": self.chunk_size,
             "chunk_overlap": self.chunk_overlap,
+            "text_source": self.text_source,
             "allow_cross_page": self.allow_cross_page,
             "max_cross_pages": self.max_cross_pages,
             "doc_cache_variant": self.doc_cache_variant,

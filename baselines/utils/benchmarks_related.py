@@ -117,6 +117,36 @@ def load_longdocurl_ocr_pages(sample, benchmark_cfg):
     return pages, allowed_pages
 
 
+def load_longdocurl_vlm_text_pages(sample, benchmark_cfg):
+    mineru_root = require_config_value(benchmark_cfg, 'mineru_dir')
+    doc_dir = Path(str(mineru_root)) / sample['doc_no']
+    content_list_path = doc_dir / 'content_list_v2.json'
+    full_md_path = doc_dir / 'full.md'
+
+    page_count = int(sample.get('total_pages') or 0)
+    if page_count <= 0:
+        raise ValueError(f'LongDocURL VLM-text requires sample["total_pages"] for doc_no={sample["doc_no"]}.')
+    allowed_pages = allowed_page_indices('longdocurl', sample, benchmark_cfg, page_count)
+
+    if content_list_path.exists():
+        with content_list_path.open('r', encoding='utf-8') as f:
+            content = json.load(f)
+        pages = _pages_from_mineru_content_list(content, allowed_pages)
+        if pages:
+            return pages, allowed_pages
+
+    if full_md_path.exists():
+        with full_md_path.open('r', encoding='utf-8') as f:
+            full_md = f.read()
+        pages = _pages_from_full_md(full_md, allowed_pages)
+        if pages:
+            return pages, allowed_pages
+
+    raise FileNotFoundError(
+        f'No usable MinerU VLM-text content found for doc_no={sample["doc_no"]} under {doc_dir}.'
+    )
+
+
 def normalize_text_block(text):
     text = "" if text is None else str(text)
     text = text.replace("\u00a0", " ")
@@ -124,6 +154,64 @@ def normalize_text_block(text):
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _pages_from_mineru_content_list(content, allowed_pages):
+    pages = []
+    if not isinstance(content, list):
+        return pages
+    for page_index in allowed_pages:
+        if page_index >= len(content):
+            continue
+        page_items = content[page_index]
+        page_text = _flatten_mineru_page_items(page_items)
+        if page_text:
+            pages.append({
+                'page_index': page_index,
+                'page_number': page_index + 1,
+                'text': page_text,
+            })
+    return pages
+
+
+def _flatten_mineru_page_items(page_items):
+    collected = []
+
+    def visit(node):
+        if node is None:
+            return
+        if isinstance(node, str):
+            text = normalize_text_block(node)
+            if text:
+                collected.append(text)
+            return
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+            return
+        if isinstance(node, dict):
+            for key in ('text', 'content', 'caption', 'title', 'md_content'):
+                if key in node:
+                    visit(node[key])
+            return
+
+    visit(page_items)
+    return normalize_text_block("\n".join(collected))
+
+
+def _pages_from_full_md(full_md, allowed_pages):
+    text = normalize_text_block(full_md)
+    if not text:
+        return []
+    pages = []
+    block = text
+    for page_index in allowed_pages:
+        pages.append({
+            'page_index': page_index,
+            'page_number': page_index + 1,
+            'text': block,
+        })
+    return pages
 
 
 def build_token_chunks_from_pages(

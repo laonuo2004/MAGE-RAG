@@ -15,6 +15,8 @@ MAX_CROSS_PAGES="${MAX_CROSS_PAGES:-null}"
 PROCESS_MODE="${PROCESS_MODE:-parallel}"
 WORKERS="${WORKERS:-64}"
 LOGGING_LEVEL="${LOGGING_LEVEL:-INFO}"
+TEXT_SOURCE="${TEXT_SOURCE:-ocr}"
+MINERU_DIR="${MINERU_DIR:-/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs_mineru/4000-4999}"
 
 cd "${CODE_ROOT}"
 
@@ -71,12 +73,14 @@ MAIN_ARGS=(
   benchmarks=longdocurl
   baselines=colbertv2
   "benchmarks.qa_file=${INPUT_PATH}"
+  "benchmarks.mineru_dir=${MINERU_DIR}"
   "benchmarks.process_mode=${PROCESS_MODE}"
   "benchmarks.workers=${WORKERS}"
   "logging.level=${LOGGING_LEVEL}"
   "baselines.params.top_k=${TOP_K}"
   "baselines.params.chunk_size=${CHUNK_SIZE}"
   "baselines.params.chunk_overlap=${CHUNK_OVERLAP}"
+  "baselines.params.text_source=${TEXT_SOURCE}"
   "baselines.params.allow_cross_page=${ALLOW_CROSS_PAGE}"
 )
 

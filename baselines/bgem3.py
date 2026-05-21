@@ -45,8 +45,8 @@ class BGEM3ContextBuilder(ContextBuilder):
 
         if self.mode != "dense":
             raise ValueError("BGEM3 first version only supports baselines.params.mode=dense.")
-        if self.text_source != "ocr":
-            raise ValueError("BGEM3 first version only supports baselines.params.text_source=ocr.")
+        if self.text_source not in {"ocr", "vlm_text"}:
+            raise ValueError("BGEM3 currently only supports baselines.params.text_source in {ocr, vlm_text}.")
         if self.top_k <= 0:
             raise ValueError("BGEM3 baseline requires cfg.baselines.params.top_k > 0.")
         if self.chunk_size <= 0:

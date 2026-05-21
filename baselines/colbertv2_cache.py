@@ -11,6 +11,7 @@ from baselines.utils.benchmarks_related import (
     colbertv2_doc_cache_variant,
     colbertv2_query_cache_variant,
     load_longdocurl_ocr_pages,
+    load_longdocurl_vlm_text_pages,
     load_mmlongbench_ocr_pages,
 )
 from utils.config_utils import get_config_value, require_config_value
@@ -40,6 +41,8 @@ def prepare_colbertv2_cache(cfg):
     query_variant = colbertv2_query_cache_variant(require_config_value(cfg, "baselines.checkpoint"))
 
     if benchmark_name == "mmlongbench":
+        if builder.text_source != "ocr":
+            raise ValueError("MMLongBench ColBERTv2 currently only supports text_source=ocr.")
         sample_by_doc = {}
         for sample in samples:
             sample_by_doc.setdefault(sample["doc_id"], sample)
@@ -76,7 +79,12 @@ def prepare_colbertv2_cache(cfg):
             metadata_output_path = _variant_root(cfg, "baselines.chunk_metadata_colbertv2", benchmark_name, doc_variant) / f"{doc_key}.json"
             query_output_path = _variant_root(cfg, "baselines.query_embeddings_colbertv2", benchmark_name, query_variant) / f"{query_key}.safetensors"
             if not doc_output_path.exists() or not metadata_output_path.exists():
-                pages, _ = load_longdocurl_ocr_pages(sample, require_config_value(cfg, "benchmarks"))
+                if builder.text_source == "ocr":
+                    pages, _ = load_longdocurl_ocr_pages(sample, require_config_value(cfg, "benchmarks"))
+                elif builder.text_source == "vlm_text":
+                    pages, _ = load_longdocurl_vlm_text_pages(sample, require_config_value(cfg, "benchmarks"))
+                else:
+                    raise ValueError(f"Unsupported ColBERTv2 text_source: {builder.text_source}")
                 chunks = build_token_chunks_from_pages(
                     pages,
                     tokenize_with_spans,

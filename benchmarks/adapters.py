@@ -548,11 +548,14 @@ class MMLongBenchAdapter:
         response = str((sample.get("generation_metadata") or {}).get("response") or "")
         abstain_patterns = (
             r"not (?:explicitly )?(?:provided|stated|shown|available|mentioned|visible)",
+            r"do(?:es)? not explicitly (?:label|identify|show|state|mention)",
             r"cannot be (?:determined|found|answered)",
             r"(?:provided|retrieved) (?:pages|images|information|document).*do(?:es)? not "
             r"(?:include|show|provide|state|mention)",
             r"insufficient (?:information|evidence)",
             r"no (?:clear|explicit) (?:information|evidence)",
+            r"none of (?:these|the) pages fall within the specified range",
+            r"(?:highly likely|likely|assume|assuming|infer|inferred|appears to refer)",
         )
         if any(re.search(pattern, response, flags=re.IGNORECASE | re.DOTALL) for pattern in abstain_patterns):
             return "Not answerable"
@@ -812,6 +815,10 @@ class LongDocURLAdapter:
     def postprocess_prediction(sample: Dict[str, Any], pred: Any) -> tuple[Any, Dict[str, Any] | None]:
         answer_format = str(sample.get("answer_format") or "")
         question = str(sample.get("question") or "")
+        if answer_format in {"String", "Str", "List"}:
+            normalized = LongDocURLAdapter._postprocess_locating_label_prediction(sample, pred, question)
+            if normalized != pred:
+                return normalized, {"type": "locating_label", "original_pred": pred}
         if answer_format == "Integer":
             normalized = LongDocURLAdapter._postprocess_integer_prediction(sample, pred, question)
             if normalized != pred:
@@ -1028,6 +1035,156 @@ class LongDocURLAdapter:
         if any(marker in response for marker in ("not answerable", "not available", "no information available", "does not provide", "not provided")):
             return "Not answerable"
         return pred
+
+    @staticmethod
+    def _postprocess_locating_label_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
+        if not LongDocURLAdapter._is_locating_question(question):
+            return pred
+        labels = LongDocURLAdapter._aeg_locating_candidate_labels(sample)
+        if not labels:
+            return pred
+        if isinstance(pred, list):
+            normalized = [
+                LongDocURLAdapter._normalize_locating_label_item(str(item), labels)
+                for item in pred
+            ]
+            return normalized if normalized != pred else pred
+        if isinstance(pred, str):
+            return LongDocURLAdapter._normalize_locating_label_item(pred, labels)
+        return pred
+
+    @staticmethod
+    def _is_locating_question(question: str) -> bool:
+        text = str(question or "").lower()
+        return any(marker in text for marker in (
+            "select titles",
+            "select table names",
+            "which section",
+            "which title",
+            "what's name of the table",
+            "what is the name of the table",
+            "what's name of the figure",
+            "what is the name of the figure",
+            "list names of the other tables",
+            "list names of the other figures",
+            "which tables provide",
+            "which figures provide",
+            "where can we find",
+            "best matches",
+        ))
+
+    @staticmethod
+    def _aeg_locating_candidate_labels(sample: Dict[str, Any]) -> list[dict[str, Any]]:
+        metadata = sample.get("prepare_metadata") or {}
+        graph_dir = Path(str(metadata.get("graph_dir") or ""))
+        nodes_path = graph_dir / "nodes.jsonl"
+        if not nodes_path.exists():
+            return []
+        final_states = metadata.get("final_node_states") or {}
+        visible_node_ids = {
+            str(node_id)
+            for node_id, state in final_states.items()
+            if str(state).lower() in {"active", "opened"}
+        }
+        if not visible_node_ids:
+            visible_node_ids = {
+                str(node_id)
+                for node_id in (metadata.get("opened_node_ids") or []) + (metadata.get("active_node_ids") or [])
+            }
+        labels = []
+        seen = set()
+        with nodes_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                node = json.loads(line)
+                node_id = str(node.get("id") or "")
+                if node_id not in visible_node_ids:
+                    continue
+                node_type = str(node.get("type") or "").lower()
+                if node_type not in {"title", "table", "figure", "chart"}:
+                    continue
+                label = LongDocURLAdapter._node_visible_label(node)
+                if not label or label in seen:
+                    continue
+                seen.add(label)
+                labels.append({
+                    "label": label,
+                    "node_type": node_type,
+                    "page_index": int(node.get("page_index", -1)),
+                })
+        return labels
+
+    @staticmethod
+    def _node_visible_label(node: Dict[str, Any]) -> str:
+        node_type = str(node.get("type") or "").lower()
+        if node_type in {"table", "figure", "chart"}:
+            primary_values = (node.get("caption"), node.get("title"), node.get("name"))
+            fallback_values = (node.get("text"), node.get("abstract"))
+        else:
+            primary_values = (node.get("title"), node.get("name"), node.get("caption"), node.get("text"), node.get("abstract"))
+            fallback_values = ()
+        for value in primary_values:
+            label = str(value or "").strip()
+            if not label:
+                continue
+            label = label.splitlines()[0].strip()
+            if ":page:" in label or ":block:" in label:
+                continue
+            return label
+        for value in fallback_values:
+            label = str(value or "").strip()
+            if not label:
+                continue
+            label = label.splitlines()[0].strip()
+            if ":page:" in label or ":block:" in label:
+                continue
+            if re.match(r"^(?:Table|Figure|Fig\.?|Chart)\s*[\d.:]", label, flags=re.IGNORECASE):
+                return label
+        return ""
+
+    @staticmethod
+    def _normalize_locating_label_item(item: str, labels: list[dict[str, Any]]) -> str:
+        text = str(item or "").strip().strip("'\"")
+        if not text:
+            return item
+        exact = [
+            entry["label"]
+            for entry in labels
+            if LongDocURLAdapter._clean_string(entry["label"]) == LongDocURLAdapter._clean_string(text)
+        ]
+        if len(exact) == 1:
+            return exact[0]
+
+        page_match = re.search(
+            r"\b(?P<kind>table|figure|fig\.?|chart)\b.{0,40}\bpage\s+(?P<page>\d+)\b|"
+            r"\bpage\s+(?P<page_first>\d+)\b.{0,40}\b(?P<kind_last>table|figure|fig\.?|chart)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if page_match:
+            kind = str(page_match.group("kind") or page_match.group("kind_last") or "").lower()
+            page_number = int(page_match.group("page") or page_match.group("page_first"))
+            node_types = {"figure", "chart"} if kind.startswith("fig") else {kind}
+            candidates = [
+                entry["label"]
+                for entry in labels
+                if entry["page_index"] == page_number - 1 and entry["node_type"] in node_types
+            ]
+            if len(candidates) == 1:
+                return candidates[0]
+
+        short_match = re.fullmatch(r"(Table|Figure|Fig\.?|Chart)\s*[\s.:]*\d+(?:\.\d+)*", text, flags=re.IGNORECASE)
+        if short_match:
+            normalized_short = re.sub(r"\s+", " ", text).strip().lower().replace("fig.", "figure")
+            candidates = []
+            for entry in labels:
+                label_prefix = re.sub(r"\s+", " ", str(entry["label"]).strip()).lower().replace("fig.", "figure")
+                if re.match(rf"^{re.escape(normalized_short)}(?:\b|[\\s:.-])", label_prefix):
+                    candidates.append(entry["label"])
+            if len(candidates) == 1:
+                return candidates[0]
+        return item
 
     def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         sample = dict(sample)

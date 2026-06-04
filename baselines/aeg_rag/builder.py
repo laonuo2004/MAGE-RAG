@@ -42,9 +42,20 @@ class AEGRAGContextBuilder(ContextBuilder):
             ),
             max_candidate_actions=int(get_config_value(cfg, "baselines.agent.max_evaluator_candidate_actions", 120)),
             candidate_preview_char_limit=int(get_config_value(cfg, "baselines.evaluator.candidate_preview_char_limit", 160)),
+            max_selected_actions_per_iteration=int(
+                get_config_value(cfg, "baselines.agent.max_selected_actions_per_iteration", 4)
+            ),
         )
         self.max_evaluator_candidate_actions = int(
             get_config_value(cfg, "baselines.agent.max_evaluator_candidate_actions", 120)
+        )
+        self.max_selected_actions_per_iteration = max(
+            1,
+            int(get_config_value(cfg, "baselines.agent.max_selected_actions_per_iteration", 4)),
+        )
+        self.max_total_selected_actions = max(
+            1,
+            int(get_config_value(cfg, "baselines.agent.max_total_selected_actions", 24)),
         )
         self.watchdog_iterations = int(get_config_value(cfg, "baselines.safety.watchdog_iterations", 30))
         self.watchdog_repeated_noop_rounds = int(get_config_value(cfg, "baselines.safety.watchdog_repeated_noop_rounds", 3))
@@ -222,6 +233,7 @@ class AEGRAGContextBuilder(ContextBuilder):
     def _run_agent(self, question: str, state: EvidenceAgentState, client) -> str:
         generator = CandidateGenerator(state.graph)
         repeated_noop_rounds = 0
+        selected_action_attempts = 0
         if client is None:
             return "fallback_no_client"
         for iteration in range(1, self.watchdog_iterations + 1):
@@ -246,6 +258,8 @@ class AEGRAGContextBuilder(ContextBuilder):
                     str(index): candidate.id
                     for index, candidate in candidate_by_index.items()
                 },
+                "selected_action_execution_limit": self.max_selected_actions_per_iteration,
+                "selected_action_total_limit": self.max_total_selected_actions,
             })
 
             if decision.stop and not any([
@@ -256,7 +270,18 @@ class AEGRAGContextBuilder(ContextBuilder):
             ]):
                 return "normal_stop"
 
-            for selected in decision.selected_actions:
+            selected_actions = list(decision.selected_actions or [])
+            if len(selected_actions) > self.max_selected_actions_per_iteration:
+                state.trace.append({
+                    "iteration": iteration,
+                    "action": "TruncatedSelectedActions",
+                    "original_count": len(selected_actions),
+                    "executed_count": self.max_selected_actions_per_iteration,
+                })
+                selected_actions = selected_actions[: self.max_selected_actions_per_iteration]
+
+            for selected in selected_actions:
+                selected_action_attempts += 1
                 candidate_id = selected.get("candidate_id")
                 candidate_index = selected.get("candidate_index")
                 candidate = _resolve_candidate_index(candidate_index, candidate_by_index)
@@ -295,6 +320,14 @@ class AEGRAGContextBuilder(ContextBuilder):
                     if page_result.ok:
                         result = state.execute(action_from_candidate(candidate), iteration=iteration)
                 made_progress = made_progress or result.ok
+            if selected_action_attempts >= self.max_total_selected_actions:
+                state.trace.append({
+                    "iteration": iteration,
+                    "action": "SelectedActionBudgetReached",
+                    "executed_total": selected_action_attempts,
+                    "limit": self.max_total_selected_actions,
+                })
+                return "watchdog_total_selected_actions"
             if decision.search_query:
                 result = state.execute(SearchEvidence(decision.search_query), iteration=iteration)
                 made_progress = made_progress or result.ok
@@ -351,6 +384,8 @@ class AEGRAGContextBuilder(ContextBuilder):
             "evaluator_model_name": self.evaluator_model_name,
             "run_online_agent": self.run_online_agent,
             "max_evaluator_candidate_actions": self.max_evaluator_candidate_actions,
+            "max_selected_actions_per_iteration": self.max_selected_actions_per_iteration,
+            "max_total_selected_actions": self.max_total_selected_actions,
             "graph_escape": self.graph_escape,
         }
 

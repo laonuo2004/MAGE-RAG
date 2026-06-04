@@ -1,0 +1,75 @@
+{
+  "overall_acc": 0.25,
+  "overall_f1": 0.0,
+  "breakdowns": {
+    "single_page": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 1
+    },
+    "cross_page": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    },
+    "unanswerable": {
+      "acc": 1.0,
+      "f1": 0.0,
+      "count": 1
+    }
+  },
+  "evidence_source_breakdowns": {
+    "Chart": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 1
+    },
+    "Generalized-text (Layout)": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 1
+    },
+    "Table": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    }
+  },
+  "document_type_breakdowns": {
+    "Financial report": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    },
+    "Research report / Introduction": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 1
+    },
+    "Tutorial/Workshop": {
+      "acc": 1.0,
+      "f1": 0.0,
+      "count": 1
+    }
+  },
+  "answer_format_breakdowns": {
+    "Float": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 2
+    },
+    "Int": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 1
+    },
+    "None": {
+      "acc": 1.0,
+      "f1": 0.0,
+      "count": 1
+    }
+  },
+  "sample_count": 4,
+  "completed_count": 4,
+  "failed_count": 0
+}

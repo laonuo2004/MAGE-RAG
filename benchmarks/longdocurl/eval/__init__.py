@@ -1,1 +1,0 @@
-"""LongDocURL evaluation helpers."""

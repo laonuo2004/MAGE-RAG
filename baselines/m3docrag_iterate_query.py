@@ -10,7 +10,7 @@ import torch
 
 from baselines.m3docrag import m3docragContextBuilder
 from baselines.m3docrag_iterate import M3DocRAGIterateContextBuilder
-from baselines.utils.benchmarks_related import allowed_page_indices
+from benchmarks.utils.document_preprocess import allowed_page_indices
 from benchmarks.utils.data_utils import (
     colpali_pdf_embeddings_path,
     colpali_question_embeddings_path,

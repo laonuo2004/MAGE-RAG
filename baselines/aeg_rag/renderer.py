@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 
 from baselines.image import VISION_SYSTEM_PROMPT
-from baselines.utils.benchmarks_related import encode_image_file_to_base64, encode_pil_image_to_base64
+from benchmarks.utils.document_preprocess import encode_image_file_to_base64, encode_pil_image_to_base64
 from benchmarks.utils.data_utils import mmlongbench_png_page_path
 from utils.config_utils import get_config_value, require_config_value
 

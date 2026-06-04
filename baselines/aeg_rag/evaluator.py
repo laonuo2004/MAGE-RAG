@@ -11,7 +11,7 @@ from typing import Any
 
 from baselines.aeg_rag.actions import CandidateAction
 from baselines.aeg_rag.state import EvidenceAgentState
-from baselines.utils.benchmarks_related import encode_image_file_to_base64
+from benchmarks.utils.document_preprocess import encode_image_file_to_base64
 from utils.llm_utils import call_llm_messages, completion_content
 
 logger = logging.getLogger(__name__)

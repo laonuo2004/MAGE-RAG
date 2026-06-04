@@ -5,7 +5,7 @@ from safetensors.torch import load_file
 
 from .base import ContextBuilder, ContextMessages
 from .image import VISION_SYSTEM_PROMPT
-from baselines.utils.benchmarks_related import (
+from benchmarks.utils.document_preprocess import (
     allowed_page_indices,
     encode_image_file_to_base64,
     encode_pil_image_to_base64,

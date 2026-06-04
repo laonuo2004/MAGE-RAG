@@ -11,7 +11,7 @@ from types import SimpleNamespace
 CODE_DIR = pathlib.Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(CODE_DIR))
 
-from benchmarks.mmlongbench.utils.preprocess_cache import (
+from benchmarks.utils.data_utils import (
     mmlongbench_file_id,
     mmlongbench_ocr_dir,
     mmlongbench_png_dir,
@@ -20,9 +20,9 @@ from benchmarks.mmlongbench.utils.preprocess_cache import (
 )
 
 
-DEFAULT_INPUT_PATH = CODE_DIR / 'benchmarks' / 'mmlongbench' / 'data' / 'samples.json'
-DEFAULT_DOCUMENT_PATH = CODE_DIR / 'benchmarks' / 'mmlongbench' / 'data' / 'documents'
-DEFAULT_TMP_DIR = CODE_DIR / 'benchmarks' / 'mmlongbench' / 'tmp'
+DEFAULT_INPUT_PATH = CODE_DIR / 'benchmarks' / 'mmlongbench' / 'data' / 'raw' / 'samples.json'
+DEFAULT_DOCUMENT_PATH = CODE_DIR / 'benchmarks' / 'mmlongbench' / 'data' / 'raw' / 'documents'
+DEFAULT_TMP_DIR = CODE_DIR / 'benchmarks' / 'mmlongbench' / 'data' / 'cache'
 
 logger = logging.getLogger('preprocess_mmlongbench')
 

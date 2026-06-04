@@ -1,29 +1,31 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import json
 import logging
 import re
-import sys
 from pathlib import Path
 
-from PIL import Image
+import requests
+import torch
+from safetensors.torch import save_file
 from tqdm import tqdm
 
 
 CODE_DIR = Path(__file__).resolve().parents[3]
-M3DOCRAG_SRC = CODE_DIR / "baselines" / "m3docrag" / "src"
+
+import sys
 sys.path.insert(0, str(CODE_DIR))
-sys.path.insert(0, str(M3DOCRAG_SRC))
 
-from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_file_id
+from benchmarks.utils.data_utils import mmlongbench_file_id
 
 
-DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "samples.json"
-DEFAULT_IMAGE_ROOT = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "pdf_pngs"
-DEFAULT_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "pdf_embeddings_colpali"
-DEFAULT_QUESTION_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "question_embeddings_colpali"
-DEFAULT_BACKBONE_PATH = "/root/autodl-tmp/ylz/models/colpaligemma-3b-mix-448-base"
-DEFAULT_ADAPTER_PATH = "/root/autodl-tmp/ylz/models/colpali-v1.2"
+DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "raw" / "samples.json"
+DEFAULT_IMAGE_ROOT = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "processed" / "pdf_pngs"
+DEFAULT_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "cache" / "colpali" / "pdf_embeddings"
+DEFAULT_QUESTION_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "cache" / "colpali" / "question_embeddings"
+DEFAULT_VLLM_URL = "http://127.0.0.1:8020"
+DEFAULT_MODEL_NAME = "colpali-v1.3"
 
 logger = logging.getLogger("generate_mmlongbench_colpali_embeddings")
 PAGE_RE_TEMPLATE = r"^page_(?P<page_num>\d{{4}})_dpi{dpi}\.png$"
@@ -42,10 +44,10 @@ def parse_args():
         default=str(DEFAULT_QUESTION_OUTPUT_DIR),
         help="Directory for question .safetensors outputs.",
     )
-    parser.add_argument("--backbone-path", default=DEFAULT_BACKBONE_PATH, help="ColPali backbone checkpoint path.")
-    parser.add_argument("--adapter-path", default=DEFAULT_ADAPTER_PATH, help="ColPali adapter checkpoint path.")
-    parser.add_argument("--device", default="auto", help="Device for the ColPali model: auto, cpu, cuda, cuda:0, etc.")
-    parser.add_argument("--batch-size", type=int, default=4, help="Image encoding batch size.")
+    parser.add_argument("--vllm-url", default=DEFAULT_VLLM_URL, help="Base URL for the vLLM ColPali service.")
+    parser.add_argument("--model", default=DEFAULT_MODEL_NAME, help="Served vLLM model name.")
+    parser.add_argument("--request-timeout", type=float, default=180.0, help="HTTP request timeout in seconds.")
+    parser.add_argument("--batch-size", type=int, default=4, help="Question encoding batch size; PDF pages are encoded one request per page.")
     parser.add_argument("--limit", type=int, default=None, help="Only process the first N selected documents/questions.")
     parser.add_argument("--doc-id", action="append", default=None, help="Specific doc_id to process. Can be repeated.")
     parser.add_argument(
@@ -120,55 +122,63 @@ def find_page_images(image_root, doc_id, dpi):
     return file_id, pages
 
 
-def load_images(page_paths):
-    images = []
-    for path in page_paths:
-        with Image.open(path) as image:
-            images.append(image.convert("RGB"))
-    return images
-
-
 def write_manifest_record(manifest_path, record):
     with open(manifest_path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def resolve_device(device):
-    if device != "auto":
-        return device
-    import torch
-
-    return "cuda" if torch.cuda.is_available() else "cpu"
+def _vllm_endpoint(args, route):
+    return f"{args.vllm_url.rstrip('/')}/{route.lstrip('/')}"
 
 
-def load_retrieval_model(backbone_path, adapter_path, device):
-    from m3docrag.retrieval import ColPaliRetrievalModel
-
-    retrieval_model = ColPaliRetrievalModel(
-        backbone_name_or_path=backbone_path,
-        adapter_name_or_path=adapter_path,
-    )
-    target_device = resolve_device(device)
-    retrieval_model.model.to(target_device)
-    logger.info("Loaded ColPali model on device=%s", target_device)
-    return retrieval_model
+def _post_pooling(args, payload):
+    response = requests.post(_vllm_endpoint(args, "pooling"), json=payload, timeout=args.request_timeout)
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        raise RuntimeError(f"vLLM /pooling request failed: {response.text[:1000]}") from exc
+    return response.json()
 
 
-def normalize_query_embedding(query_embs):
-    import torch
-
-    if isinstance(query_embs, (list, tuple)):
-        query_emb = query_embs[0]
-    else:
-        query_emb = query_embs
-        if query_emb.ndim == 3:
-            query_emb = query_emb[0]
-    if not isinstance(query_emb, torch.Tensor):
-        query_emb = torch.as_tensor(query_emb)
-    return query_emb.to(dtype=torch.bfloat16, device="cpu")
+def _pooling_item_to_tensor(item):
+    if "data" not in item:
+        raise KeyError(f'vLLM pooling response item missing "data": keys={list(item)}')
+    tensor = torch.tensor(item["data"], dtype=torch.float32)
+    if tensor.ndim != 2:
+        raise ValueError(f"Expected token embeddings [tokens, dim], got {tuple(tensor.shape)}")
+    return tensor.to(dtype=torch.bfloat16, device="cpu")
 
 
-def encode_pdfs(args, retrieval_model, doc_ids, doc_pages, output_dir):
+def encode_image_path(args, image_path):
+    image_b64 = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
+    payload = {
+        "model": args.model,
+        "task": "token_embed",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "<image>"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+                ],
+            }
+        ],
+    }
+    data = _post_pooling(args, payload)
+    return _pooling_item_to_tensor(data["data"][0])
+
+
+def encode_queries(args, queries):
+    payload = {
+        "model": args.model,
+        "task": "token_embed",
+        "input": queries,
+    }
+    data = _post_pooling(args, payload)
+    return [_pooling_item_to_tensor(item) for item in data["data"]]
+
+
+def encode_pdfs(args, doc_ids, doc_pages, output_dir):
     manifest_path = output_dir / "manifest.jsonl"
     for doc_id in tqdm(doc_ids, desc="MMLongBench ColPali PDF embeddings"):
         file_id, pages = doc_pages[doc_id]
@@ -181,16 +191,10 @@ def encode_pdfs(args, retrieval_model, doc_ids, doc_pages, output_dir):
         if output_path.exists() and not args.overwrite:
             logger.info("Skipping existing PDF embedding: %s", output_path)
         else:
-            import torch
-            from safetensors.torch import save_file
-
-            images = load_images([path for _, path in pages])
-            doc_embs = retrieval_model.encode_images(
-                images=images,
-                batch_size=args.batch_size,
-                to_cpu=True,
-                use_tqdm=False,
-            )
+            doc_embs = [encode_image_path(args, path) for _, path in tqdm(pages, desc=f"{doc_id} pages", leave=False)]
+            token_shapes = {tuple(emb.shape) for emb in doc_embs}
+            if len(token_shapes) != 1:
+                raise ValueError(f"Cannot stack variable page embedding shapes for doc_id={doc_id}: {sorted(token_shapes)}")
             doc_embs = torch.stack(doc_embs, dim=0).to(torch.bfloat16)
             save_file({"embeddings": doc_embs}, output_path)
             status = "generated"
@@ -206,16 +210,36 @@ def encode_pdfs(args, retrieval_model, doc_ids, doc_pages, output_dir):
                 "page_indices": page_indices,
                 "page_numbers": page_numbers,
                 "image_paths": image_paths,
-                "backbone_path": args.backbone_path,
-                "adapter_path": args.adapter_path,
+                "model": args.model,
+                "vllm_url": args.vllm_url,
                 "dtype": "bfloat16",
                 "status": status,
             },
         )
 
 
-def encode_questions(args, retrieval_model, question_samples, output_dir):
+def _chunks(items, size):
+    if size <= 0:
+        raise ValueError("--batch-size must be > 0")
+    for index in range(0, len(items), size):
+        yield items[index:index + size]
+
+
+def encode_questions(args, question_samples, output_dir):
     manifest_path = output_dir / "manifest.jsonl"
+    pending_samples = [
+        sample
+        for sample in question_samples
+        if args.overwrite or not (output_dir / f"{sample['question_id']}.safetensors").exists()
+    ]
+    pending_embeddings = {}
+    for batch in tqdm(list(_chunks(pending_samples, args.batch_size)), desc="ColPali question batches", leave=False):
+        embeddings = encode_queries(args, [sample["question"] for sample in batch])
+        if len(embeddings) != len(batch):
+            raise ValueError(f"vLLM returned {len(embeddings)} embeddings for {len(batch)} queries")
+        for sample, embedding in zip(batch, embeddings):
+            pending_embeddings[sample["question_id"]] = embedding
+
     for sample in tqdm(question_samples, desc="MMLongBench ColPali question embeddings"):
         question_id = sample["question_id"]
         output_path = output_dir / f"{question_id}.safetensors"
@@ -224,14 +248,7 @@ def encode_questions(args, retrieval_model, question_samples, output_dir):
         if output_path.exists() and not args.overwrite:
             logger.info("Skipping existing question embedding: %s", output_path)
         else:
-            from safetensors.torch import save_file
-
-            query_embs = retrieval_model.encode_queries(
-                [sample["question"]],
-                batch_size=1,
-                to_cpu=True,
-            )
-            query_emb = normalize_query_embedding(query_embs)
+            query_emb = pending_embeddings[question_id]
             save_file({"query_embedding": query_emb}, output_path)
             status = "generated"
             logger.info("Saved %s with shape %s", output_path, tuple(query_emb.shape))
@@ -243,8 +260,8 @@ def encode_questions(args, retrieval_model, question_samples, output_dir):
                 "doc_id": sample["doc_id"],
                 "question": sample["question"],
                 "embedding_path": str(output_path),
-                "backbone_path": args.backbone_path,
-                "adapter_path": args.adapter_path,
+                "model": args.model,
+                "vllm_url": args.vllm_url,
                 "dtype": "bfloat16",
                 "status": status,
             },
@@ -290,16 +307,15 @@ def main():
             if args.overwrite or not (question_output_dir / f"{sample['question_id']}.safetensors").exists()
         ]
 
-    retrieval_model = None
-    if pdf_pending or question_pending:
-        retrieval_model = load_retrieval_model(args.backbone_path, args.adapter_path, args.device)
-    else:
+    if not (pdf_pending or question_pending):
         logger.info("All selected embeddings already exist; writing skip records only.")
+    else:
+        logger.info("Using vLLM ColPali service at %s with model=%s", args.vllm_url, args.model)
 
     if pdf_enabled:
-        encode_pdfs(args, retrieval_model, doc_ids, doc_pages, output_dir)
+        encode_pdfs(args, doc_ids, doc_pages, output_dir)
     if question_enabled:
-        encode_questions(args, retrieval_model, question_samples, question_output_dir)
+        encode_questions(args, question_samples, question_output_dir)
 
 
 if __name__ == "__main__":

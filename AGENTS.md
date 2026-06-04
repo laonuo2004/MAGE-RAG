@@ -31,3 +31,8 @@ The current git history uses short, direct commit messages, including brief Chin
 ## Security & Configuration Tips
 
 Secrets should stay in `.env`, which `main.py` loads from the repository root. Do not hard-code API keys, local model tokens, or private server paths in configs. Prefer Hydra overrides for experiment-specific values, and keep machine-specific service settings in local scripts or ignored environment files.
+
+## 注意事项
+
+- 当前服务器沙箱服务存在异常，所有命令请使用提权的方式运行。
+- 在进行方案设计时，以**结果**为优先导向，而不优先考虑成本等工程因素，以检验方案的最佳潜力。

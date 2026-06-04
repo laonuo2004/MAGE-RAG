@@ -9,12 +9,14 @@ VENV_DIR="${WORKDIR}/.venv"
 MODEL_ID="Qwen/Qwen3-VL-8B-Instruct"
 MODEL_DIR="/hy-tmp/Qwen3-VL-8B-Instruct"
 SERVED_MODEL_NAME="Qwen3-VL-8B-Instruct"
-PIP_INDEX_URL="https://mirrors.aliyun.com/pypi/simple/"
+PIP_INDEX_URL="https://pypi.doubanio.com/simple/"
 
-MAX_MODEL_LEN=2048
-MAX_NUM_SEQS=1
+MAX_MODEL_LEN=16384
+MAX_NUM_SEQS=4
 MAX_NUM_BATCHED_TOKENS=2048
 PORT=8080
+DATA_PARALLEL_SIZE=1
+TENSOR_PARALLEL_SIZE=1
 
 export VLLM_VERSION=0.19.1
 export CUDA_VERSION=128
@@ -91,7 +93,10 @@ vllm serve "${MODEL_DIR}" \\
   --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} \\
   --limit-mm-per-prompt.video 0 \\
   --mm-processor-cache-gb 0 \\
-  --async-scheduling 
+  --data-parallel-size ${DATA_PARALLEL_SIZE} \\
+  --tensor-parallel-size ${TENSOR_PARALLEL_SIZE} \\
+  --async-scheduling \\
+  --aggregate-engine-logging
 EOF
 
 chmod +x "${WORKDIR}/serve.sh"

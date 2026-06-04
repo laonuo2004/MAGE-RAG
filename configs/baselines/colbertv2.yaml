@@ -8,15 +8,4 @@ params:
   max_cross_pages: null
 checkpoint: /root/autodl-tmp/ylz/models/colbertv2.0
 tokenizer_name: bert-base-uncased
-mineru_dir:
-  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs_mineru/4000-4999
-doc_embeddings_colbertv2:
-  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/colbertv2/doc_embeddings
-  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/tmp/colbertv2/doc_embeddings
-query_embeddings_colbertv2:
-  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/colbertv2/query_embeddings
-  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/tmp/colbertv2/query_embeddings
-chunk_metadata_colbertv2:
-  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/colbertv2/chunk_metadata
-  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/tmp/colbertv2/chunk_metadata
 max_context_chars: null

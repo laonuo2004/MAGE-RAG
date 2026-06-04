@@ -18,13 +18,13 @@ from baselines.utils.benchmarks_related import load_longdocurl_vlm_text_pages
 from baselines.utils.benchmarks_related import colbertv2_doc_cache_variant, colbertv2_query_cache_variant
 
 
-DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "LongDocURL.jsonl"
+DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "raw" / "LongDocURL.jsonl"
 DEFAULT_DOC_OUTPUT_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "tmp" / "colbertv2" / "doc_embeddings"
 DEFAULT_QUERY_OUTPUT_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "tmp" / "colbertv2" / "query_embeddings"
 DEFAULT_METADATA_OUTPUT_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "tmp" / "colbertv2" / "chunk_metadata"
 DEFAULT_CHECKPOINT = "/root/autodl-tmp/ylz/models/colbertv2.0"
 DEFAULT_OCR_JSON_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdf_jsons" / "4000-4999"
-DEFAULT_IMAGE_PREFIX = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdf_pngs" / "4000-4999"
+DEFAULT_IMAGE_PREFIX = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "processed" / "pdf_pngs" / "4000-4999"
 DEFAULT_MINERU_DIR = CODE_DIR / "benchmarks" / "longdocurl" / "data" / "pdfs_mineru" / "4000-4999"
 
 logger = logging.getLogger("generate_longdocurl_colbertv2_embeddings")

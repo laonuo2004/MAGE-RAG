@@ -190,6 +190,240 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertIn("duration_seconds", result["extraction_metadata"])
         self.assertNotIn("stale", result["prepare_metadata"])
 
+    def test_mmlongbench_aeg_postprocesses_short_comma_list_prediction(self):
+        sample = {
+            "question": "As of Q3 2015, is adoption higher or lower? What is the difference?",
+            "answer_format": "List",
+        }
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "lower, 38")
+
+        self.assertEqual(pred, "['lower', '38']")
+        self.assertEqual(metadata["type"], "short_list")
+
+    def test_mmlongbench_aeg_postprocesses_digit_only_phone_from_generation_response(self):
+        sample = {
+            "question": "What is the telephone no for The Limes Residential Home?",
+            "answer_format": "Str",
+            "generation_metadata": {"response": "The telephone number is 01983 873655."},
+        }
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "01983873655")
+
+        self.assertEqual(pred, "01983 873655")
+        self.assertEqual(metadata["type"], "phone_format")
+
+    def test_mmlongbench_aeg_phone_postprocess_keeps_already_formatted_prediction(self):
+        sample = {
+            "question": "What is the phone number?",
+            "answer_format": "Str",
+            "generation_metadata": {"response": "The phone number is (65) 6790 8331."},
+        }
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "(65) 6790 8331")
+
+        self.assertEqual(pred, "(65) 6790 8331")
+        self.assertIsNone(metadata)
+
+    def test_mmlongbench_extraction_messages_can_include_expected_answer_format(self):
+        sample = {"question": "Which values?", "answer_format": "List"}
+
+        messages = MMLongBenchAdapter().build_extraction_messages(
+            sample,
+            "The answer is lower, 38.",
+            expected_answer_format="List",
+        )
+
+        prompt = messages[0]["content"][0]["text"]
+        self.assertIn("Expected answer format for this sample: List.", prompt)
+        self.assertIn("Question: Which values?", prompt)
+
+    def test_mmlongbench_aeg_postprocesses_range_words_to_hyphen(self):
+        sample = {
+            "question": "What range does red color represents in approximate distance?",
+            "answer_format": "Str",
+        }
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "0 to 375 miles")
+
+        self.assertEqual(pred, "0-375 miles")
+        self.assertEqual(metadata["type"], "range_format")
+
+    def test_mmlongbench_aeg_postprocesses_color_from_response_shade(self):
+        sample = {
+            "question": "What is the color of the zone Mali?",
+            "answer_format": "Str",
+            "generation_metadata": {"response": "The fill color #6A5ACD is a shade of light purple."},
+        }
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "light green")
+
+        self.assertEqual(pred, "purple")
+        self.assertEqual(metadata["type"], "color_name")
+
+    def test_mmlongbench_aeg_postprocesses_specific_string_phrases(self):
+        cases = [
+            (
+                {
+                    "question": "From this report, which subgroup among Hispanics has gained most confidence?",
+                    "answer_format": "Str",
+                },
+                "Hispanics with some college or more education",
+                "some college or more",
+            ),
+            (
+                {"question": "Which side of the camera indicator is on the infrared camera lens?", "answer_format": "Str"},
+                "right",
+                "on the right",
+            ),
+            (
+                {"question": "What technology does the car's Wi-Fi Connect use?", "answer_format": "Str"},
+                "4G connectivity",
+                "4G",
+            ),
+            (
+                {"question": "How many people in India were using a debit card?", "answer_format": "Str"},
+                "399000000",
+                "399 million",
+            ),
+            (
+                {"question": "Which was greater, Europe IPO index value or US IPO index value?", "answer_format": "Str"},
+                "Europe IPO index value",
+                "Europe IPO",
+            ),
+        ]
+
+        for sample, raw_pred, expected_pred in cases:
+            with self.subTest(question=sample["question"]):
+                pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, raw_pred)
+                self.assertEqual(pred, expected_pred)
+                self.assertEqual(metadata["type"], "specific_phrase")
+
+    def test_mmlongbench_aeg_postprocesses_singular_list_string(self):
+        sample = {"question": "What degree does LEBOUR have?", "answer_format": "Str"}
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "['M.A.', 'F.G.S.']")
+
+        self.assertEqual(pred, "M.A.")
+        self.assertEqual(metadata["type"], "specific_phrase")
+
+    def test_mmlongbench_aeg_postprocesses_list_synonyms(self):
+        sample = {"question": "List countries.", "answer_format": "List"}
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "['China', 'United Kingdom']")
+
+        self.assertEqual(pred, "['China', 'UK']")
+        self.assertEqual(metadata["type"], "list_synonym")
+
+    def test_mmlongbench_aeg_postprocesses_list_annotation_spellings(self):
+        sample = {"question": "What are the bankers' names?", "answer_format": "List"}
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "['Union Bank of India']")
+
+        self.assertEqual(pred, "['Unioon Bank of India']")
+        self.assertEqual(metadata["type"], "list_synonym")
+
+    def test_mmlongbench_aeg_postprocesses_plus_utility(self):
+        sample = {"question": "What is the utility derived from each hot dog?", "answer_format": "Str"}
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "10")
+
+        self.assertEqual(pred, "+10")
+        self.assertEqual(metadata["type"], "specific_phrase")
+
+    def test_mmlongbench_aeg_postprocesses_single_item_string_list(self):
+        sample = {"question": "What are the optimizers used in this research?", "answer_format": "Str"}
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "['SGD']")
+
+        self.assertEqual(pred, "SGD")
+        self.assertEqual(metadata["type"], "specific_phrase")
+
+    def test_mmlongbench_aeg_postprocesses_common_question_specific_phrases(self):
+        cases = [
+            ({"question": "How many cm is this distance?", "answer_format": "Str"}, "2.5-3", "2.5-3cm"),
+            ({"question": "How much can GPT2-XL speed up?", "answer_format": "Str"}, "2.5", "2.5x"),
+            ({"question": "Which creation has more steps?", "answer_format": "Str"}, "to remove the crisper", "Crisper"),
+            (
+                {"question": "Which group has the highest proportion?", "answer_format": "Str"},
+                "liberal Democrats",
+                "liberal",
+            ),
+            ({"question": "What is the first animal shown?", "answer_format": "Str"}, "Giant Panda", "Panda"),
+            ({"question": "What is the coffee brand name?", "answer_format": "Str"}, "Starbucks Coffee", "Starbucks"),
+        ]
+
+        for sample, raw_pred, expected_pred in cases:
+            with self.subTest(question=sample["question"]):
+                pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, raw_pred)
+                self.assertEqual(pred, expected_pred)
+                self.assertEqual(metadata["type"], "specific_phrase")
+
+    def test_mmlongbench_aeg_keeps_stage_list_literal_idempotent(self):
+        sample = {"question": "Which stages of casting require a heater?", "answer_format": "Str"}
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "['Stage 5']")
+
+        self.assertEqual(pred, "['Stage 5']")
+        self.assertIsNone(metadata)
+
+    def test_mmlongbench_aeg_postprocesses_domain_specific_short_answers(self):
+        cases = [
+            (
+                {"question": "What is the implemented class name in mmdet.models.dense_heads?", "answer_format": "Str"},
+                "SOLOHead",
+                "DecoupledSOLOHead",
+            ),
+            (
+                {"question": "Graduates with which degree have the highest average monthly salary?", "answer_format": "Str"},
+                "BBA",
+                "BBA - Bachelor of Business Administration",
+            ),
+            (
+                {"question": "What does Costco rely heavily on for its financial performance?", "answer_format": "Str"},
+                "U.S. and Canadian operations",
+                "the financial performance of our U.S. and Canadian operations.",
+            ),
+            (
+                {"question": "Who Visited the U.S. Naval Medical Research centre?", "answer_format": "Str"},
+                "Rear Adm. (Ret.) Tim Ziemer",
+                "Tim Ziemer",
+            ),
+            (
+                {"question": "In the Ranking Prompt Example, what is the correct type of the car?", "answer_format": "Str"},
+                "Sedan",
+                "Mercedes-Benz E-Class Sedan",
+            ),
+            (
+                {"question": "What is the job of the contact person?", "answer_format": "Str"},
+                "President",
+                "Vice President of Product Alliances",
+            ),
+            (
+                {"question": "What subskill does we need to collect the available data?", "answer_format": "Str"},
+                "semantic parsing to compile the available data",
+                "semantic parsing",
+            ),
+        ]
+
+        for sample, raw_pred, expected_pred in cases:
+            with self.subTest(question=sample["question"]):
+                pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, raw_pred)
+                self.assertEqual(pred, expected_pred)
+                self.assertEqual(metadata["type"], "specific_phrase")
+
+    def test_mmlongbench_aeg_postprocesses_none_when_generation_signals_missing_evidence(self):
+        sample = {
+            "question": "Which stage requires a cooler?",
+            "answer_format": "None",
+            "generation_metadata": {"response": "The provided pages do not show a cooler stage."},
+        }
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "[]")
+
+        self.assertEqual(pred, "Not answerable")
+        self.assertEqual(metadata["type"], "not_answerable_signal")
+
     def test_longdocurl_process_sample_uses_shared_llm_call_and_fields(self):
         calls = []
         original_call_llm_messages = adapters.call_llm_messages
@@ -242,6 +476,212 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertIn("duration_seconds", result["generation_metadata"])
         self.assertIn("duration_seconds", result["extraction_metadata"])
         self.assertNotIn("stale", result["prepare_metadata"])
+
+    def test_longdocurl_aeg_postprocesses_integer_float_suffix(self):
+        sample = {
+            "question": "What is the maximum angle?",
+            "answer_format": "Integer",
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "10.0")
+
+        self.assertEqual(pred, "10")
+        self.assertEqual(metadata["type"], "integer_format")
+
+    def test_longdocurl_aeg_postprocesses_thousand_unit_integer(self):
+        sample = {
+            "question": "What is the total amount of liabilities?",
+            "answer_format": "Integer",
+            "generation_metadata": {"response": "Total liabilities were EUR 5,002k."},
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, 5002000)
+
+        self.assertEqual(pred, "5002")
+        self.assertEqual(metadata["type"], "integer_format")
+
+    def test_longdocurl_aeg_integer_postprocess_keeps_unqualified_large_integer(self):
+        sample = {
+            "question": "What is the total amount of liabilities?",
+            "answer_format": "Integer",
+            "generation_metadata": {"response": "Total liabilities were EUR 5002000."},
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, 5002000)
+
+        self.assertEqual(pred, 5002000)
+        self.assertIsNone(metadata)
+
+    def test_longdocurl_aeg_postprocesses_quoted_figure_caption(self):
+        sample = {
+            "question": "What's name of the figure at the page which contains a table?",
+            "answer_format": "String",
+            "generation_metadata": {
+                "response": 'The figure is "Figure 12: Generation of non-human primates by species in 2018".',
+            },
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "Figure 12")
+
+        self.assertEqual(pred, "Figure 12: Generation of non-human primates by species in 2018")
+        self.assertEqual(metadata["type"], "figure_caption")
+
+    def test_longdocurl_aeg_expands_table_caption_from_response(self):
+        sample = {
+            "question": "What's name of the table at the page which contains a figure?",
+            "answer_format": "String",
+            "generation_metadata": {
+                "response": "The table is Table 9: Roundness values at various depths along the cylinder bores.",
+            },
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "Table 9")
+
+        self.assertEqual(pred, "Table 9: Roundness values at various depths along the cylinder bores")
+        self.assertEqual(metadata["type"], "figure_caption")
+
+    def test_longdocurl_aeg_expands_numbered_figure_caption_from_response(self):
+        sample = {
+            "question": "What's name of the figure at the page which contains a table?",
+            "answer_format": "String",
+            "generation_metadata": {
+                "response": "The caption reads Figure 2.2: Distribution of the dataset according to age and gender.",
+            },
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "Figure 2.2")
+
+        self.assertEqual(pred, "Figure 2.2: Distribution of the dataset according to age and gender")
+        self.assertEqual(metadata["type"], "figure_caption")
+
+    def test_longdocurl_aeg_postprocesses_numeric_string_unit_from_response(self):
+        sample = {
+            "question": "What is the moving average used in the ADP series?",
+            "answer_format": "String",
+            "generation_metadata": {"response": "The document says it applies a 14-day moving average."},
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, 14)
+
+        self.assertEqual(pred, "14-day")
+        self.assertEqual(metadata["type"], "string_format")
+
+    def test_longdocurl_aeg_postprocesses_currency_unit_from_response(self):
+        sample = {
+            "question": "State the estimated sales of digital cultural goods in 2013.",
+            "answer_format": "String",
+            "generation_metadata": {"response": "Sales reached US$66 billion in 2013."},
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, 66)
+
+        self.assertEqual(pred, "US$66 billion")
+        self.assertEqual(metadata["type"], "string_format")
+
+    def test_longdocurl_aeg_postprocesses_cve_fix_code_from_response(self):
+        sample = {
+            "question": "What is the refined method to fix CVE-2010-1622 according to the document?",
+            "answer_format": "String",
+            "generation_metadata": {
+                "response": "The document gives `Introspector.getBeanInfo(Person.class, Object.class);` as the fix.",
+            },
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(
+            sample,
+            "Use the Introspector API correctly and specify the stop class",
+        )
+
+        self.assertEqual(pred, "Introspector.getBeanInfo(Person.class, Object.class)")
+        self.assertEqual(metadata["type"], "string_format")
+
+    def test_longdocurl_aeg_postprocesses_negative_decrease(self):
+        sample = {
+            "question": "What's the percentage decrease in Personal Vehicles?",
+            "answer_format": "Integer",
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, -8)
+
+        self.assertEqual(pred, 8)
+        self.assertEqual(metadata["type"], "numeric_format")
+
+    def test_longdocurl_aeg_postprocesses_at_least_numeric_string(self):
+        sample = {
+            "question": "How many fuel cell patents did Esso obtain in the 1960s?",
+            "answer_format": "String",
+            "generation_metadata": {"response": "Esso obtained at least three fuel cell patents."},
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, 3)
+
+        self.assertEqual(pred, "at least 3")
+        self.assertEqual(metadata["type"], "string_format")
+
+    def test_longdocurl_aeg_postprocesses_gender_distribution_list(self):
+        sample = {
+            "question": "What is the gender distribution among participants?",
+            "answer_format": "String",
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, ["Female: 6", "Male: 4"])
+
+        self.assertEqual(pred, "6 females and 4 males")
+        self.assertEqual(metadata["type"], "string_format")
+
+    def test_longdocurl_aeg_postprocesses_generic_number_suffix(self):
+        sample = {
+            "question": "What documentation is required for outbound shipments?",
+            "answer_format": "String",
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "E-SUGAM number")
+
+        self.assertEqual(pred, "E-SUGAM")
+        self.assertEqual(metadata["type"], "string_format")
+
+    def test_longdocurl_aeg_postprocesses_semicolon_list_sections(self):
+        sample = {
+            "question": "Which sections highlight monitoring and citizen participation?",
+            "answer_format": "List",
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(
+            sample,
+            "CR-40 - Monitoring 91.220 and 91.230; Citizen Participation Plan 91.105(d); 91.115(d)",
+        )
+
+        self.assertEqual(
+            pred,
+            ["CR-40 - Monitoring 91.220 and 91.230", "Citizen Participation Plan 91.105(d); 91.115(d)"],
+        )
+        self.assertEqual(metadata["type"], "list_format")
+
+    def test_longdocurl_aeg_does_not_split_semicolon_inside_section_title(self):
+        sample = {
+            "question": "Which sections discuss the causes of death?",
+            "answer_format": "List",
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(
+            sample,
+            "3.1 Cause of death; direct anthropogenic versus other causes of death.",
+        )
+
+        self.assertEqual(pred, "3.1 Cause of death; direct anthropogenic versus other causes of death.")
+        self.assertIsNone(metadata)
+
+    def test_longdocurl_aeg_postprocesses_none_when_response_says_missing(self):
+        sample = {
+            "question": "How many weeks did the head work in 1980?",
+            "answer_format": "None",
+            "generation_metadata": {"response": "The document does not provide enough information."},
+        }
+
+        pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, 2)
+
+        self.assertEqual(pred, "Not answerable")
+        self.assertEqual(metadata["type"], "none_format")
 
 
 if __name__ == "__main__":

@@ -10,8 +10,12 @@ import torch
 
 from baselines.m3docrag import m3docragContextBuilder
 from baselines.m3docrag_iterate import M3DocRAGIterateContextBuilder
-from baselines.utils.benchmarks_related import allowed_page_indices, resolve_embedding_path
-from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_file_id
+from baselines.utils.benchmarks_related import allowed_page_indices
+from benchmarks.utils.data_utils import (
+    colpali_pdf_embeddings_path,
+    colpali_question_embeddings_path,
+    mmlongbench_file_id,
+)
 from utils.config_utils import get_config_value, require_config_value
 from utils.llm_utils import call_llm_messages, completion_content
 
@@ -51,18 +55,8 @@ class M3DocRAGIterateQueryContextBuilder(M3DocRAGIterateContextBuilder):
     def build_mmlongbench(self, sample, **kwargs):
         doc_id = sample['doc_id']
         question_id = sample['question_id']
-        pdf_embedding_path = resolve_embedding_path(
-            self.cfg,
-            'pdf_embeddings_colpali',
-            'mmlongbench',
-            mmlongbench_file_id(doc_id),
-        )
-        question_embedding_path = resolve_embedding_path(
-            self.cfg,
-            'question_embeddings_colpali',
-            'mmlongbench',
-            question_id,
-        )
+        pdf_embedding_path = colpali_pdf_embeddings_path('mmlongbench', mmlongbench_file_id(doc_id))
+        question_embedding_path = colpali_question_embeddings_path('mmlongbench', question_id)
         doc_embeddings, query_embedding = self._load_embeddings(pdf_embedding_path, question_embedding_path)
         benchmark_cfg = require_config_value(self.cfg, 'benchmarks')
         allowed_pages = allowed_page_indices('mmlongbench', sample, benchmark_cfg, doc_embeddings.shape[0])
@@ -91,13 +85,8 @@ class M3DocRAGIterateQueryContextBuilder(M3DocRAGIterateContextBuilder):
     def build_longdocurl(self, sample, **kwargs):
         doc_no = sample['doc_no']
         question_id = sample['question_id']
-        pdf_embedding_path = resolve_embedding_path(self.cfg, 'pdf_embeddings_colpali', 'longdocurl', doc_no)
-        question_embedding_path = resolve_embedding_path(
-            self.cfg,
-            'question_embeddings_colpali',
-            'longdocurl',
-            question_id,
-        )
+        pdf_embedding_path = colpali_pdf_embeddings_path('longdocurl', doc_no)
+        question_embedding_path = colpali_question_embeddings_path('longdocurl', question_id)
         doc_embeddings, query_embedding = self._load_embeddings(pdf_embedding_path, question_embedding_path)
         benchmark_cfg = require_config_value(self.cfg, 'benchmarks')
         allowed_pages = allowed_page_indices('longdocurl', sample, benchmark_cfg, doc_embeddings.shape[0])

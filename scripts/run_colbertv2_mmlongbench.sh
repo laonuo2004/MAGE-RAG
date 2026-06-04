@@ -18,14 +18,14 @@ LOGGING_LEVEL="${LOGGING_LEVEL:-INFO}"
 
 cd "${CODE_ROOT}"
 
-INPUT_PATH="benchmarks/mmlongbench/data/samples.json"
+INPUT_PATH="benchmarks/mmlongbench/data/raw/samples.json"
 if [[ "${MODE}" == "debug20" ]]; then
-  INPUT_PATH="benchmarks/mmlongbench/tmp/colbertv2/debug_inputs/mmlongbench_colbert_debug20.json"
+  INPUT_PATH="benchmarks/mmlongbench/data/cache/colbertv2/debug_inputs/mmlongbench_colbert_debug20.json"
   mkdir -p "$(dirname "${INPUT_PATH}")"
   python - <<'PY'
 import json
-src = "benchmarks/mmlongbench/data/samples.json"
-dst = "benchmarks/mmlongbench/tmp/colbertv2/debug_inputs/mmlongbench_colbert_debug20.json"
+src = "benchmarks/mmlongbench/data/raw/samples.json"
+dst = "benchmarks/mmlongbench/data/cache/colbertv2/debug_inputs/mmlongbench_colbert_debug20.json"
 with open(src, "r", encoding="utf-8") as f:
     samples = json.load(f)
 with open(dst, "w", encoding="utf-8") as f:
@@ -54,14 +54,14 @@ if [[ "${MAX_CROSS_PAGES}" != "null" && "${MAX_CROSS_PAGES}" != "None" && -n "${
   GEN_ARGS+=(--max-cross-pages "${MAX_CROSS_PAGES}")
 fi
 
-python benchmarks/mmlongbench/scripts/generate_colbertv2_embeddings.py "${GEN_ARGS[@]}"
+python benchmarks/scripts/generate_colbertv2_embeddings.py --benchmark mmlongbench "${GEN_ARGS[@]}"
 
 python scripts/verify_colbertv2_cache.py \
   --benchmark mmlongbench \
   --input-path "${INPUT_PATH}" \
-  --doc-embeddings-root benchmarks/mmlongbench/tmp/colbertv2/doc_embeddings \
-  --query-embeddings-root benchmarks/mmlongbench/tmp/colbertv2/query_embeddings \
-  --chunk-metadata-root benchmarks/mmlongbench/tmp/colbertv2/chunk_metadata \
+  --doc-embeddings-root benchmarks/mmlongbench/data/cache/colbertv2/doc_embeddings \
+  --query-embeddings-root benchmarks/mmlongbench/data/cache/colbertv2/query_embeddings \
+  --chunk-metadata-root benchmarks/mmlongbench/data/cache/colbertv2/chunk_metadata \
   --checkpoint "${CHECKPOINT}" \
   --chunk-size "${CHUNK_SIZE}" \
   --chunk-overlap "${CHUNK_OVERLAP}" \

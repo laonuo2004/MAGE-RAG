@@ -21,7 +21,7 @@ from baselines.utils.benchmarks_related import (
 )
 
 
-DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "samples.json"
+DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "raw" / "samples.json"
 DEFAULT_DOC_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "bgem3" / "doc_embeddings"
 DEFAULT_QUERY_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "bgem3" / "query_embeddings"
 DEFAULT_METADATA_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "bgem3" / "chunk_metadata"

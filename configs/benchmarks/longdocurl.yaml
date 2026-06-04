@@ -1,11 +1,13 @@
 name: longdocurl
-qa_file: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/LongDocURL.jsonl
+qa_file: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/raw/LongDocURL.jsonl
 # process_mode: serial
 process_mode: parallel
 workers: 64 # only for parallel processing
-ocr_json_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_jsons/4000-4999
-image_prefix: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_pngs/4000-4999
-mineru_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs_mineru/4000-4999
+ocr_json_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdf_jsons/4000-4999
+image_prefix: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdf_pngs/4000-4999
+mineru_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999
+evidence_graph_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/evidence_graphs/4000-4999
+node_embedding_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/cache/colpali/node_embeddings/4000-4999
 qa_model_name: Qwen3-VL-8B-Instruct
 extractor_model_name: Qwen3-VL-8B-Instruct
 results_file: null

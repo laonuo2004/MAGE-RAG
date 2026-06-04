@@ -214,5 +214,13 @@ configs/llm_providers/openrouter.yaml
 configs/litellm_config.yaml
 
 # PM2
-
 logs/
+
+# Superpowers
+.superpowers/
+
+# Local result dashboard cache
+analysis_cache/
+
+results/longdocurl/aeg_rag
+results/mmlongbench/aeg_rag

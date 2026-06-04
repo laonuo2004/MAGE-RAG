@@ -2,7 +2,7 @@ import os
 
 from .base import ContextBuilder, ContextMessages
 from baselines.utils.benchmarks_related import encode_image_file_to_base64, encode_pil_image_to_base64
-from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_png_page_path
+from benchmarks.utils.data_utils import mmlongbench_png_page_path
 from utils.config_utils import require_config_value
 
 

@@ -20,22 +20,22 @@ LOGGING_LEVEL="${LOGGING_LEVEL:-INFO}"
 MODE_NAME="${MODE_NAME:-dense}"
 TEXT_SOURCE="${TEXT_SOURCE:-ocr}"
 USE_FP16="${USE_FP16:-true}"
-MINERU_DIR="${MINERU_DIR:-/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs_mineru/4000-4999}"
+MINERU_DIR="${MINERU_DIR:-/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999}"
 
 cd "${CODE_ROOT}"
 
-INPUT_PATH="benchmarks/longdocurl/data/LongDocURL.jsonl"
+INPUT_PATH="benchmarks/longdocurl/data/raw/LongDocURL.jsonl"
 if [[ "${MODE}" == "debug20" ]]; then
-  INPUT_PATH="benchmarks/longdocurl/tmp/bgem3/debug_inputs/longdocurl_bgem3_debug20.jsonl"
+  INPUT_PATH="benchmarks/longdocurl/data/cache/bgem3/debug_inputs/longdocurl_bgem3_debug20.jsonl"
   mkdir -p "$(dirname "${INPUT_PATH}")"
   python - <<'PY'
 import os
-src = "benchmarks/longdocurl/data/LongDocURL.jsonl"
-dst = "benchmarks/longdocurl/tmp/bgem3/debug_inputs/longdocurl_bgem3_debug20.jsonl"
+src = "benchmarks/longdocurl/data/raw/LongDocURL.jsonl"
+dst = "benchmarks/longdocurl/data/cache/bgem3/debug_inputs/longdocurl_bgem3_debug20.jsonl"
 text_source = os.environ.get("TEXT_SOURCE", "ocr")
 mineru_dir = os.environ.get(
     "MINERU_DIR",
-    "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs_mineru/4000-4999",
+    "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999",
 )
 selected = []
 with open(src, "r", encoding="utf-8") as f:
@@ -90,7 +90,7 @@ else
   GEN_ARGS+=(--no-use-fp16)
 fi
 
-python benchmarks/longdocurl/scripts/generate_bgem3_embeddings.py "${GEN_ARGS[@]}"
+python benchmarks/scripts/generate_bgem3_embeddings.py --benchmark longdocurl "${GEN_ARGS[@]}"
 
 python main.py \
   benchmarks=longdocurl \

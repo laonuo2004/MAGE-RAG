@@ -19,6 +19,8 @@ MM_PROCESSOR_CACHE_GB="${MM_PROCESSOR_CACHE_GB:-0}"
 ENABLE_PREFIX_CACHING="${ENABLE_PREFIX_CACHING:-1}"
 ASYNC_SCHEDULING="${ASYNC_SCHEDULING:-1}"
 EXTRA_VLLM_ARGS="${EXTRA_VLLM_ARGS:-}"
+TENSOR_PARALLEL_SIZE="${TENSOR_PARALLEL_SIZE:-1}"
+DATA_PARALLEL_SIZE="${DATA_PARALLEL_SIZE:-1}"
 
 COMMON_ARGS=(
   serve
@@ -78,6 +80,9 @@ PROFILE_ARGS=(
   --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
   --mm-processor-cache-gb "${MM_PROCESSOR_CACHE_GB}"
   --limit-mm-per-prompt.video "${LIMIT_MM_PER_PROMPT_VIDEO}"
+  --tensor-parallel-size "${TENSOR_PARALLEL_SIZE}"
+  --data-parallel-size "${DATA_PARALLEL_SIZE}"
+  --aggregate-engine-logging
 )
 
 if [[ "${ENABLE_CHUNKED_PREFILL}" == "1" ]]; then

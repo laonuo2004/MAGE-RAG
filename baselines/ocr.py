@@ -2,7 +2,7 @@ import os
 import json
 
 from .base import ContextBuilder, ContextMessages
-from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path
+from benchmarks.utils.data_utils import mmlongbench_ocr_page_path
 from utils.config_utils import require_config_value
 from utils.llm_utils import text_content_parts
 
@@ -45,7 +45,7 @@ class OcrContextBuilder(ContextBuilder):
         )
 
     def build_longdocurl(self, sample, **kwargs):
-        from benchmarks.longdocurl.eval.api_models.pure_ocr_utils import get_pure_ocr_prompt_pymupdf
+        from benchmarks.utils.data_utils import get_pure_ocr_prompt_pymupdf
 
         question = sample['question']
         benchmark_cfg = require_config_value(self.cfg, 'benchmarks')

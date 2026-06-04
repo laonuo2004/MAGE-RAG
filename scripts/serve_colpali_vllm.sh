@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROFILE="${1:-8k}"
+
+CUDA_VISIBLE_DEVICES_VALUE="${CUDA_VISIBLE_DEVICES:-1}"
+VLLM_BIN="${VLLM_BIN:-/root/autodl-tmp/conda/envs/logma-rag/bin/vllm}"
+MODEL_NAME="${MODEL_NAME:-/root/autodl-tmp/ylz/models/colpali-v1.3-hf}"
+SERVED_MODEL_NAME="${SERVED_MODEL_NAME:-colpali-v1.3-hf}"
+HOST="${HOST:-0.0.0.0}"
+PORT="${PORT:-8020}"
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-}"
+MM_PROCESSOR_CACHE_GB="${MM_PROCESSOR_CACHE_GB:-0}"
+LIMIT_MM_PER_PROMPT_IMAGE="${LIMIT_MM_PER_PROMPT_IMAGE:-1}"
+TRUST_REMOTE_CODE="${TRUST_REMOTE_CODE:-0}"
+ENABLE_CHUNKED_PREFILL="${ENABLE_CHUNKED_PREFILL:-0}"
+ASYNC_SCHEDULING="${ASYNC_SCHEDULING:-0}"
+EXTRA_VLLM_ARGS="${EXTRA_VLLM_ARGS:-}"
+
+COMMON_ARGS=(
+  serve
+  "${MODEL_NAME}"
+  --host "${HOST}"
+  --port "${PORT}"
+  --runner pooling
+  --pooler-config.task token_embed
+)
+
+case "${PROFILE}" in
+  2k)
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.15"
+    DEFAULT_MAX_MODEL_LEN="2048"
+    DEFAULT_MAX_NUM_SEQS="64"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="8192"
+    ;;
+  4k)
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.15"
+    DEFAULT_MAX_MODEL_LEN="4096"
+    DEFAULT_MAX_NUM_SEQS="48"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="8192"
+    ;;
+  8k)
+    DEFAULT_GPU_MEMORY_UTILIZATION="0.15"
+    DEFAULT_MAX_MODEL_LEN="8192"
+    DEFAULT_MAX_NUM_SEQS="32"
+    DEFAULT_MAX_NUM_BATCHED_TOKENS="8192"
+    ;;
+  *)
+    echo "Unknown profile: ${PROFILE}" >&2
+    echo "Usage: $0 [2k|4k|8k|16k]" >&2
+    exit 1
+    ;;
+esac
+
+GPU_MEMORY_UTILIZATION="${GPU_MEMORY_UTILIZATION:-${DEFAULT_GPU_MEMORY_UTILIZATION}}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-${DEFAULT_MAX_MODEL_LEN}}"
+MAX_NUM_SEQS="${MAX_NUM_SEQS:-${DEFAULT_MAX_NUM_SEQS}}"
+MAX_NUM_BATCHED_TOKENS="${MAX_NUM_BATCHED_TOKENS:-${DEFAULT_MAX_NUM_BATCHED_TOKENS}}"
+
+PROFILE_ARGS=(
+  --served-model-name "${SERVED_MODEL_NAME}"
+  --gpu-memory-utilization "${GPU_MEMORY_UTILIZATION}"
+  --max-model-len "${MAX_MODEL_LEN}"
+  --max-num-seqs "${MAX_NUM_SEQS}"
+  --max-num-batched-tokens "${MAX_NUM_BATCHED_TOKENS}"
+  --mm-processor-cache-gb "${MM_PROCESSOR_CACHE_GB}"
+  --limit-mm-per-prompt.image "${LIMIT_MM_PER_PROMPT_IMAGE}"
+)
+
+if [[ "${TRUST_REMOTE_CODE}" == "1" ]]; then
+  PROFILE_ARGS+=(--trust-remote-code)
+fi
+
+if [[ "${ENABLE_CHUNKED_PREFILL}" == "1" ]]; then
+  PROFILE_ARGS+=(--enable-chunked-prefill)
+fi
+
+if [[ "${ASYNC_SCHEDULING}" == "1" ]]; then
+  PROFILE_ARGS+=(--async-scheduling)
+fi
+
+if [[ -n "${EXTRA_VLLM_ARGS}" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_ARGS_ARRAY=( ${EXTRA_VLLM_ARGS} )
+  PROFILE_ARGS+=("${EXTRA_ARGS_ARRAY[@]}")
+fi
+
+echo "Starting ColPali vLLM with profile=${PROFILE}, CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES_VALUE}, GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION}, port=${PORT}" >&2
+exec env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES_VALUE}" \
+  "${VLLM_BIN}" \
+  "${COMMON_ARGS[@]}" \
+  "${PROFILE_ARGS[@]}"

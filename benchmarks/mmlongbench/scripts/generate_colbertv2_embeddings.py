@@ -17,7 +17,7 @@ from baselines.utils.benchmarks_related import build_token_chunks_from_pages, lo
 from baselines.utils.benchmarks_related import colbertv2_doc_cache_variant, colbertv2_query_cache_variant
 
 
-DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "samples.json"
+DEFAULT_INPUT_PATH = CODE_DIR / "benchmarks" / "mmlongbench" / "data" / "raw" / "samples.json"
 DEFAULT_DOC_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "colbertv2" / "doc_embeddings"
 DEFAULT_QUERY_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "colbertv2" / "query_embeddings"
 DEFAULT_METADATA_OUTPUT_DIR = CODE_DIR / "benchmarks" / "mmlongbench" / "tmp" / "colbertv2" / "chunk_metadata"

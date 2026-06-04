@@ -16,22 +16,22 @@ PROCESS_MODE="${PROCESS_MODE:-parallel}"
 WORKERS="${WORKERS:-64}"
 LOGGING_LEVEL="${LOGGING_LEVEL:-INFO}"
 TEXT_SOURCE="${TEXT_SOURCE:-ocr}"
-MINERU_DIR="${MINERU_DIR:-/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs_mineru/4000-4999}"
+MINERU_DIR="${MINERU_DIR:-/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999}"
 
 cd "${CODE_ROOT}"
 
-INPUT_PATH="benchmarks/longdocurl/data/LongDocURL.jsonl"
+INPUT_PATH="benchmarks/longdocurl/data/raw/LongDocURL.jsonl"
 if [[ "${MODE}" == "debug20" ]]; then
-  INPUT_PATH="benchmarks/longdocurl/tmp/colbertv2/debug_inputs/longdocurl_colbert_debug20.jsonl"
+  INPUT_PATH="benchmarks/longdocurl/data/cache/colbertv2/debug_inputs/longdocurl_colbert_debug20.jsonl"
   mkdir -p "$(dirname "${INPUT_PATH}")"
   python - <<'PY'
 import os
-src = "benchmarks/longdocurl/data/LongDocURL.jsonl"
-dst = "benchmarks/longdocurl/tmp/colbertv2/debug_inputs/longdocurl_colbert_debug20.jsonl"
+src = "benchmarks/longdocurl/data/raw/LongDocURL.jsonl"
+dst = "benchmarks/longdocurl/data/cache/colbertv2/debug_inputs/longdocurl_colbert_debug20.jsonl"
 text_source = os.environ.get("TEXT_SOURCE", "ocr")
 mineru_dir = os.environ.get(
     "MINERU_DIR",
-    "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdfs_mineru/4000-4999",
+    "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999",
 )
 selected = []
 with open(src, "r", encoding="utf-8") as f:
@@ -76,14 +76,14 @@ if [[ "${MAX_CROSS_PAGES}" != "null" && "${MAX_CROSS_PAGES}" != "None" && -n "${
   GEN_ARGS+=(--max-cross-pages "${MAX_CROSS_PAGES}")
 fi
 
-python benchmarks/longdocurl/scripts/generate_colbertv2_embeddings.py "${GEN_ARGS[@]}"
+python benchmarks/scripts/generate_colbertv2_embeddings.py --benchmark longdocurl "${GEN_ARGS[@]}"
 
 python scripts/verify_colbertv2_cache.py \
   --benchmark longdocurl \
   --input-path "${INPUT_PATH}" \
-  --doc-embeddings-root benchmarks/longdocurl/tmp/colbertv2/doc_embeddings \
-  --query-embeddings-root benchmarks/longdocurl/tmp/colbertv2/query_embeddings \
-  --chunk-metadata-root benchmarks/longdocurl/tmp/colbertv2/chunk_metadata \
+  --doc-embeddings-root benchmarks/longdocurl/data/cache/colbertv2/doc_embeddings \
+  --query-embeddings-root benchmarks/longdocurl/data/cache/colbertv2/query_embeddings \
+  --chunk-metadata-root benchmarks/longdocurl/data/cache/colbertv2/chunk_metadata \
   --checkpoint "${CHECKPOINT}" \
   --chunk-size "${CHUNK_SIZE}" \
   --chunk-overlap "${CHUNK_OVERLAP}" \

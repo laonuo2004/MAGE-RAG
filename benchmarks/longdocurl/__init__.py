@@ -1,0 +1,1 @@
+"""LongDocURL benchmark integration."""

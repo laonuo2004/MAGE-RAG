@@ -2,9 +2,3 @@ name: m3docrag-iterate
 params:
   max_iterations: 5
   evaluator_model_name: Qwen3-VL-8B-Instruct
-pdf_embeddings_colpali:
-  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/pdf_embeddings_colpali
-  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_embeddings_colpali/4000-4999
-question_embeddings_colpali:
-  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/question_embeddings_colpali
-  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/question_embeddings_colpali

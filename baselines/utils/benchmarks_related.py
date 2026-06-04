@@ -6,7 +6,7 @@ from collections import OrderedDict
 from io import BytesIO
 from pathlib import Path
 
-from benchmarks.mmlongbench.utils.preprocess_cache import mmlongbench_ocr_page_path
+from benchmarks.utils.data_utils import mmlongbench_ocr_page_path
 from utils.config_utils import get_config_value, require_config_value
 
 
@@ -26,17 +26,6 @@ def encode_image_file_to_base64(image_path):
         return base64.b64encode(response.content).decode('utf-8')
     with open(image_path, 'rb') as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
-
-
-def resolve_embedding_path(cfg, field, benchmark_name, stem):
-    roots = require_config_value(cfg, f'baselines.{field}')
-    if isinstance(roots, str):
-        root = roots
-    else:
-        root = get_config_value(roots, benchmark_name)
-    if not root:
-        raise ValueError(f'Baseline requires cfg.baselines.{field}.{benchmark_name}.')
-    return os.path.join(str(root), f'{stem}.safetensors')
 
 
 def allowed_page_indices(benchmark_name, sample, benchmark_cfg, page_count):
@@ -90,10 +79,7 @@ def load_mmlongbench_ocr_pages(sample, benchmark_cfg):
 
 
 def load_longdocurl_ocr_pages(sample, benchmark_cfg):
-    from benchmarks.longdocurl.eval.api_models.pure_ocr_utils import (
-        build_page_texts_from_contents,
-        load_pymupdf_record,
-    )
+    from benchmarks.utils.data_utils import build_page_texts_from_contents, load_pymupdf_record
 
     ocr_json_dir = require_config_value(benchmark_cfg, 'ocr_json_dir')
     record = load_pymupdf_record(sample['doc_no'], ocr_json_dir)

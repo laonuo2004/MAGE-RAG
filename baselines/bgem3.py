@@ -1,7 +1,5 @@
 import json
 import os
-from pathlib import Path
-
 import torch
 from safetensors.torch import load_file
 
@@ -10,6 +8,7 @@ from baselines.utils.benchmarks_related import (
     bgem3_doc_cache_variant,
     bgem3_query_cache_variant,
 )
+from benchmarks.utils.data_utils import bgem3_cache_root, mmlongbench_file_id
 from utils.config_utils import get_config_value, require_config_value
 from utils.llm_utils import text_content_parts
 
@@ -36,9 +35,6 @@ class BGEM3ContextBuilder(ContextBuilder):
         if self.max_cross_pages is not None:
             self.max_cross_pages = int(self.max_cross_pages)
         self.checkpoint = require_config_value(self.cfg, "baselines.checkpoint")
-        self.doc_embeddings_root = require_config_value(self.cfg, "baselines.doc_embeddings_bgem3")
-        self.query_embeddings_root = require_config_value(self.cfg, "baselines.query_embeddings_bgem3")
-        self.chunk_metadata_root = require_config_value(self.cfg, "baselines.chunk_metadata_bgem3")
         self.max_context_chars = get_config_value(self.cfg, "baselines.max_context_chars", None)
         if self.max_context_chars is not None:
             self.max_context_chars = int(self.max_context_chars)
@@ -106,15 +102,9 @@ class BGEM3ContextBuilder(ContextBuilder):
         )
 
     def _retrieve(self, benchmark_name, doc_key, query_key, allowed_pages):
-        doc_embedding_path = self._resolve_path(
-            self.doc_embeddings_root, benchmark_name, self.doc_cache_variant, doc_key, ".safetensors"
-        )
-        query_embedding_path = self._resolve_path(
-            self.query_embeddings_root, benchmark_name, self.query_cache_variant, query_key, ".safetensors"
-        )
-        chunk_metadata_path = self._resolve_path(
-            self.chunk_metadata_root, benchmark_name, self.doc_cache_variant, doc_key, ".json"
-        )
+        doc_embedding_path = self._resolve_path(benchmark_name, "doc_embeddings", self.doc_cache_variant, doc_key, ".safetensors")
+        query_embedding_path = self._resolve_path(benchmark_name, "query_embeddings", self.query_cache_variant, query_key, ".safetensors")
+        chunk_metadata_path = self._resolve_path(benchmark_name, "chunk_metadata", self.doc_cache_variant, doc_key, ".json")
 
         doc_embeddings, query_embedding = self._load_embeddings(doc_embedding_path, query_embedding_path)
         metadata = self._load_chunk_metadata(chunk_metadata_path)
@@ -255,13 +245,8 @@ class BGEM3ContextBuilder(ContextBuilder):
             "query_key": query_key,
         }
 
-    def _resolve_path(self, roots, benchmark_name, variant, stem, suffix):
-        root = roots if isinstance(roots, str) else get_config_value(roots, benchmark_name)
-        if not root:
-            raise ValueError(f"Missing BGEM3 cache root for {benchmark_name}.")
-        return os.path.join(str(root), variant, f"{stem}{suffix}")
+    def _resolve_path(self, benchmark_name, cache_kind, variant, stem, suffix):
+        return os.path.join(str(bgem3_cache_root(benchmark_name, cache_kind)), variant, f"{stem}{suffix}")
 
     def _mmlongbench_doc_key(self, doc_id):
-        filename = Path(str(doc_id)).name
-        stem = filename.rsplit(".", 1)[0]
-        return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in stem).strip("._") or "document"
+        return mmlongbench_file_id(doc_id)

@@ -53,6 +53,27 @@ module.exports = {
       script: "scripts/run_m3docrag-iterate-query.sh",
       out_file: "logs/pm2-job-m3docrag-iterate-query.out.log",
       error_file: "logs/pm2-job-m3docrag-iterate-query.err.log"
-    },        
+    },
+    {
+      ...jobDefaults,
+      name: "job-build-longdocurl",
+      script: "scripts/run_build_longdocurl.sh",
+      out_file: "logs/pm2-job-build-longdocurl.out.log",
+      error_file: "logs/pm2-job-build-longdocurl.err.log"
+    },
+    {
+      ...jobDefaults,
+      name: "job-build-mmlongbench",
+      script: "scripts/run_build_mmlongbench.sh",
+      out_file: "logs/pm2-job-build-mmlongbench.out.log",
+      error_file: "logs/pm2-job-build-mmlongbench.err.log"
+    },                
+    {
+      ...jobDefaults,
+      name: "job-aeg-rag",
+      script: "scripts/run_aeg_rag.sh",
+      out_file: "logs/pm2-job-aeg-rag.out.log",
+      error_file: "logs/pm2-job-aeg-rag.err.log"
+    },         
   ]
 };

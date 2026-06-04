@@ -7,9 +7,3 @@ online_colpali:
   adapter_path: /root/autodl-tmp/ylz/models/colpali-v1.2
   device: auto
   query_batch_size: 1
-pdf_embeddings_colpali:
-  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/pdf_embeddings_colpali
-  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/pdf_embeddings_colpali/4000-4999
-question_embeddings_colpali:
-  mmlongbench: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/mmlongbench/tmp/question_embeddings_colpali
-  longdocurl: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/question_embeddings_colpali

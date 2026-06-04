@@ -18,6 +18,11 @@ from baselines.utils.benchmarks_related import (
 )
 from baselines.wrapper import build_context_builder
 from benchmarks import wrapper
+from benchmarks.utils.data_utils import (
+    colbertv2_cache_root,
+    colpali_pdf_embeddings_path,
+    colpali_question_embeddings_path,
+)
 
 
 class ContextBuilderTests(unittest.TestCase):
@@ -30,9 +35,6 @@ class ContextBuilderTests(unittest.TestCase):
                 'name': 'colbertv2',
                 'params': {'top_k': 1, 'chunk_size': 8, 'chunk_overlap': 0},
                 'checkpoint': 'dummy-checkpoint',
-                'doc_embeddings_colbertv2': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
-                'query_embeddings_colbertv2': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
-                'chunk_metadata_colbertv2': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
             }
         }))
 
@@ -43,8 +45,6 @@ class ContextBuilderTests(unittest.TestCase):
             'baselines': {
                 'name': 'm3docrag-iterate',
                 'params': {'max_iterations': 5, 'evaluator_model_name': 'eval-model'},
-                'pdf_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
-                'question_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
             }
         }))
 
@@ -53,8 +53,6 @@ class ContextBuilderTests(unittest.TestCase):
             'baselines': {
                 'name': 'm3docrag-iterate-query',
                 'params': {'max_iterations': 5, 'evaluator_model_name': 'eval-model'},
-                'pdf_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
-                'question_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
             }
         }))
 
@@ -421,8 +419,6 @@ class ContextBuilderTests(unittest.TestCase):
                     'device': 'cpu',
                     'query_batch_size': 1,
                 },
-                'pdf_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
-                'question_embeddings_colpali': {'mmlongbench': '/tmp/a', 'longdocurl': '/tmp/b'},
             }
         }))
         calls = {'load': 0, 'release': 0}
@@ -535,30 +531,27 @@ class ContextBuilderTests(unittest.TestCase):
 
     def test_colbertv2_mmlongbench_retrieves_expected_chunk(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
-            doc_dir = os.path.join(tmp_dir, 'doc_embeddings')
-            query_dir = os.path.join(tmp_dir, 'query_embeddings')
-            meta_dir = os.path.join(tmp_dir, 'chunk_metadata')
             doc_variant = colbertv2_doc_cache_variant('dummy-checkpoint', 8, 0, True, None)
             query_variant = colbertv2_query_cache_variant('dummy-checkpoint')
-            doc_variant_dir = os.path.join(doc_dir, doc_variant)
-            query_variant_dir = os.path.join(query_dir, query_variant)
-            meta_variant_dir = os.path.join(meta_dir, doc_variant)
-            os.makedirs(doc_variant_dir)
-            os.makedirs(query_variant_dir)
-            os.makedirs(meta_variant_dir)
+            doc_variant_dir = colbertv2_cache_root('mmlongbench', 'doc_embeddings') / doc_variant
+            query_variant_dir = colbertv2_cache_root('mmlongbench', 'query_embeddings') / query_variant
+            meta_variant_dir = colbertv2_cache_root('mmlongbench', 'chunk_metadata') / doc_variant
+            os.makedirs(doc_variant_dir, exist_ok=True)
+            os.makedirs(query_variant_dir, exist_ok=True)
+            os.makedirs(meta_variant_dir, exist_ok=True)
 
             save_file(
                 {
                     'embeddings': torch.tensor([[1.0, 0.0], [5.0, 0.0], [0.0, 1.0]]),
                     'doclens': torch.tensor([1, 1, 1], dtype=torch.int32),
                 },
-                os.path.join(doc_variant_dir, 'sample.safetensors'),
+                doc_variant_dir / 'sample.safetensors',
             )
             save_file(
                 {'query_embedding': torch.tensor([[1.0, 0.0]])},
-                os.path.join(query_variant_dir, 'q1.safetensors'),
+                query_variant_dir / 'q1.safetensors',
             )
-            with open(os.path.join(meta_variant_dir, 'sample.json'), 'w', encoding='utf-8') as f:
+            with open(meta_variant_dir / 'sample.json', 'w', encoding='utf-8') as f:
                 json.dump([
                     {
                         'chunk_id': 0,
@@ -600,9 +593,6 @@ class ContextBuilderTests(unittest.TestCase):
                     'name': 'colbertv2',
                     'params': {'top_k': 1, 'chunk_size': 8, 'chunk_overlap': 0},
                     'checkpoint': 'dummy-checkpoint',
-                    'doc_embeddings_colbertv2': {'mmlongbench': doc_dir, 'longdocurl': doc_dir},
-                    'query_embeddings_colbertv2': {'mmlongbench': query_dir, 'longdocurl': query_dir},
-                    'chunk_metadata_colbertv2': {'mmlongbench': meta_dir, 'longdocurl': meta_dir},
                 },
                 'benchmarks': {
                     'name': 'mmlongbench',
@@ -688,14 +678,6 @@ class ContextBuilderTests(unittest.TestCase):
             'baselines': {
                 'name': 'm3docrag-iterate',
                 'params': {'max_iterations': 3, 'evaluator_model_name': 'eval-model'},
-                'pdf_embeddings_colpali': {
-                    'mmlongbench': os.path.join(tmp_dir, 'mmlong_pdf'),
-                    'longdocurl': os.path.join(tmp_dir, 'longdoc_pdf'),
-                },
-                'question_embeddings_colpali': {
-                    'mmlongbench': os.path.join(tmp_dir, 'mmlong_questions'),
-                    'longdocurl': os.path.join(tmp_dir, 'longdoc_questions'),
-                },
             },
             'benchmarks': {
                 'name': 'mmlongbench',
@@ -750,14 +732,6 @@ class ContextBuilderTests(unittest.TestCase):
             'baselines': {
                 'name': 'm3docrag',
                 'params': {'top_k': 1},
-                'pdf_embeddings_colpali': {
-                    'mmlongbench': os.path.join(tmp_dir, 'mmlong_pdf'),
-                    'longdocurl': os.path.join(tmp_dir, 'longdoc_pdf'),
-                },
-                'question_embeddings_colpali': {
-                    'mmlongbench': os.path.join(tmp_dir, 'mmlong_questions'),
-                    'longdocurl': os.path.join(tmp_dir, 'longdoc_questions'),
-                },
             },
             'benchmarks': {
                 'name': 'mmlongbench',
@@ -770,15 +744,12 @@ class ContextBuilderTests(unittest.TestCase):
         })
 
     def _write_embeddings(self, tmp_dir, benchmark_name, doc_stem, question_id, doc_embeddings, query_embedding):
-        pdf_dir = os.path.join(tmp_dir, 'mmlong_pdf' if benchmark_name == 'mmlongbench' else 'longdoc_pdf')
-        question_dir = os.path.join(
-            tmp_dir,
-            'mmlong_questions' if benchmark_name == 'mmlongbench' else 'longdoc_questions',
-        )
-        os.makedirs(pdf_dir)
-        os.makedirs(question_dir)
-        save_file({'embeddings': doc_embeddings}, os.path.join(pdf_dir, f'{doc_stem}.safetensors'))
-        save_file({'query_embedding': query_embedding}, os.path.join(question_dir, f'{question_id}.safetensors'))
+        pdf_path = colpali_pdf_embeddings_path(benchmark_name, doc_stem)
+        question_path = colpali_question_embeddings_path(benchmark_name, question_id)
+        os.makedirs(pdf_path.parent, exist_ok=True)
+        os.makedirs(question_path.parent, exist_ok=True)
+        save_file({'embeddings': doc_embeddings}, pdf_path)
+        save_file({'query_embedding': query_embedding}, question_path)
 
 
 if __name__ == '__main__':

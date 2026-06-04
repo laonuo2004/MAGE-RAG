@@ -23,14 +23,14 @@ USE_FP16="${USE_FP16:-true}"
 
 cd "${CODE_ROOT}"
 
-INPUT_PATH="benchmarks/mmlongbench/data/samples.json"
+INPUT_PATH="benchmarks/mmlongbench/data/raw/samples.json"
 if [[ "${MODE}" == "debug20" ]]; then
-  INPUT_PATH="benchmarks/mmlongbench/tmp/bgem3/debug_inputs/mmlongbench_bgem3_debug20.json"
+  INPUT_PATH="benchmarks/mmlongbench/data/cache/bgem3/debug_inputs/mmlongbench_bgem3_debug20.json"
   mkdir -p "$(dirname "${INPUT_PATH}")"
   python - <<'PY'
 import json
-src = "benchmarks/mmlongbench/data/samples.json"
-dst = "benchmarks/mmlongbench/tmp/bgem3/debug_inputs/mmlongbench_bgem3_debug20.json"
+src = "benchmarks/mmlongbench/data/raw/samples.json"
+dst = "benchmarks/mmlongbench/data/cache/bgem3/debug_inputs/mmlongbench_bgem3_debug20.json"
 with open(src, "r", encoding="utf-8") as f:
     samples = json.load(f)
 with open(dst, "w", encoding="utf-8") as f:
@@ -69,7 +69,7 @@ else
   GEN_ARGS+=(--no-use-fp16)
 fi
 
-python benchmarks/mmlongbench/scripts/generate_bgem3_embeddings.py "${GEN_ARGS[@]}"
+python benchmarks/scripts/generate_bgem3_embeddings.py --benchmark mmlongbench "${GEN_ARGS[@]}"
 
 python main.py \
   benchmarks=mmlongbench \

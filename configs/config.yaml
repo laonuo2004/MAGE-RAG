@@ -13,6 +13,8 @@ project:
   seed: 42
   tags: []
 
+overwrite: false
+
 paths:
   output_root: outputs
 

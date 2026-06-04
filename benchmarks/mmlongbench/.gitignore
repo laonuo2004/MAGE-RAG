@@ -1,8 +1,11 @@
 # Data files
-
-
 data/*
-!data/samples.json
+!data/
+!data/raw/
+!data/raw/samples.json
+data/raw/documents/
+!data/metadata/
+!data/metadata/prompt_for_answer_extraction.md
 
 # Python cache
 __pycache__/

@@ -1,25 +1,28 @@
 /*
 
-!/config/
-/config/api_config.json
+!/data/
 /data/*
-!/data/pdf_pngs/
-!/data/LongDocURL.jsonl
-!/eval/
-!/evaluation_results/
+!/data/raw/
+/data/raw/*
+!/data/raw/pdfs/
+/data/raw/pdfs/**
+!/data/raw/LongDocURL.jsonl
+!/data/raw/LongDocURL_deleted.jsonl
+!/data/metadata/
+/data/metadata/*
+!/data/metadata/prompt_for_answer_extraction.md
+!/data/metadata/scores_sample_fine_grained.json
+
 !/scripts/
-!/utils/
+/scripts/*
+!/scripts/generate_bgem3_embeddings.py
+!/scripts/generate_colbertv2_embeddings.py
+!/scripts/generate_colpali_embeddings.py
+!/scripts/mineru_extract_longdocurl.py
 
 !/.gitignore
 !/README.md
-!/LONGDOCURL_BENCHMARK_GUIDE_CN.md
-!/requirements.txt
-!/main.sh
-!/main4api.sh
-!/main4dpi144.sh
-!/results_claude-sonnet-4-6.jsonl
-!/results_gpt-5.4.jsonl
-!/results_gemini-3.1-pro-preview.jsonl
+!/__init__.py
 
 __pycache__/
 *.pyc

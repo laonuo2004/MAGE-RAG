@@ -22,6 +22,18 @@ logger = logging.getLogger(__name__)
 MAX_RETRY_ROUNDS = 3
 
 
+def overwrite_enabled(cfg) -> bool:
+    return bool(get_config_value(cfg, "overwrite", False))
+
+
+def clear_existing_results(output_path: str | Path) -> None:
+    output_path = Path(output_path)
+    for path in (output_path, output_path.with_suffix(".metrics.json")):
+        if path.exists():
+            path.unlink()
+            logger.info("Removed existing result artifact for overwrite: %s", path)
+
+
 def successful_results(adapter: BenchmarkAdapter, output_path: str | Path) -> List[Dict[str, Any]]:
     return [sample for sample in read_jsonl(output_path) if adapter.is_successful_result(sample)]
 
@@ -150,6 +162,8 @@ def run_benchmark_with_adapter(cfg, adapter: BenchmarkAdapter) -> Dict[str, Any]
     output_path = Path(configured_results_file) if configured_results_file else build_results_file(cfg)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Output Datapath: %s", output_path)
+    if overwrite_enabled(cfg):
+        clear_existing_results(output_path)
     compact_results_file(adapter, output_path)
     context_builder = build_context_builder(cfg)
     client = build_openai_client(cfg)

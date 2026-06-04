@@ -424,6 +424,42 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertEqual(pred, "Not answerable")
         self.assertEqual(metadata["type"], "not_answerable_signal")
 
+    def test_mmlongbench_aeg_postprocesses_none_when_target_slide_is_inferred(self):
+        sample = {
+            "question": "How many words for parts that start with 'X' are in the figure on slide 11?",
+            "answer_format": "None",
+            "generation_metadata": {
+                "response": (
+                    "The text snippets do not explicitly label a slide as \"Slide 11\". "
+                    "However, it is highly likely that Slide 11 refers to the PARTS slide. "
+                    "Therefore, there are zero words for parts that start with X."
+                )
+            },
+        }
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "0")
+
+        self.assertEqual(pred, "Not answerable")
+        self.assertEqual(metadata["type"], "not_answerable_signal")
+
+    def test_mmlongbench_aeg_postprocesses_none_when_page_range_is_not_retrieved(self):
+        sample = {
+            "question": "How many tables are included in Pages 100-110?",
+            "answer_format": "None",
+            "generation_metadata": {
+                "response": (
+                    "The provided snippets cover pages 52, 56, 67, 19, and 6. "
+                    "None of these pages fall within the specified range of 100-110. "
+                    "Therefore, there are no tables included in Pages 100-110."
+                )
+            },
+        }
+
+        pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "0")
+
+        self.assertEqual(pred, "Not answerable")
+        self.assertEqual(metadata["type"], "not_answerable_signal")
+
     def test_longdocurl_process_sample_uses_shared_llm_call_and_fields(self):
         calls = []
         original_call_llm_messages = adapters.call_llm_messages

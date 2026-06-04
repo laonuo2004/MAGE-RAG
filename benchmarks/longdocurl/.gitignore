@@ -5,7 +5,7 @@
 !/data/raw/
 /data/raw/*
 !/data/raw/pdfs/
-/data/raw/pdfs/**
+!/data/raw/pdfs/**
 !/data/raw/LongDocURL.jsonl
 !/data/raw/LongDocURL_deleted.jsonl
 !/data/metadata/

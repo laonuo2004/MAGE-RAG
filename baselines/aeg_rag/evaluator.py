@@ -37,6 +37,7 @@ class XMLEvaluator:
         include_images_for_opened_nodes: bool = False,
         max_candidate_actions: int = 120,
         candidate_preview_char_limit: int = 160,
+        max_selected_actions_per_iteration: int = 4,
     ):
         self.model_name = model_name
         self.temperature = float(temperature)
@@ -45,6 +46,7 @@ class XMLEvaluator:
         self.include_images_for_opened_nodes = bool(include_images_for_opened_nodes)
         self.max_candidate_actions = int(max_candidate_actions)
         self.candidate_preview_char_limit = int(candidate_preview_char_limit)
+        self.max_selected_actions_per_iteration = max(1, int(max_selected_actions_per_iteration))
 
     def build_context_xml(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> str:
         allowed_pages = sorted(state.graph.allowed_pages or [])
@@ -123,7 +125,10 @@ class XMLEvaluator:
             "an <agent_decision> XML document matching the requested schema. Candidate actions are "
             "numbered with short integer indexes. To execute a candidate, place only its number under "
             "<selected_actions> as <action index=\"...\">; do not copy long node_id, edge_id, or "
-            "candidate id strings. If <candidate_actions> contains <none/>, do not emit selected_actions; "
+            "candidate id strings. Select at most "
+            f"{self.max_selected_actions_per_iteration} high-value actions per round. Prefer stopping "
+            "once the opened evidence is sufficient instead of exploring weakly related actions. "
+            "If <candidate_actions> contains <none/>, do not emit selected_actions; "
             "either stop if the evidence is sufficient or issue a search_request. Do not emit top-level "
             "<action> elements.\n"
             + self.build_context_xml(question, state, candidates)

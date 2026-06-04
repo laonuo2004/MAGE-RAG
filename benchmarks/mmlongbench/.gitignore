@@ -3,7 +3,7 @@ data/*
 !data/
 !data/raw/
 !data/raw/samples.json
-data/raw/documents/
+!data/raw/documents/
 !data/metadata/
 !data/metadata/prompt_for_answer_extraction.md
 

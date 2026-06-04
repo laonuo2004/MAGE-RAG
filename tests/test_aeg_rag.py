@@ -20,6 +20,7 @@ from baselines.aeg_rag.renderer import ReaderRenderer
 from baselines.aeg_rag.state import ACTIVE, OPENED, PRUNED, EvidenceAgentState
 from baselines.base import ContextMessages
 from baselines.wrapper import build_context_builder
+from benchmarks.adapters import LongDocURLAdapter
 
 
 class AEGRAGTests(unittest.TestCase):
@@ -53,7 +54,17 @@ class AEGRAGTests(unittest.TestCase):
     def test_default_aeg_config_uses_bounded_online_iteration_budget(self):
         cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
 
-        self.assertLessEqual(int(cfg.safety.watchdog_iterations), 10)
+        self.assertLessEqual(int(cfg.safety.watchdog_iterations), 6)
+
+    def test_default_aeg_config_limits_selected_actions_per_iteration(self):
+        cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
+
+        self.assertLessEqual(int(cfg.agent.max_selected_actions_per_iteration), 5)
+
+    def test_default_aeg_config_limits_total_executed_agent_actions(self):
+        cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
+
+        self.assertLessEqual(int(cfg.agent.max_total_selected_actions), 24)
 
     def test_default_aeg_config_uses_top_k_page_text_for_mmlongbench_reader(self):
         cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
@@ -427,6 +438,74 @@ class AEGRAGTests(unittest.TestCase):
         decision_trace = next(item for item in state.trace if item.get("action") == "EvaluatorDecision")
         self.assertEqual(decision_trace["candidate_index_map"]["1"], "act:ActivateNode:n1")
 
+    def test_agent_truncates_selected_actions_per_iteration(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            builder = AEGRAGContextBuilder(OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "agent": {"max_selected_actions_per_iteration": 2},
+                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                }
+            }))
+            builder.evaluator.call = lambda client, question, state, candidates: (
+                EvaluatorDecision(selected_actions=[
+                    {"candidate_index": index, "candidate_id": ""}
+                    for index in range(1, 6)
+                ]),
+                "<agent_decision/>",
+            )
+
+            builder._run_agent("question", state, client=object())
+
+        active_nodes = state.active_node_ids()
+        self.assertIn("n1", active_nodes)
+        self.assertIn("n3", active_nodes)
+        self.assertNotIn("n_title", active_nodes)
+        truncation_trace = next(item for item in state.trace if item.get("action") == "TruncatedSelectedActions")
+        self.assertEqual(truncation_trace["original_count"], 5)
+        self.assertEqual(truncation_trace["executed_count"], 2)
+        decision_trace = next(item for item in state.trace if item.get("action") == "EvaluatorDecision")
+        self.assertEqual(decision_trace["selected_action_execution_limit"], 2)
+
+    def test_agent_stops_after_total_selected_action_budget(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            builder = AEGRAGContextBuilder(OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "agent": {
+                        "max_selected_actions_per_iteration": 2,
+                        "max_total_selected_actions": 3,
+                    },
+                    "safety": {"watchdog_iterations": 8, "watchdog_repeated_noop_rounds": 8},
+                }
+            }))
+            call_count = 0
+
+            def fake_call(client, question, state, candidates):
+                nonlocal call_count
+                call_count += 1
+                return (
+                    EvaluatorDecision(selected_actions=[
+                        {"candidate_index": index, "candidate_id": ""}
+                        for index in range(1, 4)
+                    ]),
+                    "<agent_decision/>",
+                )
+
+            builder.evaluator.call = fake_call
+
+            stop_reason = builder._run_agent("question", state, client=object())
+
+        self.assertEqual(stop_reason, "watchdog_total_selected_actions")
+        self.assertEqual(call_count, 2)
+        budget_trace = next(item for item in state.trace if item.get("action") == "SelectedActionBudgetReached")
+        self.assertEqual(budget_trace["executed_total"], 4)
+        self.assertEqual(budget_trace["limit"], 3)
+
     def test_empty_candidate_numeric_selection_is_ignored_without_validation_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
@@ -795,6 +874,53 @@ class AEGRAGTests(unittest.TestCase):
         prompt = content[0]["text"]
         self.assertIn("Candidate visible labels from retrieved evidence:", prompt)
         self.assertIn("Table 15: Leading destination of exports (UGX Billion): July-June", prompt)
+
+    def test_longdocurl_postprocess_expands_unique_locating_table_number(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(self._write_graph(tmp_dir))
+            lines = graph_dir.joinpath("nodes.jsonl").read_text(encoding="utf-8").splitlines()
+            node = json.loads(lines[0])
+            node["type"] = "table"
+            node["caption"] = "Table 1 Dietary benefit of carbohydrates"
+            lines[0] = json.dumps(node)
+            graph_dir.joinpath("nodes.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            sample = {
+                "question": "Which tables provide details about dietary benefit?",
+                "answer_format": "List",
+                "prepare_metadata": {
+                    "graph_dir": str(graph_dir),
+                    "final_node_states": {"n1": "Opened"},
+                },
+            }
+
+            pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "Table 1")
+
+        self.assertEqual(pred, "Table 1 Dietary benefit of carbohydrates")
+        self.assertEqual(metadata["type"], "locating_label")
+
+    def test_longdocurl_postprocess_maps_unique_page_table_description_to_label(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(self._write_graph(tmp_dir))
+            lines = graph_dir.joinpath("nodes.jsonl").read_text(encoding="utf-8").splitlines()
+            node = json.loads(lines[0])
+            node["type"] = "table"
+            node["caption"] = "Table 2 Initial Study Checklist"
+            node["page_index"] = 21
+            lines[0] = json.dumps(node)
+            graph_dir.joinpath("nodes.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            sample = {
+                "question": "Select table names from the doc that best answer the question.",
+                "answer_format": "List",
+                "prepare_metadata": {
+                    "graph_dir": str(graph_dir),
+                    "final_node_states": {"n1": "Opened"},
+                },
+            }
+
+            pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "The table on page 22")
+
+        self.assertEqual(pred, "Table 2 Initial Study Checklist")
+        self.assertEqual(metadata["type"], "locating_label")
 
     def test_reader_renderer_compact_mmlongbench_adds_answer_format_instructions(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

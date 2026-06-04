@@ -19,7 +19,7 @@ from baselines.aeg_rag.renderer import ReaderRenderer
 from baselines.aeg_rag.retrieval import ColPaliTop1Retriever
 from baselines.aeg_rag.state import EvidenceAgentState
 from baselines.base import ContextBuilder, ContextMessages
-from baselines.utils.benchmarks_related import allowed_page_indices
+from benchmarks.utils.document_preprocess import allowed_page_indices
 from benchmarks.utils.data_utils import mmlongbench_file_id
 from utils.config_utils import get_config_value, require_config_value
 

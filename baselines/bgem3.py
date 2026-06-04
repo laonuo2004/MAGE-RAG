@@ -4,7 +4,7 @@ import torch
 from safetensors.torch import load_file
 
 from baselines.base import ContextBuilder, ContextMessages
-from baselines.utils.benchmarks_related import (
+from benchmarks.utils.document_preprocess import (
     bgem3_doc_cache_variant,
     bgem3_query_cache_variant,
 )

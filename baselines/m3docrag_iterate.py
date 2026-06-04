@@ -5,7 +5,7 @@ import os
 from baselines.base import ContextBuilder, ContextMessages
 from baselines.image import VISION_SYSTEM_PROMPT
 from baselines.m3docrag import m3docragContextBuilder
-from baselines.utils.benchmarks_related import (
+from benchmarks.utils.document_preprocess import (
     allowed_page_indices,
     encode_image_file_to_base64,
     encode_pil_image_to_base64,

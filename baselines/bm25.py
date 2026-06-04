@@ -3,7 +3,7 @@ import re
 from collections import Counter
 
 from .base import ContextBuilder, ContextMessages
-from baselines.utils.benchmarks_related import load_longdocurl_ocr_pages, load_mmlongbench_ocr_pages
+from benchmarks.utils.document_preprocess import load_longdocurl_ocr_pages, load_mmlongbench_ocr_pages
 from utils.config_utils import get_config_value, require_config_value
 from utils.llm_utils import text_content_parts
 

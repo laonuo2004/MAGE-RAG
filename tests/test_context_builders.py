@@ -11,7 +11,7 @@ import torch
 
 import baselines.m3docrag_iterate as m3docrag_iterate
 import baselines.m3docrag_iterate_query as m3docrag_iterate_query
-from baselines.utils.benchmarks_related import (
+from benchmarks.utils.document_preprocess import (
     colbertv2_doc_cache_variant,
     colbertv2_query_cache_variant,
     encode_pil_image_to_base64,

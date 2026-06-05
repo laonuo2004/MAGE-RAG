@@ -83,7 +83,7 @@ def _prepare_messages(sample: Dict[str, Any], cfg, context_builder, benchmark_na
     extractor_model_name = require_config_value(cfg, "benchmarks.extractor_model_name")
     return messages, qa_model_name, extractor_model_name
 
-
+# g2-reader 专用旁路
 def _process_self_answering_sample(
     sample: Dict[str, Any],
     context_builder,
@@ -153,7 +153,6 @@ def _extract_prediction(sample: Dict[str, Any], messages, model_name: str, clien
         "duration_seconds": round(perf_counter() - extraction_start, 3),
     }
     return parse_extraction_result(extracted_res)
-
 
 
 def _levenshtein_distance(s1: str, s2: str) -> int:
@@ -245,8 +244,6 @@ def _maybe_parse_literal(value: Any) -> Any:
         return ast.literal_eval(text)
     except Exception:
         return value
-
-
 
 
 class MMLongBenchAdapter:

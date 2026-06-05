@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from baselines.aeg_rag.actions import (
+from baselines.magerag.actions import (
     ActivateNode,
     ActivatePage,
     CandidateAction,
@@ -13,89 +13,79 @@ from baselines.aeg_rag.actions import (
     SummarizeNodes,
     action_from_candidate,
 )
-from baselines.aeg_rag.candidate_generator import CandidateGenerator
-from baselines.aeg_rag.evaluator import XMLEvaluator
-from baselines.aeg_rag.graph_store import EvidenceGraphStore
-from baselines.aeg_rag.renderer import ReaderRenderer
-from baselines.aeg_rag.retrieval import ColPaliTop1Retriever
-from baselines.aeg_rag.state import EvidenceAgentState
+from baselines.magerag.candidate_generator import CandidateGenerator
+from baselines.magerag.evaluator import XMLEvaluator
+from baselines.magerag.graph_store import EvidenceGraphStore
+from baselines.magerag.renderer import ReaderRenderer
+from baselines.magerag.retrieval import ColPaliTop1Retriever
+from baselines.magerag.state import EvidenceAgentState
 from baselines.base import ContextBuilder, ContextMessages
 from benchmarks.utils.document_preprocess import allowed_page_indices
 from benchmarks.utils.data_utils import mmlongbench_file_id
 from utils.config_utils import get_config_value, require_config_value
 
 
-class AEGRAGContextBuilder(ContextBuilder):
-    name = "aeg-rag"
+EVALUATOR_MODEL_DEFAULT = "Qwen3-VL-8B-Instruct"
+EVALUATOR_TEMPERATURE = 0.0
+EVALUATOR_RETRIES = 2
+EVALUATOR_RAW_TEXT_CHAR_LIMIT = 1200
+EVALUATOR_INCLUDE_OPENED_NODE_IMAGES = False
+MAX_EVALUATOR_CANDIDATE_ACTIONS = 120
+EVALUATOR_CANDIDATE_PREVIEW_CHAR_LIMIT = 160
+MAX_SELECTED_ACTIONS_PER_ITERATION = 4
+MAX_TOTAL_SELECTED_ACTIONS = 24
+WATCHDOG_ITERATIONS = 6
+WATCHDOG_REPEATED_NOOP_ROUNDS = 2
+AUTO_OPEN_MAX_NODES_PER_PAGE = 24
+FINAL_OPEN_ACTIVE_NODE_LIMIT = 16
+FINAL_OPEN_ACTIVE_NODE_LIMIT_LONGDOCURL = 24
+FINAL_OPEN_ACTIVE_NODE_LIMIT_MMLONGBENCH = 8
+READER_INCLUDE_PAGE_IMAGES = True
+READER_INCLUDE_OPENED_NODE_IMAGES = True
+READER_RAW_TEXT_CHAR_LIMIT = 8192
+LEGACY_CONFIG_SECTIONS = ("agent", "evaluator", "renderer", "safety")
+
+
+class MAGERAGContextBuilder(ContextBuilder):
+    name = "magerag"
 
     def __init__(self, cfg=None):
         super().__init__(cfg)
+        _reject_legacy_config_sections(cfg)
         self.params = dict(get_config_value(cfg, "baselines.params", {}) or {})
         self.graph_escape = bool(get_config_value(cfg, "baselines.params.graph_escape", False))
-        self.evaluator_model_name = str(get_config_value(cfg, "baselines.evaluator.model_name", "Qwen3-VL-8B-Instruct"))
+        self.evaluator_model_name = str(get_config_value(cfg, "baselines.models.evaluator", EVALUATOR_MODEL_DEFAULT))
         self.evaluator = XMLEvaluator(
             self.evaluator_model_name,
-            temperature=float(get_config_value(cfg, "baselines.evaluator.temperature", 0.0)),
-            retries=int(get_config_value(cfg, "baselines.evaluator.retries", 1)),
-            raw_text_char_limit=int(get_config_value(cfg, "baselines.evaluator.raw_text_char_limit_per_opened_node", 1200)),
-            include_images_for_opened_nodes=bool(
-                get_config_value(cfg, "baselines.evaluator.include_images_for_opened_nodes", False)
-            ),
-            max_candidate_actions=int(get_config_value(cfg, "baselines.agent.max_evaluator_candidate_actions", 120)),
-            candidate_preview_char_limit=int(get_config_value(cfg, "baselines.evaluator.candidate_preview_char_limit", 160)),
-            max_selected_actions_per_iteration=int(
-                get_config_value(cfg, "baselines.agent.max_selected_actions_per_iteration", 4)
-            ),
+            temperature=EVALUATOR_TEMPERATURE,
+            retries=EVALUATOR_RETRIES,
+            raw_text_char_limit=EVALUATOR_RAW_TEXT_CHAR_LIMIT,
+            include_images_for_opened_nodes=EVALUATOR_INCLUDE_OPENED_NODE_IMAGES,
+            max_candidate_actions=MAX_EVALUATOR_CANDIDATE_ACTIONS,
+            candidate_preview_char_limit=EVALUATOR_CANDIDATE_PREVIEW_CHAR_LIMIT,
+            max_selected_actions_per_iteration=MAX_SELECTED_ACTIONS_PER_ITERATION,
         )
-        self.max_evaluator_candidate_actions = int(
-            get_config_value(cfg, "baselines.agent.max_evaluator_candidate_actions", 120)
-        )
+        self.max_evaluator_candidate_actions = MAX_EVALUATOR_CANDIDATE_ACTIONS
         self.max_selected_actions_per_iteration = max(
             1,
-            int(get_config_value(cfg, "baselines.agent.max_selected_actions_per_iteration", 4)),
+            MAX_SELECTED_ACTIONS_PER_ITERATION,
         )
         self.max_total_selected_actions = max(
             1,
-            int(get_config_value(cfg, "baselines.agent.max_total_selected_actions", 24)),
+            MAX_TOTAL_SELECTED_ACTIONS,
         )
-        self.watchdog_iterations = int(get_config_value(cfg, "baselines.safety.watchdog_iterations", 30))
-        self.watchdog_repeated_noop_rounds = int(get_config_value(cfg, "baselines.safety.watchdog_repeated_noop_rounds", 3))
-        self.run_online_agent = bool(get_config_value(cfg, "baselines.agent.run_online", True))
-        self.auto_activate_initial_page_nodes = bool(
-            get_config_value(cfg, "baselines.agent.auto_activate_initial_page_nodes", False)
-        )
-        self.auto_open_initial_page_nodes = bool(
-            get_config_value(cfg, "baselines.agent.auto_open_initial_page_nodes", False)
-        )
-        self.auto_open_max_nodes_per_page = int(
-            get_config_value(cfg, "baselines.agent.auto_open_max_nodes_per_page", 24)
-        )
-        self.auto_open_max_nodes_per_page_longdocurl = int(
-            get_config_value(cfg, "baselines.agent.auto_open_max_nodes_per_page_longdocurl", self.auto_open_max_nodes_per_page)
-        )
-        self.auto_open_max_nodes_per_page_mmlongbench = int(
-            get_config_value(cfg, "baselines.agent.auto_open_max_nodes_per_page_mmlongbench", self.auto_open_max_nodes_per_page)
-        )
-        self.final_open_active_nodes = bool(
-            get_config_value(cfg, "baselines.agent.final_open_active_nodes", True)
-        )
-        self.final_open_active_node_limit = int(
-            get_config_value(cfg, "baselines.agent.final_open_active_node_limit", 16)
-        )
-        self.final_open_active_node_limit_longdocurl = int(
-            get_config_value(
-                cfg,
-                "baselines.agent.final_open_active_node_limit_longdocurl",
-                self.final_open_active_node_limit,
-            )
-        )
-        self.final_open_active_node_limit_mmlongbench = int(
-            get_config_value(
-                cfg,
-                "baselines.agent.final_open_active_node_limit_mmlongbench",
-                self.final_open_active_node_limit,
-            )
-        )
+        self.watchdog_iterations = WATCHDOG_ITERATIONS
+        self.watchdog_repeated_noop_rounds = WATCHDOG_REPEATED_NOOP_ROUNDS
+        self.run_online_agent = bool(get_config_value(cfg, "baselines.params.online_agent", False))
+        self.auto_activate_initial_page_nodes = True
+        self.auto_open_initial_page_nodes = True
+        self.auto_open_max_nodes_per_page = AUTO_OPEN_MAX_NODES_PER_PAGE
+        self.auto_open_max_nodes_per_page_longdocurl = AUTO_OPEN_MAX_NODES_PER_PAGE
+        self.auto_open_max_nodes_per_page_mmlongbench = AUTO_OPEN_MAX_NODES_PER_PAGE
+        self.final_open_active_nodes = True
+        self.final_open_active_node_limit = FINAL_OPEN_ACTIVE_NODE_LIMIT
+        self.final_open_active_node_limit_longdocurl = FINAL_OPEN_ACTIVE_NODE_LIMIT_LONGDOCURL
+        self.final_open_active_node_limit_mmlongbench = FINAL_OPEN_ACTIVE_NODE_LIMIT_MMLONGBENCH
         self.retriever = ColPaliTop1Retriever(cfg)
 
     def build_mmlongbench(self, sample, **kwargs):
@@ -162,9 +152,9 @@ class AEGRAGContextBuilder(ContextBuilder):
             )
         renderer = ReaderRenderer(
             self.cfg,
-            include_page_images=bool(get_config_value(self.cfg, "baselines.renderer.include_page_images", True)),
-            include_opened_node_images=bool(get_config_value(self.cfg, "baselines.renderer.include_opened_node_images", True)),
-            raw_text_limit=int(get_config_value(self.cfg, "baselines.renderer.raw_text_char_limit_per_opened_node", 8192)),
+            include_page_images=READER_INCLUDE_PAGE_IMAGES,
+            include_opened_node_images=READER_INCLUDE_OPENED_NODE_IMAGES,
+            raw_text_limit=READER_RAW_TEXT_CHAR_LIMIT,
         )
         content = renderer.render(benchmark_name, sample, state)
         reader_input = renderer.trace_input(benchmark_name, sample, state, content)
@@ -706,6 +696,20 @@ class AEGRAGContextBuilder(ContextBuilder):
             "max_total_selected_actions": self.max_total_selected_actions,
             "graph_escape": self.graph_escape,
         }
+
+
+def _reject_legacy_config_sections(cfg) -> None:
+    legacy = [
+        section
+        for section in LEGACY_CONFIG_SECTIONS
+        if get_config_value(cfg, f"baselines.{section}", None) is not None
+    ]
+    if legacy:
+        joined = ", ".join(f"baselines.{section}" for section in legacy)
+        raise ValueError(
+            f"MAGE-RAG no longer supports legacy config sections: {joined}. "
+            "Use baselines.params, baselines.models, and baselines.reader instead."
+        )
 
 
 def _page_index_from_image(image_path) -> int:

@@ -12,15 +12,9 @@ class ColPaliTop1Retriever:
 
     def __init__(self, cfg):
         self.cfg = cfg
-        self.top_k = int(get_config_value(cfg, "baselines.agent.initial_retrieval_top_k", 15))
-        self.top_k_longdocurl = int(get_config_value(cfg, "baselines.agent.initial_retrieval_top_k_longdocurl", self.top_k))
-        self.top_k_mmlongbench = int(get_config_value(cfg, "baselines.agent.initial_retrieval_top_k_mmlongbench", self.top_k))
+        self.top_k = int(get_config_value(cfg, "baselines.params.top_k", 5))
 
     def top_k_for(self, benchmark_name: str) -> int:
-        if benchmark_name == "longdocurl":
-            return self.top_k_longdocurl
-        if benchmark_name == "mmlongbench":
-            return self.top_k_mmlongbench
         return self.top_k
 
     def embedding_page_count(self, benchmark_name: str, sample: dict) -> int:

@@ -17,14 +17,14 @@ STATE_COLORS = {
 }
 
 
-class AEGRAGPlugin(AnalysisPlugin):
-    name = "aeg_rag"
+class MAGERAGPlugin(AnalysisPlugin):
+    name = "magerag"
     version = "1"
-    baseline_names = ("aeg-rag", "aeg_rag")
+    baseline_names = ("magerag",)
 
     def parameter_specs(self) -> tuple[ParameterSpec, ...]:
         return (
-            ParameterSpec("policy", "policy", "str"),
+            ParameterSpec("top_k", "top-k pages", "int", numeric=True),
             ParameterSpec("graph_escape", "graph escape", "bool"),
             ParameterSpec("evaluator_model_name", "evaluator model", "str"),
         )
@@ -87,7 +87,7 @@ class AEGRAGPlugin(AnalysisPlugin):
         }
 
 
-PLUGIN = AEGRAGPlugin()
+PLUGIN = MAGERAGPlugin()
 
 
 def _metadata(record: dict[str, Any]) -> dict[str, Any]:

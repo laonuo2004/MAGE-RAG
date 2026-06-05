@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from baselines.aeg_rag.actions import (
+from baselines.magerag.actions import (
     ActionResult,
     ActivateNode,
     ActivatePage,
@@ -13,7 +13,7 @@ from baselines.aeg_rag.actions import (
     SearchEvidence,
     SummarizeNodes,
 )
-from baselines.aeg_rag.graph_store import EvidenceGraphStore
+from baselines.magerag.graph_store import EvidenceGraphStore
 
 
 INACTIVE = "Inactive"

@@ -6,10 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${CODE_ROOT}"
-exec "${PYTHON_BIN}" main.py --multirun baselines=aeg-rag \
+exec "${PYTHON_BIN}" main.py --multirun baselines=magerag \
     benchmarks=longdocurl,mmlongbench \
-    baselines.agent.run_online=true \
-    baselines.agent.initial_retrieval_top_k=5 \
-    baselines.agent.initial_retrieval_top_k_longdocurl=5 \
-    baselines.agent.initial_retrieval_top_k_mmlongbench=5 \
+    baselines.params.online_agent=true \
+    baselines.params.top_k=5 \
     benchmarks.workers=64

@@ -70,10 +70,10 @@ module.exports = {
     },                
     {
       ...jobDefaults,
-      name: "job-aeg-rag",
-      script: "scripts/run_aeg_rag.sh",
-      out_file: "logs/pm2-job-aeg-rag.out.log",
-      error_file: "logs/pm2-job-aeg-rag.err.log"
+      name: "job-magerag",
+      script: "scripts/run_magerag.sh",
+      out_file: "logs/pm2-job-magerag.out.log",
+      error_file: "logs/pm2-job-magerag.err.log"
     },         
   ]
 };

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import re
 
-from baselines.aeg_rag.actions import CandidateAction
-from baselines.aeg_rag.graph_store import EvidenceGraphStore
-from baselines.aeg_rag.state import ACTIVE, INACTIVE, PRUNED, EvidenceAgentState
+from baselines.magerag.actions import CandidateAction
+from baselines.magerag.graph_store import EvidenceGraphStore
+from baselines.magerag.state import ACTIVE, INACTIVE, PRUNED, EvidenceAgentState
 
 
 class CandidateGenerator:

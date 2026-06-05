@@ -1,0 +1,13 @@
+name: magerag
+
+params:
+  top_k: 5
+  graph_escape: false
+  online_agent: false
+
+models:
+  evaluator: Qwen3-VL-8B-Instruct
+
+reader:
+  mode: compact
+  mmlongbench_prompt: plain

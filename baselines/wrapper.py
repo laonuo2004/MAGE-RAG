@@ -6,7 +6,8 @@ from baselines.ocr import OcrContextBuilder
 from baselines.m3docrag import m3docragContextBuilder
 from baselines.m3docrag_iterate import M3DocRAGIterateContextBuilder
 from baselines.m3docrag_iterate_query import M3DocRAGIterateQueryContextBuilder
-from baselines.aeg_rag import AEGRAGContextBuilder
+from baselines.magerag import MAGERAGContextBuilder
+from baselines.g2reader import G2ReaderContextBuilder
 from utils.config_utils import require_config_value
 
 _CONTEXT_BUILDERS = {
@@ -18,7 +19,8 @@ _CONTEXT_BUILDERS = {
     'm3docrag': m3docragContextBuilder,
     'm3docrag-iterate': M3DocRAGIterateContextBuilder,
     'm3docrag-iterate-query': M3DocRAGIterateQueryContextBuilder,
-    'aeg-rag': AEGRAGContextBuilder,
+    'magerag': MAGERAGContextBuilder,
+    'g2-reader': G2ReaderContextBuilder,
 }
 
 

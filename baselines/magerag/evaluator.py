@@ -9,8 +9,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any
 
-from baselines.aeg_rag.actions import CandidateAction
-from baselines.aeg_rag.state import EvidenceAgentState
+from baselines.magerag.actions import CandidateAction
+from baselines.magerag.state import EvidenceAgentState
 from benchmarks.utils.document_preprocess import encode_image_file_to_base64
 from utils.llm_utils import call_llm_messages, completion_content
 
@@ -113,7 +113,7 @@ class XMLEvaluator:
             temperature=self.temperature,
             retries=self.retries,
             logger=logger,
-            log_prefix="AEG-RAG evaluator",
+            log_prefix="MAGE-RAG evaluator",
             failure_value=lambda exc: f"<agent_decision><stop>true</stop><reason>Failed: {html.escape(str(exc))}</reason></agent_decision>",
         )
         raw = completion_content(completion)
@@ -124,7 +124,7 @@ class XMLEvaluator:
         if domain_guidance:
             domain_guidance = "\n" + domain_guidance + "\n"
         return (
-            "You are the AEG-RAG online evidence controller. Read the XML context and return only "
+            "You are the MAGE-RAG online evidence controller. Read the XML context and return only "
             "an <agent_decision> XML document matching the requested schema. Candidate actions are "
             "numbered with short integer indexes. To execute a candidate, place only its number under "
             "<selected_actions> as <action index=\"...\">; do not copy long node_id, edge_id, or "

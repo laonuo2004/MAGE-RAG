@@ -15,36 +15,36 @@ class ReaderRenderer:
         self.include_page_images = bool(include_page_images)
         self.include_opened_node_images = bool(include_opened_node_images)
         self.raw_text_limit = int(raw_text_limit)
-        self.reader_text_mode = str(get_config_value(cfg, "baselines.renderer.reader_text_mode", "full"))
+        self.reader_text_mode = str(get_config_value(cfg, "baselines.reader.mode", "compact"))
         self.mmlongbench_page_text_char_limit = int(
-            get_config_value(cfg, "baselines.renderer.mmlongbench_page_text_char_limit", 1200)
+            get_config_value(cfg, "baselines.reader.mmlongbench_page_text_char_limit", 1200)
         )
         self.mmlongbench_page_text_max_pages = int(
-            get_config_value(cfg, "baselines.renderer.mmlongbench_page_text_max_pages", 3)
+            get_config_value(cfg, "baselines.reader.mmlongbench_page_text_max_pages", 1)
         )
         self.mmlongbench_prompt_mode = str(
-            get_config_value(cfg, "baselines.renderer.mmlongbench_prompt_mode", "format")
+            get_config_value(cfg, "baselines.reader.mmlongbench_prompt", "plain")
         )
         self.mmlongbench_include_image_page_labels = bool(
-            get_config_value(cfg, "baselines.renderer.mmlongbench_include_image_page_labels", False)
+            get_config_value(cfg, "baselines.reader.mmlongbench_include_image_page_labels", True)
         )
         self.include_opened_node_text = bool(
-            get_config_value(cfg, "baselines.renderer.include_opened_node_text", False)
+            get_config_value(cfg, "baselines.reader.include_opened_node_text", True)
         )
         self.include_opened_node_text_longdocurl = bool(
-            get_config_value(cfg, "baselines.renderer.include_opened_node_text_longdocurl", self.include_opened_node_text)
+            get_config_value(cfg, "baselines.reader.include_opened_node_text_longdocurl", self.include_opened_node_text)
         )
         self.include_opened_node_text_mmlongbench = bool(
-            get_config_value(cfg, "baselines.renderer.include_opened_node_text_mmlongbench", self.include_opened_node_text)
+            get_config_value(cfg, "baselines.reader.include_opened_node_text_mmlongbench", False)
         )
         self.opened_node_text_char_limit = int(
-            get_config_value(cfg, "baselines.renderer.opened_node_text_char_limit", 1200)
+            get_config_value(cfg, "baselines.reader.opened_node_text_char_limit", 1200)
         )
         self.mmlongbench_include_opened_node_crops = bool(
-            get_config_value(cfg, "baselines.renderer.mmlongbench_include_opened_node_crops", False)
+            get_config_value(cfg, "baselines.reader.mmlongbench_include_opened_node_crops", False)
         )
         self.mmlongbench_max_opened_node_crops = int(
-            get_config_value(cfg, "baselines.renderer.mmlongbench_max_opened_node_crops", 4)
+            get_config_value(cfg, "baselines.reader.mmlongbench_max_opened_node_crops", 4)
         )
 
     def render(self, benchmark_name: str, sample: dict, state) -> list[dict]:

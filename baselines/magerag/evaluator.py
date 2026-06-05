@@ -19,6 +19,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class EvaluatorDecision:
+    """
+    LLM evaluator 的结构化决策结果。
+
+    selected_actions 执行已有候选；search_query 是 Jump；prune/summarize 是对工作记忆的压缩。
+    stop=True 只有在没有任何增益动作时才会结束 online expansion。
+    """
+
     stop: bool = False
     selected_actions: list[dict[str, Any]] = field(default_factory=list)
     search_query: str | None = None
@@ -28,6 +35,13 @@ class EvaluatorDecision:
 
 
 class XMLEvaluator:
+    """
+    Stage II 的 action evaluator。
+
+    它把当前 evidence state 和 candidate actions 编成 XML，让 LLM 估计哪些动作有边际收益。
+    设计重点是控制输出形状：模型只选 action index，避免复制长 node_id/edge_id 时出错。
+    """
+
     def __init__(
         self,
         model_name: str,
@@ -49,6 +63,8 @@ class XMLEvaluator:
         self.max_selected_actions_per_iteration = max(1, int(max_selected_actions_per_iteration))
 
     def build_context_xml(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> str:
+        # XML context 是 evaluator 的“可观测状态”：已激活/打开/剪枝证据、最近 trace、候选动作。
+        # 大段原文只给 opened node，active node 只给 abstract，控制上下文噪声。
         allowed_pages = sorted(state.graph.allowed_pages or [])
         parts = ["<agent_step_context>", f"  <question>{_esc(question)}</question>"]
         parts.append(f'  <allowed_scope graph_escape="{str(state.graph_escape).lower()}">')
@@ -139,6 +155,7 @@ class XMLEvaluator:
         )
 
     def _domain_guidance(self, question: str) -> str:
+        # 这些提示是针对 benchmark 常见失败模式的局部补强，不改变动作协议本身。
         text = str(question or "").lower()
         lines = []
         if re.search(r"\bpages?\s*\d|\bslides?\s*\d|\bpage\s+range\b|\bslide\s+range\b", text):
@@ -230,6 +247,13 @@ class XMLEvaluator:
 
 
 def parse_agent_decision_xml(raw_xml: str) -> EvaluatorDecision:
+    """
+    解析 evaluator 返回的 XML。
+
+    严格解析优先；如果模型输出缺少闭合标签或混入说明文字，loose parser 尽量恢复可执行决策，
+    让一次格式瑕疵不至于直接终止整轮 online expansion。
+    """
+
     xml_text = _extract_agent_decision_xml(raw_xml)
     try:
         root = ET.fromstring(xml_text)

@@ -10,6 +10,13 @@ PAGE_NODE_TYPE = "page"
 
 
 class EvidenceGraphStore:
+    """
+    只读的文档证据图访问层。
+
+    Offline 阶段已经把 PDF 解析成 page/text/table/figure 等节点和关系边；
+    online agent 只通过这个 store 查询节点、边、页面归属和轻量检索结果。
+    """
+
     def __init__(self, graph_dir: str | Path, allowed_pages: list[int] | set[int] | None = None):
         self.graph_dir = Path(graph_dir)
         artifacts = load_graph_artifacts(self.graph_dir)
@@ -30,6 +37,8 @@ class EvidenceGraphStore:
         self._ensure_page_nodes()
 
     def _ensure_page_nodes(self):
+        # 有些解析产物只包含页面内元素，没有显式 page 节点。
+        # Online 阶段必须先激活 page 再激活元素，所以这里补 synthetic page node。
         page_indices = {self.node_page_index(node) for node in self.nodes.values()}
         if self.allowed_pages is not None:
             page_indices |= self.allowed_pages
@@ -48,6 +57,7 @@ class EvidenceGraphStore:
             self.page_nodes[page_index] = node_id
 
     def is_page_allowed(self, page_index: int, graph_escape: bool = False) -> bool:
+        # allowed_pages 是 benchmark/sample 的可见范围；graph_escape 只给显式实验开关使用。
         return bool(graph_escape or self.allowed_pages is None or int(page_index) in self.allowed_pages)
 
     def is_page_node(self, node: dict[str, Any]) -> bool:
@@ -113,6 +123,8 @@ class EvidenceGraphStore:
         return "\n".join(dict.fromkeys(parts))
 
     def search(self, query: str, limit: int = 8, graph_escape: bool = False) -> list[dict[str, Any]]:
+        # 当前 search 是 lightweight lexical fallback，不替代 Stage I 的 ColPali 检索。
+        # 它服务于 evaluator 的 Jump/SearchEvidence，用来在已有 graph artifact 内找新的入口点。
         terms = [term.lower() for term in str(query).split() if term.strip()]
         scored = []
         for node_id, node in self.nodes.items():

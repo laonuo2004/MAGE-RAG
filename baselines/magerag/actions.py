@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# MAGE-RAG 的 online 阶段只通过这些小动作修改 evidence graph state。
+# 这里保持动作为纯数据结构，方便 evaluator 输出、trace 记录和状态机执行解耦。
 ALLOWED_ACTIVATE_PAGE_SOURCES = {"initial_retrieval", "adjacent", "relation_target", "search", "question_page_scope"}
 
 
@@ -15,6 +17,13 @@ class ActionResult:
 
 @dataclass(frozen=True)
 class CandidateAction:
+    """
+    Evaluator 看到的是候选动作，而不是直接可执行动作对象。
+
+    CandidateAction 带 preview，用来评估 marginal utility；真正执行前再由
+    action_from_candidate 转成状态机认识的 action dataclass。
+    """
+
     id: str
     action_type: str
     payload: dict[str, Any]
@@ -64,6 +73,13 @@ class SummarizeNodes:
 
 
 def action_from_candidate(candidate: CandidateAction):
+    """
+    把 evaluator 选择的候选动作还原成状态机动作。
+
+    SearchEvidence/SummarizeNodes 通常由 evaluator 的专门 XML 字段产生，
+    不走 candidate list，因此这里故意只覆盖 graph expansion 候选。
+    """
+
     payload = candidate.payload
     if candidate.action_type == "ActivatePage":
         return ActivatePage(page_index=int(payload["page_index"]), source=str(payload.get("source") or "search"))

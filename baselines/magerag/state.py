@@ -24,6 +24,13 @@ PRUNED = "Pruned"
 
 @dataclass
 class EvidenceAgentState:
+    """
+    Online evidence graph 的可变状态。
+
+    状态机刻意把节点分成 Active/Open/Pruned：Active 表示进入工作记忆，
+    Open 才把详细内容暴露给 evaluator/reader，Pruned 则保留“曾看过但暂不使用”的记录。
+    """
+
     graph: EvidenceGraphStore
     graph_escape: bool = False
     node_states: dict[str, str] = field(default_factory=dict)
@@ -38,6 +45,7 @@ class EvidenceAgentState:
         return self.node_states.get(str(node_id), INACTIVE)
 
     def execute(self, action, iteration: int | None = None) -> ActionResult:
+        # 所有状态修改都走这个 dispatcher，保证 trace 中能复盘每一步 agent 行为。
         if isinstance(action, ActivatePage):
             result = self.activate_page(action.page_index, action.source)
         elif isinstance(action, ActivateNode):
@@ -82,6 +90,7 @@ class EvidenceAgentState:
         if self.graph.is_page_node(node):
             return self.activate_page(self.graph.node_page_index(node), "relation_target")
         page_node_id = self.graph.parent_page_node_id(node_id)
+        # 元素节点必须依附于已激活页面；这让 evidence graph expansion 更接近“先翻到页面，再细读元素”。
         if self.state_of(page_node_id) != ACTIVE:
             return self._validation(
                 "ActivateNode",
@@ -129,6 +138,8 @@ class EvidenceAgentState:
         self.active_edges[str(edge_id)] = edge
         candidates = []
         page_id = self.graph.parent_page_node_id(target_id)
+        # FollowRelation 只把边放进工作集，并给下一轮暴露目标激活候选；
+        # 它不直接打开 target，避免一次关系跳转引入过多噪声。
         if self.state_of(page_id) == INACTIVE:
             candidates.append({"type": "ActivatePage", "page_index": target_page})
         if self.state_of(target_id) in {INACTIVE, PRUNED} and self.state_of(page_id) == ACTIVE:
@@ -162,6 +173,8 @@ class EvidenceAgentState:
         if invalid:
             return self._validation("SummarizeNodes", f"Cannot summarize unknown/inactive nodes: {invalid}")
         summary_id = f"summary:iter{iteration or 0}:{len(self.summaries)}"
+        # 这里的摘要是确定性的 preview 拼接，占位表达“压缩后的证据节点”；
+        # 如果后续接入 LLM summarizer，应只替换 text 生成逻辑，保留 summary artifact 结构。
         snippets = [self.graph.preview_node(node_id, char_limit=160) for node_id in normalized_ids]
         summary = {
             "summary_id": summary_id,
@@ -185,6 +198,7 @@ class EvidenceAgentState:
         return dict(sorted(self.node_states.items()))
 
     def snapshot(self) -> dict[str, Any]:
+        # snapshot 是给 evaluator trace 和分析插件消费的紧凑状态，不应放入大段原文或图片数据。
         active_node_ids = self.active_node_ids()
         opened_node_ids = self.opened_node_ids()
         pruned_node_ids = self.pruned_node_ids()

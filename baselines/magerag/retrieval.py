@@ -7,6 +7,13 @@ from utils.config_utils import get_config_value
 
 
 class ColPaliTop1Retriever:
+    """
+    Stage I initial grounding 的 ColPali 页面检索器。
+
+    这里复用 M3DocRAG 的 embedding 加载和相似度检索实现，让 MAGE-RAG 的差异集中在
+    后续 evidence graph expansion，而不是重复实现 page-level retrieval。
+    """
+
     _load_embeddings = m3docragContextBuilder._load_embeddings
     _retrieve_pages = m3docragContextBuilder._retrieve_pages
 

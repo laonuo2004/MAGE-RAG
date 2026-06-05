@@ -25,6 +25,8 @@ from benchmarks.utils.data_utils import mmlongbench_file_id
 from utils.config_utils import get_config_value, require_config_value
 
 
+# 这些常量刻意集中在 builder 中：MAGE-RAG 的实验开关应通过统一配置面暴露，
+# 而不是散落到 evaluator、renderer、state 等底层模块里。
 EVALUATOR_MODEL_DEFAULT = "Qwen3-VL-8B-Instruct"
 EVALUATOR_TEMPERATURE = 0.0
 EVALUATOR_RETRIES = 2
@@ -47,6 +49,13 @@ LEGACY_CONFIG_SECTIONS = ("agent", "evaluator", "renderer", "safety")
 
 
 class MAGERAGContextBuilder(ContextBuilder):
+    """
+    把 benchmark sample 转成最终 reader messages 的 MAGE-RAG 编排器。
+
+    对应方法图中的 online pipeline：Stage I 初始页面定位，Stage II 迭代扩展证据图，
+    Stage III 把 evidence subgraph 渲染给 LVLM reader 回答。
+    """
+
     name = "magerag"
 
     def __init__(self, cfg=None):
@@ -114,11 +123,14 @@ class MAGERAGContextBuilder(ContextBuilder):
     def _build(self, benchmark_name, sample, doc_key, graph_dir, allowed_pages, client):
         graph = EvidenceGraphStore(graph_dir, allowed_pages=allowed_pages)
         state = EvidenceAgentState(graph, graph_escape=self.graph_escape)
+
+        # Stage I: ColPali 做 page-level grounding，先把最相关页面放入工作记忆。
         initial_pages, retrieval_metadata = self._initial_pages(benchmark_name, sample, allowed_pages)
         for initial_page in initial_pages:
             state.execute(ActivatePage(page_index=initial_page["page_index"], source="initial_retrieval"), iteration=0)
             if self.run_online_agent:
                 continue
+            # online_agent 关闭时，MAGE-RAG 退化成“检索页 + 页面内显著元素”的强基线。
             if self.auto_open_initial_page_nodes:
                 self._open_initial_page_nodes(
                     state,
@@ -129,6 +141,8 @@ class MAGERAGContextBuilder(ContextBuilder):
             elif self.auto_activate_initial_page_nodes:
                 self._activate_salient_page_nodes(state, initial_page["page_index"])
 
+        # 题目显式指定 page/figure/table/section 时，不完全依赖 top-1 retrieval。
+        # 这类 scope hint 更像人类直接翻到被点名的位置。
         self._auto_open_question_pages(
             benchmark_name,
             sample["question"],
@@ -143,8 +157,11 @@ class MAGERAGContextBuilder(ContextBuilder):
         )
         if self.run_online_agent:
             self._run_auto_searches(benchmark_name, sample["question"], state)
+
+        # Stage II: evaluator 反复选择有边际收益的扩展动作，直到 stop 或 watchdog 触发。
         stop_reason = self._run_agent(benchmark_name, sample["question"], state, client) if self.run_online_agent else "retrieval_only"
         if self.run_online_agent and self.final_open_active_nodes:
+            # 最后一轮把仍处于 Active 的高相关节点打开，避免 reader 只看到 abstract。
             self._final_open_active_nodes(
                 benchmark_name,
                 sample["question"],
@@ -156,6 +173,7 @@ class MAGERAGContextBuilder(ContextBuilder):
             include_opened_node_images=READER_INCLUDE_OPENED_NODE_IMAGES,
             raw_text_limit=READER_RAW_TEXT_CHAR_LIMIT,
         )
+        # Stage III: evidence graph state -> LVLM reader messages，同时保留 trace 供分析插件复盘。
         content = renderer.render(benchmark_name, sample, state)
         reader_input = renderer.trace_input(benchmark_name, sample, state, content)
         metadata = self._metadata(
@@ -171,6 +189,7 @@ class MAGERAGContextBuilder(ContextBuilder):
         return ContextMessages([{"role": "user", "content": content}], metadata=metadata)
 
     def _activate_salient_page_nodes(self, state: EvidenceAgentState, page_index: int):
+        # 只激活视觉/结构性强的节点，作为不运行 online agent 时的轻量 evidence expansion。
         salient_types = {"title", "table", "figure", "image", "chart"}
         for node in state.graph.nodes_on_page(page_index):
             if str(node.get("type") or "").lower() not in salient_types:
@@ -216,6 +235,8 @@ class MAGERAGContextBuilder(ContextBuilder):
         remaining = max(0, limit - opened_count)
         if remaining <= 0:
             return
+        # 如果 evaluator 通过搜索/关系跳转激活了新页面，但还没来得及打开其中节点，
+        # final pass 会按问题相关性补开少量页面内证据。
         active_page_indices = [
             state.graph.node_page_index(node_id)
             for node_id in state.active_node_ids()
@@ -279,6 +300,7 @@ class MAGERAGContextBuilder(ContextBuilder):
         max_nodes = max(1, min(int(self._auto_open_limit_for(benchmark_name)), 8))
         for page_index in page_indices:
             if page_index not in allowed_page_set:
+                # 记录失败而不是静默跳过，方便分析“题目要求页不在 allowed_pages”这类 benchmark 约束问题。
                 state.trace.append({
                     "iteration": 0,
                     "action": "AutoOpenQuestionPage",
@@ -362,6 +384,7 @@ class MAGERAGContextBuilder(ContextBuilder):
                 seen_pages.add(page_index)
                 scope_pages = [page_index]
                 if spec["kind"] in {"section", "chapter", "quoted_scope", "faq"}:
+                    # section/FAQ 类问题通常跨多个页面；figure/table 则尽量只打开命中的局部页面。
                     if spec["kind"] == "quoted_scope" and explicit_page_indices:
                         scope_pages = explicit_page_indices
                     else:
@@ -405,6 +428,7 @@ class MAGERAGContextBuilder(ContextBuilder):
         try:
             return self.retriever.retrieve_many(benchmark_name, sample, allowed_pages)
         except Exception as exc:
+            # 检索 embedding 缺失时仍保留可运行路径；metadata 会记录错误，便于后续排查数据准备问题。
             page_index = int(allowed_pages[0])
             return (
                 [{"page_index": page_index, "page_number": page_index + 1, "score": None}],
@@ -415,6 +439,7 @@ class MAGERAGContextBuilder(ContextBuilder):
         queries = _auto_search_queries(benchmark_name, question)
         if not queries:
             return
+        # 自动搜索只覆盖少数高风险问题形态，作为进入 evaluator 前的额外 jump seed。
         search_escape = bool(state.graph_escape)
         merged = []
         seen = set()
@@ -458,6 +483,7 @@ class MAGERAGContextBuilder(ContextBuilder):
         if client is None:
             return "fallback_no_client"
         for iteration in range(1, self.watchdog_iterations + 1):
+            # 每轮都重新枚举候选，因为上轮动作可能激活页面、打开节点或引入搜索结果。
             candidates = self._select_evaluator_candidates(question, state, generator.generate(state))
             candidate_by_id = {candidate.id: candidate for candidate in candidates}
             candidate_by_index = {index: candidate for index, candidate in enumerate(candidates, start=1)}
@@ -490,10 +516,12 @@ class MAGERAGContextBuilder(ContextBuilder):
                 decision.prune_requests,
                 decision.summarize_requests,
             ]):
+                # 只有“stop 且没有任何待执行动作”才真正结束，避免模型一边要求 stop 一边还给动作。
                 return "normal_stop"
 
             selected_actions = list(decision.selected_actions or [])
             if len(selected_actions) > self.max_selected_actions_per_iteration:
+                # 限制单轮动作数，防止 evaluator 一次性扩展过宽导致 reader 上下文被噪声淹没。
                 state.trace.append({
                     "iteration": iteration,
                     "action": "TruncatedSelectedActions",
@@ -537,6 +565,7 @@ class MAGERAGContextBuilder(ContextBuilder):
                     and candidate.action_type == "ActivateNode"
                     and "activate page" in result.message
                 ):
+                    # LLM 可能选择了页面内节点，但父 page 尚未 Active；这里自动补一次 page activation。
                     node_id = str(candidate.payload["node_id"])
                     page_index = state.graph.node_page_index(node_id)
                     page_result = state.execute(ActivatePage(page_index, "relation_target"), iteration=iteration)
@@ -545,6 +574,7 @@ class MAGERAGContextBuilder(ContextBuilder):
                         self._annotate_last_action_selection(state, selected, candidate, resolved_by="activate_parent_page_retry")
                 made_progress = made_progress or result.ok
             if selected_action_attempts >= self.max_total_selected_actions:
+                # 总预算是防 runaway 的硬上限；正常情况应由 stop 或 no-op watchdog 结束。
                 state.trace.append({
                     "iteration": iteration,
                     "action": "SelectedActionBudgetReached",
@@ -553,6 +583,7 @@ class MAGERAGContextBuilder(ContextBuilder):
                 })
                 return "watchdog_total_selected_actions"
             if decision.search_query:
+                # SearchEvidence 对应方法图里的 Jump：根据当前证据缺口重新找入口页/节点。
                 result = state.execute(SearchEvidence(decision.search_query), iteration=iteration)
                 made_progress = made_progress or result.ok
                 if result.ok:
@@ -565,9 +596,11 @@ class MAGERAGContextBuilder(ContextBuilder):
                     )
                     made_progress = made_progress or bool(opened_node_ids)
             for request in decision.prune_requests:
+                # Prune 不删除节点，只把它从当前证据上下文降权，并保留原因供 trace 分析。
                 result = state.execute(PruneNode(request["node_id"], request.get("reason", "")), iteration=iteration)
                 made_progress = made_progress or result.ok
             for request in decision.summarize_requests:
+                # Summarize 是压缩工作记忆的接口，当前实现为确定性摘要 artifact。
                 result = state.execute(
                     SummarizeNodes(request.get("source_node_ids") or [], request.get("goal", "")),
                     iteration=iteration,
@@ -577,6 +610,7 @@ class MAGERAGContextBuilder(ContextBuilder):
             if not made_progress:
                 repeated_noop_rounds += 1
                 if repeated_noop_rounds >= self.watchdog_repeated_noop_rounds:
+                    # 连续 no-op 表示 evaluator 给出的动作无法改变状态，继续循环只会浪费调用。
                     return "watchdog_repeated_noop"
             else:
                 repeated_noop_rounds = 0
@@ -592,6 +626,7 @@ class MAGERAGContextBuilder(ContextBuilder):
     ) -> list[str]:
         if not search_results:
             return []
+        # Search 后主动打开少量高相关结果，减少 evaluator 下一轮只看到搜索 preview 的盲区。
         max_nodes = max(1, min(int(self._auto_open_limit_for(benchmark_name)), 4))
         opened_node_ids: list[str] = []
         seen_pages: set[int] = set()
@@ -633,6 +668,7 @@ class MAGERAGContextBuilder(ContextBuilder):
         limit = max(1, int(self.max_evaluator_candidate_actions))
         if len(candidates) <= limit:
             return candidates
+        # 候选过多时先按问题相关性截断；candidate id 仍保持稳定，不依赖截断后的序号。
         indexed = list(enumerate(candidates))
         indexed.sort(
             key=lambda item: (
@@ -664,6 +700,7 @@ class MAGERAGContextBuilder(ContextBuilder):
         }
 
     def _metadata(self, state, doc_key, graph_dir, allowed_pages, initial_page, retrieval_metadata, stop_reason, reader_input):
+        # metadata 是实验分析的主要入口，尽量保存决策 trace 和 reader 输入引用，而不是只保存最终 prompt。
         activated_pages = sorted(
             state.graph.node_page_index(node_id)
             for node_id, node_state in state.final_node_states().items()
@@ -735,6 +772,7 @@ def _active_page_has_non_initial_source(state: EvidenceAgentState, page_index: i
 
 
 def _question_page_indices(question: str, max_pages_to_open: int = 16) -> list[int]:
+    # 把自然语言中的 1-based page/slide 引用转成内部 0-based page_index。
     text = str(question or "")
     indices: list[int] = []
     for match in re.finditer(
@@ -770,6 +808,7 @@ def _question_page_node_ids(
     question: str,
     max_nodes: int,
 ) -> list[str]:
+    # 页面内自动打开优先考虑题目词重叠和视觉/结构节点；没有命中时才退回普通节点。
     typed_nodes = []
     fallback_nodes = []
     type_priority = {
@@ -798,6 +837,7 @@ def _question_page_node_ids(
 
 
 def _question_named_scope_specs(question: str) -> list[dict[str, str]]:
+    # 抽取题目显式点名的 figure/table/section/FAQ 等 scope，作为检索之外的强导航信号。
     text = str(question or "")
     specs: list[dict[str, str]] = []
     for match in re.finditer(
@@ -858,6 +898,7 @@ def _matching_named_scope_nodes(
     spec: dict[str, str],
     allowed_page_set: set[int],
 ) -> list[str]:
+    # 在 evidence graph 中寻找命名 scope 的候选节点，返回的是节点入口而不是最终答案。
     kind = str(spec.get("kind") or "")
     label = str(spec.get("label") or "")
     scored = []
@@ -983,6 +1024,7 @@ def _node_question_relevance(node: dict, node_text: str, question: str) -> int:
 
 
 def _candidate_question_relevance(candidate, state: EvidenceAgentState, question: str) -> int:
+    # 候选排序只用于截断 evaluator 输入，不代表最终动作选择；最终选择仍由 evaluator 决定。
     score = 0
     action_type = str(candidate.action_type)
     if action_type in {"OpenNode", "FollowRelation"}:
@@ -1007,6 +1049,7 @@ def _candidate_question_relevance(candidate, state: EvidenceAgentState, question
 
 
 def _auto_search_queries(benchmark_name: str, question: str) -> list[str]:
+    # 目前只为 MMLongBench 的显式页/slide 问题生成自动搜索，避免无差别扩大上下文。
     if benchmark_name != "mmlongbench":
         return []
     text = _normalized_question_text(question)
@@ -1024,6 +1067,7 @@ def _normalized_question_text(question: str) -> str:
 
 
 def _resolve_candidate(candidate_id, candidate_by_id):
+    # Evaluator 理应返回 action index；这些 alias 兼容用于恢复偶发的 node_id/edge_id 直接引用。
     candidate_id = str(candidate_id or "")
     if candidate_id in candidate_by_id:
         return candidate_by_id[candidate_id]
@@ -1064,6 +1108,7 @@ def _resolve_candidate_index(candidate_index, candidate_by_index):
 
 
 def _candidate_from_selected_alias(candidate_id, state: EvidenceAgentState):
+    # 当候选列表被截断或模型引用了旧候选 ID 时，尝试从当前 graph state 重建一个等价候选。
     candidate_id = str(candidate_id or "")
     if candidate_id in state.graph.edges:
         return CandidateAction(
@@ -1114,6 +1159,7 @@ def _candidate_from_selected_alias(candidate_id, state: EvidenceAgentState):
 
 
 def _nearest_node_alias(node_id: str, state: EvidenceAgentState) -> str | None:
+    # 解析器/模型有时会保留旧 block id；按同页、同类型、相近 block 近似映射到现有节点。
     parsed = _parse_graph_node_id(node_id)
     if parsed is None:
         return None

@@ -10,6 +10,13 @@ from utils.config_utils import get_config_value, require_config_value
 
 
 class ReaderRenderer:
+    """
+    Stage III answering 的输入渲染器。
+
+    Online 阶段产出的是 evidence graph state；reader 需要的是 LVLM message content。
+    这里负责把打开的文本证据、页面截图和可选 crop 排成最终回答上下文。
+    """
+
     def __init__(self, cfg, include_page_images: bool = True, include_opened_node_images: bool = True, raw_text_limit: int = 8192):
         self.cfg = cfg
         self.include_page_images = bool(include_page_images)
@@ -48,6 +55,7 @@ class ReaderRenderer:
         )
 
     def render(self, benchmark_name: str, sample: dict, state) -> list[dict]:
+        # 文本始终先放，图片随后附加；这样纯文本 reader trace 和多模态输入能共享同一套证据顺序。
         text = self._text_context(benchmark_name, sample["question"], state)
         content = [{"type": "text", "text": text}]
         if self.include_page_images:
@@ -60,6 +68,7 @@ class ReaderRenderer:
                         content.append({"type": "text", "text": label})
                     content.append(image_part)
         if benchmark_name == "mmlongbench" and self.mmlongbench_include_opened_node_crops:
+            # MMLongBench 的页面图可能很大，少量 node crop 能突出表格/图像局部证据。
             for crop_index, node_id in enumerate(self._candidate_crop_node_ids(sample["question"], state)):
                 crop_part = self._opened_node_crop_part(benchmark_name, sample, state, node_id)
                 if crop_part is None:
@@ -86,6 +95,7 @@ class ReaderRenderer:
         }
 
     def _text_context(self, benchmark_name: str, question: str, state) -> str:
+        # compact mode 更接近现有 image baseline prompt；full mode 保留完整 provenance，适合调试。
         if self.reader_text_mode == "compact":
             return self._compact_text_context(benchmark_name, question, state)
         return self._full_text_context(question, state)
@@ -315,6 +325,7 @@ class ReaderRenderer:
         return values
 
     def _reader_page_indices(self, state) -> list[int]:
+        # 显式题目页优先于检索页；其他页面按激活顺序补充，保持“人类阅读路径”的顺序。
         prioritized = []
         deferred = []
         seen = set()
@@ -408,6 +419,7 @@ class ReaderRenderer:
         return refs
 
     def _candidate_crop_node_ids(self, question: str, state) -> list[str]:
+        # Crop 选择偏向视觉节点和与问题词重叠的 opened node，避免把所有 bbox 都塞进 LVLM。
         candidates = []
         seen = set()
         for node_id in state.opened_node_ids():

@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-ALLOWED_ACTIVATE_PAGE_SOURCES = {"initial_retrieval", "adjacent", "relation_target", "search"}
+ALLOWED_ACTIVATE_PAGE_SOURCES = {"initial_retrieval", "adjacent", "relation_target", "search", "question_page_scope"}
 
 
 @dataclass(frozen=True)

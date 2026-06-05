@@ -11,15 +11,20 @@ from baselines.aeg_rag.actions import CandidateAction
 from baselines.aeg_rag.actions import ActivateNode, ActivatePage, FollowRelation, OpenNode, PruneNode, SearchEvidence
 from baselines.aeg_rag.builder import AEGRAGContextBuilder
 from baselines.aeg_rag.builder import _candidate_from_selected_alias
+from baselines.aeg_rag.builder import _auto_search_queries
+from baselines.aeg_rag.builder import _question_named_scope_specs
+from baselines.aeg_rag.builder import _question_page_indices
 from baselines.aeg_rag.builder import _resolve_candidate
 from baselines.aeg_rag.candidate_generator import CandidateGenerator
 from baselines.aeg_rag.evaluator import EvaluatorDecision, XMLEvaluator, parse_agent_decision_xml
 from baselines.aeg_rag.graph_store import EvidenceGraphStore
+from baselines.aeg_rag.postprocess import postprocess_mmlongbench_prediction
 from baselines.aeg_rag.retrieval import ColPaliTop1Retriever
 from baselines.aeg_rag.renderer import ReaderRenderer
 from baselines.aeg_rag.state import ACTIVE, OPENED, PRUNED, EvidenceAgentState
 from baselines.base import ContextMessages
 from baselines.wrapper import build_context_builder
+from benchmarks.adapters import MMLongBenchAdapter
 from benchmarks.adapters import LongDocURLAdapter
 
 
@@ -73,6 +78,24 @@ class AEGRAGTests(unittest.TestCase):
         self.assertFalse(bool(cfg.renderer.include_opened_node_text_mmlongbench))
         self.assertFalse(bool(cfg.renderer.mmlongbench_include_opened_node_crops))
         self.assertEqual(int(cfg.renderer.mmlongbench_page_text_max_pages), 1)
+
+    def test_auto_search_queries_normalize_financial_question_spacing_and_underscores(self):
+        cash_queries = _auto_search_queries("mmlongbench", "What is cash_ratio in FY2021?")
+        payables_queries = _auto_search_queries("mmlongbench", "What is payables  turnover in FY2021?")
+        debt_queries = _auto_search_queries("mmlongbench", "what is long-term debt of Costco in FY 2021?")
+        ebitda_queries = _auto_search_queries("mmlongbench", "what is EBITDA for costco in FY2021?")
+        working_capital_queries = _auto_search_queries("mmlongbench", "What is Netflix working capital in FY2015?")
+
+        self.assertIn("cash and cash equivalents", cash_queries[0])
+        self.assertIn("short-term investments", cash_queries[0])
+        self.assertIn("current liabilities", cash_queries[0])
+        self.assertIn("cost of goods sold", payables_queries[0])
+        self.assertIn("accounts payable", payables_queries[0])
+        self.assertIn("long-term debt", debt_queries[0])
+        self.assertIn("lease liabilities", debt_queries[0])
+        self.assertIn("operating income", ebitda_queries[0])
+        self.assertIn("depreciation and amortization", ebitda_queries[0])
+        self.assertIn("working capital", working_capital_queries[0])
 
     def test_graph_store_loads_synthetic_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -349,6 +372,45 @@ class AEGRAGTests(unittest.TestCase):
 
         self.assertEqual(decision.selected_actions[0]["candidate_index"], 2)
         self.assertEqual(decision.selected_actions[0]["candidate_id"], "")
+
+    def test_xml_evaluator_prompt_adds_financial_ratio_search_guidance(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+
+            prompt = XMLEvaluator("model").build_prompt(
+                "What is gross profit to total assets ratio for FY2023?",
+                state,
+                [],
+            )
+
+        self.assertIn("For financial ratio questions, identify the formula and required fields before selecting actions.", prompt)
+        self.assertIn("If any required financial field is missing from opened evidence, issue a search_request for that field and year.", prompt)
+
+    def test_xml_evaluator_prompt_adds_page_scope_guidance(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+
+            prompt = XMLEvaluator("model").build_prompt(
+                "How many figures are on pages 400-640?",
+                state,
+                [],
+            )
+
+        self.assertIn("For questions naming specific pages or slides, first verify the requested page or slide scope.", prompt)
+        self.assertIn("Do not answer from unrelated retrieved pages when the requested scope is missing.", prompt)
+
+    def test_xml_evaluator_prompt_adds_exhaustive_list_guidance(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+
+            prompt = XMLEvaluator("model").build_prompt(
+                "List all sections that discuss the experiment setup.",
+                state,
+                [],
+            )
+
+        self.assertIn("For list or exhaustive questions, keep searching until all requested items and scopes are covered.", prompt)
+        self.assertIn("Do not stop after finding only one matching item when the question asks for all items, multiple examples, or a list.", prompt)
 
     def test_xml_evaluator_accepts_direct_action_candidate_output(self):
         decision = parse_agent_decision_xml(
@@ -663,6 +725,155 @@ class AEGRAGTests(unittest.TestCase):
         self.assertEqual(decision_trace["evaluator_input"]["opened_image_refs"], [])
         self.assertIn("n1", messages.metadata["opened_node_ids"])
         self.assertEqual(messages.metadata["iteration_trace"][-1]["action"], "FinalOpenActiveNode")
+
+    def test_online_build_auto_searches_financial_ratio_fields_before_evaluator(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            graph_dir = Path(self._write_graph(os.path.join(graph_root, "sample")))
+            with open(graph_dir / "nodes.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "id": "financial_table",
+                    "type": "table",
+                    "doc_id": "sample",
+                    "page_index": 1,
+                    "abstract": "consolidated statement gross profit total assets fiscal 2023",
+                    "text": "Gross profit 4625. Total assets 7379. Fiscal 2023.",
+                }) + "\n")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "agent": {
+                        "run_online": True,
+                        "initial_retrieval_top_k": 1,
+                    },
+                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 2,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+            seen_candidate_ids = []
+
+            def fake_call(client, question, state, candidates):
+                seen_candidate_ids.extend(candidate.id for candidate in candidates)
+                return (
+                    EvaluatorDecision(stop=True, reason="done"),
+                    "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                )
+
+            builder.evaluator.call = fake_call
+
+            messages = builder.build(
+                "mmlongbench",
+                {
+                    "doc_id": "sample.pdf",
+                    "question_id": "q1",
+                    "question": "What is Gross Profit to Total Assets ratio for fiscal 2023?",
+                },
+                client=object(),
+            )
+
+        self.assertIn("act:ActivatePage:search:1", seen_candidate_ids)
+        auto_search_trace = next(item for item in messages.metadata["iteration_trace"] if item.get("action") == "AutoSearchEvidence")
+        self.assertIn("gross profit", auto_search_trace["query"].lower())
+        self.assertGreaterEqual(auto_search_trace["result_count"], 1)
+
+    def test_online_search_decision_opens_top_search_result(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            graph_dir = Path(self._write_graph(os.path.join(graph_root, "sample")))
+            with open(graph_dir / "nodes.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "id": "searched_answer",
+                    "type": "table",
+                    "doc_id": "sample",
+                    "page_index": 1,
+                    "abstract": "wheelchair accessible ESCAPE BRYGGEN answer table",
+                    "text": "ESCAPE BRYGGEN is not suitable for wheelchairs.",
+                }) + "\n")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "agent": {
+                        "run_online": True,
+                        "initial_retrieval_top_k": 1,
+                        "final_open_active_nodes": False,
+                    },
+                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 2,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+            builder.evaluator.call = lambda client, question, state, candidates: (
+                EvaluatorDecision(search_query="ESCAPE BRYGGEN wheelchair"),
+                "<agent_decision><search_request><query>ESCAPE BRYGGEN wheelchair</query></search_request></agent_decision>",
+            )
+
+            messages = builder.build(
+                "mmlongbench",
+                {"doc_id": "sample.pdf", "question_id": "q1", "question": "Which attraction is not suitable for wheelchair?"},
+                client=object(),
+            )
+
+        self.assertIn("searched_answer", messages.metadata["opened_node_ids"])
+        self.assertTrue(any(
+            item.get("action") == "AutoOpenSearchResult"
+            and item.get("node_id") == "searched_answer"
+            for item in messages.metadata["iteration_trace"]
+        ))
+
+    def test_final_guard_opens_salient_nodes_on_active_pages(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(self._write_graph(tmp_dir))
+            with open(graph_dir / "nodes.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({
+                    "id": "page_only_table",
+                    "type": "table",
+                    "doc_id": "sample",
+                    "page_index": 1,
+                    "abstract": "target evidence table with final answer",
+                    "text": "The final answer is 42.",
+                }) + "\n")
+            state = EvidenceAgentState(EvidenceGraphStore(graph_dir, allowed_pages=[0, 1]))
+            state.execute(ActivatePage(page_index=1, source="search"), iteration=1)
+            builder = AEGRAGContextBuilder(OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "agent": {
+                        "final_open_active_node_limit_mmlongbench": 4,
+                    },
+                },
+            }))
+
+            builder._final_open_active_nodes("mmlongbench", "What is the final answer table value?", state)
+
+        self.assertIn("page_only_table", state.opened_node_ids())
+        self.assertTrue(any(
+            item.get("action") == "FinalOpenActivePageNode"
+            and item.get("node_id") == "page_only_table"
+            for item in state.trace
+        ))
 
     def test_opened_node_content_truncates_to_compact_default_for_online_evaluator(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -994,6 +1205,48 @@ class AEGRAGTests(unittest.TestCase):
         self.assertNotIn("If the answer cannot be found", prompt)
         self.assertNotIn("Retrieved document pages:", prompt)
 
+    def test_reader_renderer_compact_mmlongbench_plain_mode_adds_financial_ratio_hint(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+
+            content = ReaderRenderer(
+                OmegaConf.create({
+                    "benchmarks": {},
+                    "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "plain"}},
+                }),
+                include_page_images=False,
+            ).render(
+                "mmlongbench",
+                {"question": "What is the FY2021 total debt to total assets ratio?"},
+                state,
+            )
+
+        prompt = content[0]["text"]
+        self.assertIn("For financial ratio questions, identify the formula first.", prompt)
+        self.assertIn("Do not use total liabilities as total debt unless the document explicitly defines it that way.", prompt)
+
+    def test_reader_renderer_compact_mmlongbench_plain_mode_adds_page_scope_hint(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+
+            content = ReaderRenderer(
+                OmegaConf.create({
+                    "benchmarks": {},
+                    "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "plain"}},
+                }),
+                include_page_images=False,
+            ).render(
+                "mmlongbench",
+                {"question": "How many tables are shown on pages 100-110?"},
+                state,
+            )
+
+        prompt = content[0]["text"]
+        self.assertIn("For questions that name specific pages or slides, answer only from those named pages or slides.", prompt)
+        self.assertIn("If the retrieved pages do not include the requested page or slide scope, answer exactly: Not answerable.", prompt)
+
     def test_reader_renderer_can_label_mmlongbench_page_images(self):
         renderer = ReaderRenderer(
             OmegaConf.create({
@@ -1253,6 +1506,506 @@ class AEGRAGTests(unittest.TestCase):
 
         self.assertEqual(len(messages.metadata["opened_node_ids"]), 1)
 
+    def test_mmlongbench_opens_nodes_on_explicit_question_page(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            graph_dir = os.path.join(graph_root, "sample")
+            os.makedirs(graph_dir, exist_ok=True)
+            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
+                json.dump({"doc_id": "sample"}, f)
+            nodes = [
+                {
+                    "id": "page1_text",
+                    "type": "paragraph",
+                    "doc_id": "sample",
+                    "page_index": 0,
+                    "abstract": "irrelevant retrieved page",
+                    "text": "irrelevant retrieved page",
+                },
+                {
+                    "id": "page98_table",
+                    "type": "table",
+                    "doc_id": "sample",
+                    "page_index": 97,
+                    "abstract": "file size table on page 98",
+                    "text": "<table><tr><td>file</td><td>size</td></tr></table>",
+                },
+            ]
+            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
+                for node in nodes:
+                    f.write(json.dumps(node) + "\n")
+            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "agent": {
+                        "run_online": False,
+                        "auto_open_initial_page_nodes": True,
+                        "auto_open_max_nodes_per_page_mmlongbench": 4,
+                        "initial_retrieval_top_k": 1,
+                    },
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 100,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 100
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+
+            messages = builder.build(
+                "mmlongbench",
+                {
+                    "doc_id": "sample.pdf",
+                    "question_id": "q1",
+                    "question": "What is the sum of the two smallest file sizes in the table on page 98?",
+                },
+            )
+
+        self.assertIn(97, messages.metadata["activated_pages"])
+        self.assertIn("page98_table", messages.metadata["opened_node_ids"])
+        self.assertTrue(any(
+            item.get("action") == "AutoOpenQuestionPage"
+            and item.get("page_index") == 97
+            and item.get("opened_node_ids") == ["page98_table"]
+            for item in messages.metadata["iteration_trace"]
+        ))
+
+    def test_question_page_indices_handles_conjoined_page_numbers(self):
+        indices = _question_page_indices("What are the overlapped apps between page 21 and 62?")
+
+        self.assertEqual(indices, [20, 61])
+
+    def test_named_scope_specs_ignore_figure_preposition_as_label(self):
+        specs = _question_named_scope_specs(
+            "List the number of people in the figure in page 6 and legends in Figure A."
+        )
+
+        self.assertNotIn({"kind": "figure", "label": "in"}, specs)
+        self.assertIn({"kind": "figure", "label": "A"}, specs)
+
+    def test_named_scope_specs_detect_case_insensitive_section_and_applecare_support(self):
+        section_specs = _question_named_scope_specs(
+            "How many website URLs are included in the Section Internet Industry in the slides?"
+        )
+        support_specs = _question_named_scope_specs(
+            "Which number shall I call for seeking AppleCare service and support?"
+        )
+
+        self.assertIn({"kind": "section", "label": "Internet Industry"}, section_specs)
+        self.assertIn({"kind": "section", "label": "AppleCare Service and Support"}, support_specs)
+
+    def test_named_scope_specs_detect_numeric_section_and_appendix(self):
+        section_specs = _question_named_scope_specs("How many papers are not mentioned in Section 3.4?")
+        appendix_specs = _question_named_scope_specs("Among the tables in Appendix, how many columns?")
+
+        self.assertIn({"kind": "section", "label": "3.4"}, section_specs)
+        self.assertIn({"kind": "section", "label": "Appendix"}, appendix_specs)
+
+    def test_mmlongbench_opens_nodes_on_conjoined_explicit_question_pages(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            graph_dir = os.path.join(graph_root, "sample")
+            os.makedirs(graph_dir, exist_ok=True)
+            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
+                json.dump({"doc_id": "sample"}, f)
+            nodes = [
+                {
+                    "id": "page21_apps",
+                    "type": "image",
+                    "doc_id": "sample",
+                    "page_index": 20,
+                    "abstract": "VIDEO, SLIDESHARE, CONTENT, TWITTER, LINKEDIN, PODCAST",
+                },
+                {
+                    "id": "page62_apps",
+                    "type": "image",
+                    "doc_id": "sample",
+                    "page_index": 61,
+                    "abstract": "SLIDESHARE, TWITTER, LINKEDIN, PODCAST",
+                },
+            ]
+            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
+                for node in nodes:
+                    f.write(json.dumps(node) + "\n")
+            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "agent": {
+                        "run_online": False,
+                        "auto_open_initial_page_nodes": True,
+                        "auto_open_max_nodes_per_page_mmlongbench": 4,
+                        "initial_retrieval_top_k": 1,
+                    },
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 80,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 80
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+
+            messages = builder.build(
+                "mmlongbench",
+                {
+                    "doc_id": "sample.pdf",
+                    "question_id": "q1",
+                    "question": "What are the overlapped apps between page 21 and 62?",
+                },
+            )
+
+        self.assertIn(20, messages.metadata["activated_pages"])
+        self.assertIn(61, messages.metadata["activated_pages"])
+        self.assertIn("page21_apps", messages.metadata["opened_node_ids"])
+        self.assertIn("page62_apps", messages.metadata["opened_node_ids"])
+
+    def test_mmlongbench_opens_named_figure_scope_even_when_initial_retrieval_misses_it(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            graph_dir = os.path.join(graph_root, "sample")
+            os.makedirs(graph_dir, exist_ok=True)
+            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
+                json.dump({"doc_id": "sample"}, f)
+            nodes = [
+                {
+                    "id": "page1_text",
+                    "type": "paragraph",
+                    "doc_id": "sample",
+                    "page_index": 0,
+                    "abstract": "irrelevant retrieved page",
+                    "text": "irrelevant retrieved page",
+                },
+                {
+                    "id": "figure5",
+                    "type": "figure",
+                    "doc_id": "sample",
+                    "page_index": 4,
+                    "abstract": "Figure 5. Clustering colors with red and blue lines.",
+                    "text": "Figure 5. Clustering colors with red and blue lines.",
+                },
+            ]
+            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
+                for node in nodes:
+                    f.write(json.dumps(node) + "\n")
+            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "agent": {
+                        "run_online": False,
+                        "auto_open_initial_page_nodes": True,
+                        "auto_open_max_nodes_per_page_mmlongbench": 4,
+                        "initial_retrieval_top_k": 1,
+                    },
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 8,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 8
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+
+            messages = builder.build(
+                "mmlongbench",
+                {
+                    "doc_id": "sample.pdf",
+                    "question_id": "q1",
+                    "question": "Which line color in Figure 5 has no intersection?",
+                },
+            )
+
+        self.assertIn(4, messages.metadata["activated_pages"])
+        self.assertIn("figure5", messages.metadata["opened_node_ids"])
+        self.assertTrue(any(
+            item.get("action") == "AutoOpenNamedQuestionScope"
+            and item.get("kind") == "figure"
+            and item.get("label") == "5"
+            and item.get("page_index") == 4
+            for item in messages.metadata["iteration_trace"]
+        ))
+
+    def test_mmlongbench_opens_quoted_section_scope_and_following_page(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            graph_dir = os.path.join(graph_root, "sample")
+            os.makedirs(graph_dir, exist_ok=True)
+            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
+                json.dump({"doc_id": "sample"}, f)
+            nodes = [
+                {
+                    "id": "page1_text",
+                    "type": "paragraph",
+                    "doc_id": "sample",
+                    "page_index": 0,
+                    "abstract": "irrelevant retrieved page",
+                    "text": "irrelevant retrieved page",
+                },
+                {
+                    "id": "internet_title",
+                    "type": "title",
+                    "doc_id": "sample",
+                    "page_index": 17,
+                    "abstract": "Internet Industry",
+                    "text": "Internet Industry",
+                },
+                {
+                    "id": "internet_urls",
+                    "type": "table",
+                    "doc_id": "sample",
+                    "page_index": 18,
+                    "abstract": "Website URLs listed for Internet Industry",
+                    "text": "example.com other.example",
+                },
+            ]
+            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
+                for node in nodes:
+                    f.write(json.dumps(node) + "\n")
+            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "agent": {
+                        "run_online": False,
+                        "auto_open_initial_page_nodes": True,
+                        "auto_open_max_nodes_per_page_mmlongbench": 4,
+                        "initial_retrieval_top_k": 1,
+                    },
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 24,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 24
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+
+            messages = builder.build(
+                "mmlongbench",
+                {
+                    "doc_id": "sample.pdf",
+                    "question_id": "q1",
+                    "question": 'How many website URLs are in the section "Internet Industry"?',
+                },
+            )
+
+        self.assertIn(17, messages.metadata["activated_pages"])
+        self.assertIn("internet_title", messages.metadata["opened_node_ids"])
+        self.assertIn("internet_urls", messages.metadata["opened_node_ids"])
+
+    def test_mmlongbench_opens_faq_scope_and_following_question_pages(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            graph_dir = os.path.join(graph_root, "sample")
+            os.makedirs(graph_dir, exist_ok=True)
+            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
+                json.dump({"doc_id": "sample"}, f)
+            nodes = [
+                {
+                    "id": "page1_text",
+                    "type": "paragraph",
+                    "doc_id": "sample",
+                    "page_index": 0,
+                    "abstract": "irrelevant retrieved page",
+                    "text": "irrelevant retrieved page",
+                },
+                {
+                    "id": "faq_heading",
+                    "type": "title",
+                    "doc_id": "sample",
+                    "page_index": 23,
+                    "abstract": "Frequently Asked Questions section heading.",
+                    "text": "Frequently Asked Questions",
+                },
+                {
+                    "id": "first_faq",
+                    "type": "title",
+                    "doc_id": "sample",
+                    "page_index": 24,
+                    "abstract": "What happens to my certification?",
+                    "text": "What happens to my certification?",
+                },
+                {
+                    "id": "second_faq",
+                    "type": "title",
+                    "doc_id": "sample",
+                    "page_index": 25,
+                    "abstract": "Next-Gen Recruiter seems to eliminate Boolean Search.",
+                    "text": "Next-Gen Recruiter seems to eliminate Boolean Search.",
+                },
+            ]
+            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
+                for node in nodes:
+                    f.write(json.dumps(node) + "\n")
+            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "agent": {
+                        "run_online": False,
+                        "auto_open_initial_page_nodes": True,
+                        "auto_open_max_nodes_per_page_mmlongbench": 4,
+                        "initial_retrieval_top_k": 1,
+                    },
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 30,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 30
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+
+            messages = builder.build(
+                "mmlongbench",
+                {
+                    "doc_id": "sample.pdf",
+                    "question_id": "q1",
+                    "question": "What is the second FAQ shown in this slides?",
+                },
+            )
+
+        self.assertIn("faq_heading", messages.metadata["opened_node_ids"])
+        self.assertIn("first_faq", messages.metadata["opened_node_ids"])
+        self.assertIn("second_faq", messages.metadata["opened_node_ids"])
+        self.assertTrue(any(
+            item.get("action") == "AutoOpenNamedQuestionScope"
+            and item.get("kind") == "faq"
+            and item.get("scope_page_indices") == [23, 24, 25, 26]
+            for item in messages.metadata["iteration_trace"]
+        ))
+
+    def test_mmlongbench_limits_quoted_scope_to_explicit_question_page(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            graph_dir = os.path.join(graph_root, "sample")
+            os.makedirs(graph_dir, exist_ok=True)
+            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
+                json.dump({"doc_id": "sample"}, f)
+            nodes = [
+                {
+                    "id": "page1_text",
+                    "type": "paragraph",
+                    "doc_id": "sample",
+                    "page_index": 0,
+                    "abstract": "irrelevant retrieved page",
+                    "text": "irrelevant retrieved page",
+                },
+                {
+                    "id": "target_scope",
+                    "type": "title",
+                    "doc_id": "sample",
+                    "page_index": 8,
+                    "abstract": "Self-Correction section heading.",
+                    "text": "Self-Correction",
+                },
+                {
+                    "id": "later_scope",
+                    "type": "title",
+                    "doc_id": "sample",
+                    "page_index": 11,
+                    "abstract": "Self-Correction mentioned again.",
+                    "text": "Self-Correction",
+                },
+                {
+                    "id": "later_noise",
+                    "type": "paragraph",
+                    "doc_id": "sample",
+                    "page_index": 12,
+                    "abstract": "unrelated later content",
+                    "text": "unrelated later content",
+                },
+            ]
+            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
+                for node in nodes:
+                    f.write(json.dumps(node) + "\n")
+            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "agent": {
+                        "run_online": False,
+                        "auto_open_initial_page_nodes": True,
+                        "auto_open_max_nodes_per_page_mmlongbench": 4,
+                        "initial_retrieval_top_k": 1,
+                    },
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 16,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 16
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+
+            messages = builder.build(
+                "mmlongbench",
+                {
+                    "doc_id": "sample.pdf",
+                    "question_id": "q1",
+                    "question": 'How many papers are not mentioned in the "Self-Correction" section of page 9?',
+                },
+            )
+
+        self.assertIn("target_scope", messages.metadata["opened_node_ids"])
+        self.assertNotIn("later_noise", messages.metadata["opened_node_ids"])
+        self.assertTrue(any(
+            item.get("action") == "AutoOpenNamedQuestionScope"
+            and item.get("kind") == "quoted_scope"
+            and item.get("scope_page_indices") == [8]
+            for item in messages.metadata["iteration_trace"]
+        ))
+
     def test_renderer_can_disable_opened_node_text_for_mmlongbench_only(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
@@ -1279,6 +2032,214 @@ class AEGRAGTests(unittest.TestCase):
 
         self.assertNotIn("Opened evidence text:", mmlong[0]["text"])
         self.assertIn("Opened evidence text:", longdoc[0]["text"])
+
+    def test_aeg_postprocess_sums_items_for_related_dataset_columns(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(tmp_dir)
+            node = {
+                "id": "stats_table",
+                "type": "table",
+                "html": (
+                    "<table><tr><td>Dataset</td><td>Amazon-beauty</td><td>Amazon-music</td><td>Personality'18</td></tr>"
+                    "<tr><td># of items</td><td>85</td><td>8,895</td><td>21,776</td></tr>"
+                    "<tr><td># of users</td><td>991</td><td>1,791</td><td>678</td></tr></table>"
+                ),
+            }
+            (graph_dir / "nodes.jsonl").write_text(json.dumps(node) + "\n", encoding="utf-8")
+            sample = {
+                "question": "How many items in total of Amazon related datasets in the paper?",
+                "answer_format": "Int",
+                "prepare_metadata": {
+                    "context_builder": "aeg-rag",
+                    "graph_dir": str(graph_dir),
+                    "opened_node_ids": ["stats_table"],
+                },
+            }
+
+            pred, metadata = postprocess_mmlongbench_prediction(sample, "3")
+
+        self.assertEqual(pred, "8980")
+        self.assertEqual(metadata["type"], "related_dataset_item_total")
+
+    def test_mmlongbench_adapter_uses_aeg_postprocess_for_related_dataset_items(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(tmp_dir)
+            node = {
+                "id": "stats_table",
+                "type": "table",
+                "html": (
+                    "<table><tr><td>Dataset</td><td>Amazon-beauty</td><td>Amazon-music</td></tr>"
+                    "<tr><td># of items</td><td>85</td><td>8,895</td></tr></table>"
+                ),
+            }
+            (graph_dir / "nodes.jsonl").write_text(json.dumps(node) + "\n", encoding="utf-8")
+            sample = {
+                "question": "How many items in total of Amazon related datasets in the paper?",
+                "answer_format": "Int",
+                "prepare_metadata": {
+                    "context_builder": "aeg-rag",
+                    "graph_dir": str(graph_dir),
+                    "opened_node_ids": ["stats_table"],
+                },
+            }
+
+            pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "3")
+
+        self.assertEqual(pred, "8980")
+        self.assertEqual(metadata["type"], "related_dataset_item_total")
+
+    def test_aeg_postprocess_computes_claim_difference_between_dataset_domains(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(tmp_dir)
+            node = {
+                "id": "comparison_table",
+                "type": "table",
+                "html": (
+                    "<table><tr><td colspan=\"2\">Statistics</td><td>TabFact</td><td>FEVEROUS</td><td>SEM-TAB-FACTS</td><td>SCITAB</td></tr>"
+                    "<tr><td>Domain</td><td></td><td>Wiki Tables</td><td>Wiki Tables</td><td>Scientific Articles</td><td>Scientific Articles</td></tr>"
+                    "<tr><td colspan=\"2\">Total # of Claims</td><td>117,854</td><td>87,026</td><td>5,715</td><td>1,225</td></tr></table>"
+                ),
+            }
+            (graph_dir / "nodes.jsonl").write_text(json.dumps(node) + "\n", encoding="utf-8")
+            sample = {
+                "question": "How many more claims does the Wiki Table datasets have comparing to scientific articles datasets?",
+                "answer_format": "Int",
+                "prepare_metadata": {
+                    "context_builder": "aeg-rag",
+                    "graph_dir": str(graph_dir),
+                    "opened_node_ids": ["comparison_table"],
+                },
+            }
+
+            pred, metadata = postprocess_mmlongbench_prediction(sample, "1053")
+
+        self.assertEqual(pred, "197940")
+        self.assertEqual(metadata["type"], "dataset_domain_claim_difference")
+
+    def test_aeg_postprocess_counts_strategy_table_methods_not_mentioned_in_page_section(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(tmp_dir)
+            table = {
+                "id": "table2",
+                "type": "table",
+                "page_index": 5,
+                "html": (
+                    "<table><tr><td>Method</td><td>Source</td><td>Format</td><td>Strategy</td></tr>"
+                    "<tr><td>Self-Refine (Madaan et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
+                    "<tr><td>Clinical SV (Gero et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
+                    "<tr><td>Reflexion (Shinn et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
+                    "<tr><td>IterRefinement (Chen et al., 2023d)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
+                    "<tr><td>Auto-Post-Editing (Raunak et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
+                    "<tr><td>RCI (Kim et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
+                    "<tr><td>SelFee (Ye et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
+                    "<tr><td>SelfCheckGPT (Manakul et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
+                    "<tr><td>LLM Self Defense (Helbling et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr></table>"
+                ),
+            }
+            section_a = {
+                "id": "page9_para1",
+                "type": "paragraph",
+                "page_index": 8,
+                "text": "Self-Refine, Clinical Self-Verification, and Reflexion extend this approach.",
+            }
+            section_b = {
+                "id": "page9_para2",
+                "type": "paragraph",
+                "page_index": 8,
+                "text": "SelFee proposes training models to emulate self-correction.",
+            }
+            (graph_dir / "nodes.jsonl").write_text(
+                "\n".join(json.dumps(node) for node in [table, section_a, section_b]) + "\n",
+                encoding="utf-8",
+            )
+            sample = {
+                "question": (
+                    "For the papers that adopted the Self-Refine strategy in Table 2, "
+                    "how many of them are not mentioned in the \"Self-Correction\" section of page 9?"
+                ),
+                "answer_format": "Int",
+                "prepare_metadata": {
+                    "context_builder": "aeg-rag",
+                    "graph_dir": str(graph_dir),
+                    "opened_node_ids": ["table2", "page9_para1", "page9_para2"],
+                },
+            }
+
+            pred, metadata = postprocess_mmlongbench_prediction(sample, "3")
+
+        self.assertEqual(pred, "5")
+        self.assertEqual(metadata["type"], "table_strategy_not_mentioned_count")
+
+    def test_aeg_postprocess_counts_strategy_table_methods_not_mentioned_in_numbered_section(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(tmp_dir)
+            table = {
+                "id": "table2",
+                "type": "table",
+                "page_index": 5,
+                "html": (
+                    "<table><tr><td>Method</td><td>Source</td><td>Format</td><td>Strategy</td></tr>"
+                    "<tr><td>Multiagent Debate (Du et al., 2023)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
+                    "<tr><td>LM vs LM (Cohen et al., 2023)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
+                    "<tr><td>ICL-AIF (Fu et al., 2023)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
+                    "<tr><td>PRD (Li et al., 2023c)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
+                    "<tr><td>MADRA (Wang et al., 2023b)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
+                    "<tr><td>ReConcile (Chen et al., 2023c)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr></table>"
+                ),
+            }
+            title = {"id": "page10_block2", "type": "title", "page_index": 9, "text": "Section heading: 3.4 Multi-Agent Debate."}
+            para1 = {
+                "id": "page10_block3",
+                "type": "paragraph",
+                "page_index": 9,
+                "text": "Du et al. (2023) trialed this in arithmetic reasoning. PRD (Li et al., 2023c) enhanced this.",
+            }
+            para2 = {
+                "id": "page10_block4",
+                "type": "paragraph",
+                "page_index": 9,
+                "text": "Cohen et al. (2023) used a debate approach. Fu et al. (2023) extended this.",
+            }
+            next_title = {"id": "page10_block7", "type": "title", "page_index": 9, "text": "Section heading: 4 Discussion."}
+            (graph_dir / "nodes.jsonl").write_text(
+                "\n".join(json.dumps(node) for node in [table, title, para1, para2, next_title]) + "\n",
+                encoding="utf-8",
+            )
+            sample = {
+                "question": (
+                    "For the papers that adopted the Model Debate strategy in Table 2, "
+                    "how many of them are not mentioned in Section 3.4?"
+                ),
+                "answer_format": "Int",
+                "prepare_metadata": {
+                    "context_builder": "aeg-rag",
+                    "graph_dir": str(graph_dir),
+                    "opened_node_ids": ["table2"],
+                },
+            }
+
+            pred, metadata = postprocess_mmlongbench_prediction(sample, "0.0")
+
+        self.assertEqual(pred, "2")
+        self.assertEqual(metadata["type"], "table_strategy_not_mentioned_count")
+
+    def test_reader_renderer_prioritizes_question_scope_pages_for_mmlongbench(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivatePage(1, "question_page_scope"))
+            cfg = OmegaConf.create({
+                "benchmarks": {},
+                "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "format"}},
+            })
+
+            content = ReaderRenderer(cfg, include_page_images=False).render(
+                "mmlongbench",
+                {"question": "What is on page 2?"},
+                state,
+            )
+
+        self.assertIn("Retrieved document pages: 2, 1.", content[0]["text"])
 
     def test_mmlongbench_allowed_pages_use_embedding_page_count(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

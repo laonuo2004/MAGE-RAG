@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from baselines.image import VISION_SYSTEM_PROMPT
 from benchmarks.utils.document_preprocess import encode_image_file_to_base64, encode_pil_image_to_base64
@@ -139,6 +140,9 @@ class ReaderRenderer:
                     "",
                     "For color questions, use common color names rather than hex codes.",
                 ])
+            domain_hints = self._mmlongbench_domain_hints(question)
+            if domain_hints:
+                lines.extend(["", *domain_hints])
             page_snippets = self._mmlongbench_page_text_snippets(state)
             if page_snippets:
                 lines.extend(["", "Retrieved page text snippets:"])
@@ -232,6 +236,54 @@ class ReaderRenderer:
         text = str(question or "").lower()
         return "color" in text or "colour" in text
 
+    def _mmlongbench_domain_hints(self, question: str) -> list[str]:
+        text = str(question or "").lower()
+        hints = []
+        if re.search(r"\bpages?\s*\d|\bslides?\s*\d|\bpage\s+range\b|\bslide\s+range\b", text):
+            hints.extend([
+                "For questions that name specific pages or slides, answer only from those named pages or slides.",
+                "If the retrieved pages do not include the requested page or slide scope, answer exactly: Not answerable.",
+            ])
+        if re.search(r"\bfig(?:ure)?\.?\s+\w+|\btable\s+\w+", text):
+            hints.extend([
+                "For questions that name a specific figure or table, use that named figure or table as the primary evidence.",
+                "Do not answer from a similarly themed figure or table with a different number.",
+            ])
+        if re.search(r"\bhow many (?:people|respondents|adults|participants|users|students|samples)\b", text):
+            hints.extend([
+                "For people-count questions, do not return a percentage when the question asks how many people.",
+                "If evidence gives a percentage, identify the correct denominator or subgroup base and compute the count.",
+            ])
+        if re.search(r"\b(list|all|enumerate)\b", text) or re.search(r"\bhow many\b", text):
+            hints.extend([
+                "For exhaustive list or count questions, first enumerate the included items from the requested scope, then return the final list or count.",
+                "Exclude nearby or related items that are outside the requested scope.",
+            ])
+        if " and " in text or " or " in text:
+            hints.extend([
+                "For compound questions, solve each requested part separately and combine the subanswers only after every part has supporting evidence.",
+            ])
+        finance_markers = (
+            "ratio",
+            "cash ratio",
+            "debt to total assets",
+            "total debt",
+            "total assets",
+            "gross profit",
+            "payables turnover",
+            "current liabilities",
+            "short-term investments",
+            "accounts payable",
+        )
+        if any(marker in text for marker in finance_markers):
+            hints.extend([
+                "For financial ratio questions, identify the formula first.",
+                "Retrieve and use the exact statement fields for the requested year before computing.",
+                "Do not use total liabilities as total debt unless the document explicitly defines it that way.",
+                "If gross profit is not directly shown, compute it from revenue minus cost of goods sold when both fields are available.",
+            ])
+        return hints
+
     def _candidate_answer_strings(self, state) -> list[str]:
         values = []
         seen = set()
@@ -268,7 +320,8 @@ class ReaderRenderer:
         return values
 
     def _reader_page_indices(self, state) -> list[int]:
-        page_indices = []
+        prioritized = []
+        deferred = []
         seen = set()
         for item in state.trace:
             if item.get("action") != "ActivatePage" or not item.get("ok"):
@@ -280,7 +333,11 @@ class ReaderRenderer:
             if page_index in seen:
                 continue
             seen.add(page_index)
-            page_indices.append(page_index)
+            if payload.get("source") == "question_page_scope":
+                prioritized.append(page_index)
+            else:
+                deferred.append(page_index)
+        page_indices = prioritized + deferred
         for node_id in state.active_node_ids() + state.opened_node_ids():
             if node_id in state.pruned_node_ids():
                 continue

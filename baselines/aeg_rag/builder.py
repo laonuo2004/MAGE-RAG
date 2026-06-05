@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from baselines.aeg_rag.actions import (
@@ -138,7 +139,21 @@ class AEGRAGContextBuilder(ContextBuilder):
             elif self.auto_activate_initial_page_nodes:
                 self._activate_salient_page_nodes(state, initial_page["page_index"])
 
-        stop_reason = self._run_agent(sample["question"], state, client) if self.run_online_agent else "retrieval_only"
+        self._auto_open_question_pages(
+            benchmark_name,
+            sample["question"],
+            state,
+            allowed_pages,
+        )
+        self._auto_open_named_question_scopes(
+            benchmark_name,
+            sample["question"],
+            state,
+            allowed_pages,
+        )
+        if self.run_online_agent:
+            self._run_auto_searches(benchmark_name, sample["question"], state)
+        stop_reason = self._run_agent(benchmark_name, sample["question"], state, client) if self.run_online_agent else "retrieval_only"
         if self.run_online_agent and self.final_open_active_nodes:
             self._final_open_active_nodes(
                 benchmark_name,
@@ -188,6 +203,7 @@ class AEGRAGContextBuilder(ContextBuilder):
         limit = max(0, int(self._final_open_limit_for(benchmark_name)))
         if limit <= 0:
             return
+        opened_count = 0
         candidates = []
         for node_id in state.active_node_ids():
             node = state.graph.node(node_id)
@@ -199,11 +215,48 @@ class AEGRAGContextBuilder(ContextBuilder):
         for _, node_id in candidates[:limit]:
             result = state.execute(OpenNode(node_id), iteration="final")
             if result.ok:
+                opened_count += 1
                 state.trace.append({
                     "iteration": "final",
                     "action": "FinalOpenActiveNode",
                     "node_id": node_id,
                 })
+        remaining = max(0, limit - opened_count)
+        if remaining <= 0:
+            return
+        active_page_indices = [
+            state.graph.node_page_index(node_id)
+            for node_id in state.active_node_ids()
+            if state.graph.is_page_node(state.graph.node(node_id))
+        ]
+        seen_node_ids = set(state.opened_node_ids())
+        for page_index in sorted(dict.fromkeys(active_page_indices)):
+            if not _active_page_has_non_initial_source(state, page_index):
+                continue
+            if remaining <= 0:
+                break
+            for node_id in _question_page_node_ids(state, page_index, question, remaining):
+                if node_id in seen_node_ids:
+                    continue
+                activate_result = state.execute(ActivateNode(node_id), iteration="final")
+                if not activate_result.ok and "activate page" in activate_result.message:
+                    state.execute(ActivatePage(page_index=page_index, source="relation_target"), iteration="final")
+                    activate_result = state.execute(ActivateNode(node_id), iteration="final")
+                if not activate_result.ok:
+                    continue
+                open_result = state.execute(OpenNode(node_id), iteration="final")
+                if not open_result.ok:
+                    continue
+                seen_node_ids.add(node_id)
+                remaining -= 1
+                state.trace.append({
+                    "iteration": "final",
+                    "action": "FinalOpenActivePageNode",
+                    "page_index": page_index,
+                    "node_id": node_id,
+                })
+                if remaining <= 0:
+                    break
 
     def _open_initial_page_nodes(self, state: EvidenceAgentState, page_index: int, question: str, max_nodes: int):
         scored_nodes = []
@@ -220,6 +273,142 @@ class AEGRAGContextBuilder(ContextBuilder):
             if activate_result.ok:
                 state.execute(OpenNode(node_id), iteration=0)
 
+    def _auto_open_question_pages(
+        self,
+        benchmark_name: str,
+        question: str,
+        state: EvidenceAgentState,
+        allowed_pages,
+    ):
+        page_indices = _question_page_indices(question)
+        if not page_indices:
+            return
+        allowed_page_set = set(int(page) for page in allowed_pages)
+        max_nodes = max(1, min(int(self._auto_open_limit_for(benchmark_name)), 8))
+        for page_index in page_indices:
+            if page_index not in allowed_page_set:
+                state.trace.append({
+                    "iteration": 0,
+                    "action": "AutoOpenQuestionPage",
+                    "page_index": page_index,
+                    "ok": False,
+                    "message": "requested page is outside allowed_pages",
+                    "opened_node_ids": [],
+                })
+                continue
+            page_result = state.execute(ActivatePage(page_index=page_index, source="question_page_scope"), iteration=0)
+            opened_node_ids = self._open_question_page_nodes(state, page_index, question, max_nodes)
+            state.trace.append({
+                "iteration": 0,
+                "action": "AutoOpenQuestionPage",
+                "page_index": page_index,
+                "ok": page_result.ok,
+                "opened_node_ids": opened_node_ids,
+            })
+
+    def _open_question_page_nodes(
+        self,
+        state: EvidenceAgentState,
+        page_index: int,
+        question: str,
+        max_nodes: int,
+        preferred_node_ids: list[str] | None = None,
+    ) -> list[str]:
+        opened_node_ids = []
+        ordered_node_ids = []
+        for node_id in preferred_node_ids or []:
+            if node_id not in ordered_node_ids:
+                ordered_node_ids.append(node_id)
+        for node_id in _question_page_node_ids(state, page_index, question, max_nodes):
+            if node_id not in ordered_node_ids:
+                ordered_node_ids.append(node_id)
+        for node_id in ordered_node_ids[: int(max_nodes)]:
+            activate_result = state.execute(ActivateNode(node_id), iteration=0)
+            if not activate_result.ok:
+                continue
+            open_result = state.execute(OpenNode(node_id), iteration=0)
+            if open_result.ok:
+                opened_node_ids.append(node_id)
+        return opened_node_ids
+
+    def _auto_open_named_question_scopes(
+        self,
+        benchmark_name: str,
+        question: str,
+        state: EvidenceAgentState,
+        allowed_pages,
+    ):
+        specs = _question_named_scope_specs(question)
+        if not specs:
+            return
+        allowed_page_set = set(int(page) for page in allowed_pages)
+        explicit_page_indices = [
+            page_index for page_index in _question_page_indices(question)
+            if page_index in allowed_page_set
+        ]
+        max_scopes = 8
+        max_nodes = max(1, min(int(self._auto_open_limit_for(benchmark_name)), 8))
+        opened_scopes = 0
+        seen_pages: set[int] = set()
+        for spec in specs:
+            matches = _matching_named_scope_nodes(state, spec, allowed_page_set)
+            if not matches:
+                state.trace.append({
+                    "iteration": 0,
+                    "action": "AutoOpenNamedQuestionScope",
+                    "kind": spec["kind"],
+                    "label": spec["label"],
+                    "ok": False,
+                    "message": "no matching evidence nodes",
+                    "opened_node_ids": [],
+                })
+                continue
+            for node_id in matches:
+                page_index = state.graph.node_page_index(node_id)
+                if page_index in seen_pages and spec["kind"] in {"figure", "table"}:
+                    continue
+                seen_pages.add(page_index)
+                scope_pages = [page_index]
+                if spec["kind"] in {"section", "chapter", "quoted_scope", "faq"}:
+                    if spec["kind"] == "quoted_scope" and explicit_page_indices:
+                        scope_pages = explicit_page_indices
+                    else:
+                        scope_pages = _adjacent_scope_page_indices(
+                            page_index,
+                            allowed_page_set,
+                            max_pages=4 if spec["kind"] == "faq" else 12,
+                        )
+                opened_node_ids = []
+                page_result = None
+                for scope_page_index in scope_pages:
+                    page_result = state.execute(
+                        ActivatePage(page_index=scope_page_index, source="question_page_scope"),
+                        iteration=0,
+                    )
+                    preferred = [node_id] if scope_page_index == page_index else []
+                    opened_node_ids.extend(
+                        self._open_question_page_nodes(
+                            state,
+                            scope_page_index,
+                            question,
+                            max_nodes,
+                            preferred_node_ids=preferred,
+                        )
+                    )
+                state.trace.append({
+                    "iteration": 0,
+                    "action": "AutoOpenNamedQuestionScope",
+                    "kind": spec["kind"],
+                    "label": spec["label"],
+                    "page_index": page_index,
+                    "scope_page_indices": scope_pages,
+                    "ok": bool(page_result and page_result.ok),
+                    "opened_node_ids": opened_node_ids,
+                })
+                opened_scopes += 1
+                if opened_scopes >= max_scopes:
+                    return
+
     def _initial_pages(self, benchmark_name, sample, allowed_pages):
         try:
             return self.retriever.retrieve_many(benchmark_name, sample, allowed_pages)
@@ -230,7 +419,50 @@ class AEGRAGContextBuilder(ContextBuilder):
                 {"retrieval_error": str(exc), "retrieved_pages": [], "embedding_paths": {}},
             )
 
-    def _run_agent(self, question: str, state: EvidenceAgentState, client) -> str:
+    def _run_auto_searches(self, benchmark_name: str, question: str, state: EvidenceAgentState):
+        queries = _auto_search_queries(benchmark_name, question)
+        if not queries:
+            return
+        search_escape = bool(state.graph_escape or (
+            benchmark_name == "mmlongbench"
+            and _is_financial_ratio_question(_normalized_question_text(question))
+        ))
+        merged = []
+        seen = set()
+        for query in queries:
+            results = state.graph.search(query, limit=12, graph_escape=search_escape)
+            for item in results:
+                node_id = str(item["node"]["id"])
+                if node_id in seen:
+                    continue
+                seen.add(node_id)
+                merged.append(item)
+            state.trace.append({
+                "iteration": 0,
+                "action": "AutoSearchEvidence",
+                "query": query,
+                "graph_escape": search_escape,
+                "result_count": len(results),
+                "result_node_ids": [str(item["node"]["id"]) for item in results],
+            })
+        if merged:
+            state.search_results = merged[:24]
+
+    def _run_agent(
+        self,
+        benchmark_name: str,
+        question: str | EvidenceAgentState | None = None,
+        state: EvidenceAgentState | None = None,
+        client=None,
+    ) -> str:
+        if isinstance(question, EvidenceAgentState):
+            client = state if client is None else client
+            state = question
+            question = benchmark_name
+            benchmark_name = "mmlongbench"
+        if state is None:
+            raise TypeError("_run_agent requires an EvidenceAgentState")
+        question = str(question or "")
         generator = CandidateGenerator(state.graph)
         repeated_noop_rounds = 0
         selected_action_attempts = 0
@@ -331,6 +563,15 @@ class AEGRAGContextBuilder(ContextBuilder):
             if decision.search_query:
                 result = state.execute(SearchEvidence(decision.search_query), iteration=iteration)
                 made_progress = made_progress or result.ok
+                if result.ok:
+                    opened_node_ids = self._auto_open_search_results(
+                        benchmark_name,
+                        question,
+                        state,
+                        state.search_results,
+                        iteration=iteration,
+                    )
+                    made_progress = made_progress or bool(opened_node_ids)
             for request in decision.prune_requests:
                 result = state.execute(PruneNode(request["node_id"], request.get("reason", "")), iteration=iteration)
                 made_progress = made_progress or result.ok
@@ -349,6 +590,53 @@ class AEGRAGContextBuilder(ContextBuilder):
                 repeated_noop_rounds = 0
         return "watchdog_iterations"
 
+    def _auto_open_search_results(
+        self,
+        benchmark_name: str,
+        question: str,
+        state: EvidenceAgentState,
+        search_results: list[dict],
+        iteration,
+    ) -> list[str]:
+        if not search_results:
+            return []
+        max_nodes = max(1, min(int(self._auto_open_limit_for(benchmark_name)), 4))
+        opened_node_ids: list[str] = []
+        seen_pages: set[int] = set()
+        for item in search_results:
+            if len(opened_node_ids) >= max_nodes:
+                break
+            node = item.get("node") or {}
+            node_id = str(node.get("id") or "")
+            if not node_id or node_id not in state.graph.nodes:
+                continue
+            page_index = state.graph.node_page_index(node_id)
+            page_result = state.execute(ActivatePage(page_index=page_index, source="search"), iteration=iteration)
+            if not page_result.ok:
+                continue
+            preferred = [] if state.graph.is_page_node(state.graph.node(node_id)) else [node_id]
+            per_page_limit = max(1, max_nodes - len(opened_node_ids))
+            page_opened = self._open_question_page_nodes(
+                state,
+                page_index,
+                question,
+                per_page_limit,
+                preferred_node_ids=preferred,
+            )
+            opened_node_ids.extend(page_opened)
+            if page_opened:
+                seen_pages.add(page_index)
+                state.trace.append({
+                    "iteration": iteration,
+                    "action": "AutoOpenSearchResult",
+                    "page_index": page_index,
+                    "node_id": node_id,
+                    "opened_node_ids": page_opened,
+                })
+            if len(seen_pages) >= 2:
+                break
+        return opened_node_ids
+
     def _select_evaluator_candidates(self, question: str, state: EvidenceAgentState, candidates: list) -> list:
         limit = max(1, int(self.max_evaluator_candidate_actions))
         if len(candidates) <= limit:
@@ -363,10 +651,16 @@ class AEGRAGContextBuilder(ContextBuilder):
         return [candidate for _, candidate in indexed[:limit]]
 
     def _metadata(self, state, doc_key, graph_dir, allowed_pages, initial_page, retrieval_metadata, stop_reason):
+        activated_pages = sorted(
+            state.graph.node_page_index(node_id)
+            for node_id, node_state in state.final_node_states().items()
+            if node_state in {"Active", "Opened"} and state.graph.is_page_node(state.graph.node(node_id))
+        )
         return {
             "context_builder": self.name,
             "params": self.params,
             "allowed_pages": list(allowed_pages),
+            "activated_pages": activated_pages,
             "graph_dir": str(graph_dir),
             "doc_key": doc_key,
             "initial_retrieval": {
@@ -398,6 +692,237 @@ def _page_index_from_image(image_path) -> int:
     if not match:
         raise ValueError(f"Cannot parse page index from image path: {image_path}")
     return int(match.group(1))
+
+
+def _active_page_has_non_initial_source(state: EvidenceAgentState, page_index: int) -> bool:
+    for item in state.trace:
+        if item.get("action") != "ActivatePage" or not item.get("ok"):
+            continue
+        payload = item.get("payload") or {}
+        if int(payload.get("page_index", -1)) != int(page_index):
+            continue
+        if str(payload.get("source") or "") in {"search", "question_page_scope", "relation_target"}:
+            return True
+    return False
+
+
+def _question_page_indices(question: str, max_pages_to_open: int = 16) -> list[int]:
+    text = str(question or "")
+    indices: list[int] = []
+    for match in re.finditer(
+        r"\b(?:pages?|slides?)\s+(\d+(?:\s*[-–—]\s*\d+)?(?:\s*(?:,|and|&)\s*\d+(?:\s*[-–—]\s*\d+)?)*)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        page_spec = re.sub(r"\s+(?:and|&)\s+", ",", match.group(1), flags=re.IGNORECASE)
+        for part in [item.strip() for item in page_spec.split(",") if item.strip()]:
+            range_match = re.fullmatch(r"(\d+)(?:\s*[-–—]\s*(\d+))?", part)
+            if not range_match:
+                continue
+            start = int(range_match.group(1))
+            end = int(range_match.group(2) or start)
+            if start > end:
+                start, end = end, start
+            for page_number in range(start, end + 1):
+                if page_number <= 0:
+                    continue
+                indices.append(page_number - 1)
+                if len(indices) >= max_pages_to_open:
+                    break
+            if len(indices) >= max_pages_to_open:
+                break
+        if len(indices) >= max_pages_to_open:
+            break
+    return list(dict.fromkeys(indices))
+
+
+def _question_page_node_ids(
+    state: EvidenceAgentState,
+    page_index: int,
+    question: str,
+    max_nodes: int,
+) -> list[str]:
+    typed_nodes = []
+    fallback_nodes = []
+    type_priority = {
+        "table": 0,
+        "chart": 1,
+        "figure": 2,
+        "image": 3,
+        "title": 4,
+        "paragraph": 5,
+        "text": 5,
+    }
+    for node in state.graph.nodes_on_page(page_index):
+        if state.graph.is_page_node(node):
+            continue
+        node_id = str(node["id"])
+        node_type = str(node.get("type") or "").lower()
+        score = _node_question_relevance(node, state.graph.node_text(node_id), question)
+        rank = type_priority.get(node_type, 9)
+        item = (-score, rank, node_id)
+        fallback_nodes.append(item)
+        if score > 0 or rank <= 4:
+            typed_nodes.append(item)
+    chosen = typed_nodes or fallback_nodes
+    chosen.sort()
+    return [node_id for _, _, node_id in chosen[: int(max_nodes)]]
+
+
+def _question_named_scope_specs(question: str) -> list[dict[str, str]]:
+    text = str(question or "")
+    specs: list[dict[str, str]] = []
+    for match in re.finditer(
+        r"\b(?P<kind>fig(?:ure)?\.?|table)\s+(?P<label>[A-Za-z0-9]+(?:[.\-]\d+)*)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        kind = "figure" if match.group("kind").lower().startswith("fig") else "table"
+        if not _valid_figure_table_label(match.group("label")):
+            continue
+        specs.append({"kind": kind, "label": match.group("label")})
+    if re.search(r"\bfaqs?\b|\bfrequently asked questions\b", text, flags=re.IGNORECASE):
+        specs.append({"kind": "faq", "label": "frequently asked questions"})
+    if re.search(r"\bapplecare\b", text, flags=re.IGNORECASE) and re.search(
+        r"\b(call|phone|number|support|service)\b",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        specs.append({"kind": "section", "label": "AppleCare Service and Support"})
+    for match in re.finditer(r"\bsection\s+(\d+(?:\.\d+)*)\b", text, flags=re.IGNORECASE):
+        specs.append({"kind": "section", "label": match.group(1)})
+    if re.search(r"\bappendix\b", text, flags=re.IGNORECASE):
+        specs.append({"kind": "section", "label": "Appendix"})
+    for match in re.finditer(r"[\u201c\u201d\"']([^\"'\u201c\u201d]{4,90})[\u201c\u201d\"']", text):
+        label = " ".join(match.group(1).split())
+        before = text[max(0, match.start() - 40):match.start()].lower()
+        after = text[match.end():match.end() + 40].lower()
+        if any(marker in before + " " + after for marker in ("section", "chapter", "appendix", "faq", "title", "table", "figure")):
+            specs.append({"kind": "quoted_scope", "label": label})
+    for match in re.finditer(
+        r"\b(?P<kind>section|chapter|faq)\s+(?P<label>[A-Z][A-Za-z0-9&/.,'()\- ]{3,80})",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        label = re.split(r"\s+(?:has|have|contains?|include|includes?|where|with|in|on|from|of)\b", match.group("label"), maxsplit=1)[0]
+        label = " ".join(label.strip(" .,:;?").split())
+        if len(label) >= 4:
+            specs.append({"kind": match.group("kind").lower(), "label": label})
+    deduped = []
+    seen = set()
+    for spec in specs:
+        key = (spec["kind"], spec["label"].lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(spec)
+    return deduped
+
+
+def _valid_figure_table_label(label: str) -> bool:
+    raw = str(label or "").strip().strip(".")
+    text = raw.lower()
+    if not text:
+        return False
+    if text in {"in", "on", "of", "the", "an", "left", "right", "top", "bottom", "below", "above"}:
+        return False
+    if text == "a" and raw != "A":
+        return False
+    return bool(re.fullmatch(r"\d+(?:[.\-]\d+)*|[a-z]|[ivxlcdm]+", text))
+
+
+def _matching_named_scope_nodes(
+    state: EvidenceAgentState,
+    spec: dict[str, str],
+    allowed_page_set: set[int],
+) -> list[str]:
+    kind = str(spec.get("kind") or "")
+    label = str(spec.get("label") or "")
+    scored = []
+    for node_id, node in state.graph.nodes.items():
+        page_index = state.graph.node_page_index(node)
+        if page_index not in allowed_page_set:
+            continue
+        if state.graph.is_page_node(node):
+            continue
+        node_type = str(node.get("type") or "").lower()
+        text = " ".join([
+            str(node.get("abstract") or ""),
+            str(node.get("title") or ""),
+            str(node.get("caption") or ""),
+            state.graph.node_text(node_id),
+        ])
+        if not _node_matches_named_scope(kind, label, node_type, text):
+            continue
+        type_rank = 0 if node_type in {"title", "table", "figure", "image", "chart"} else 1
+        relevance = _scope_match_relevance(label, text)
+        scored.append((-relevance, type_rank, page_index, str(node_id)))
+    scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    return [node_id for _, _, _, node_id in scored[:8]]
+
+
+def _node_matches_named_scope(kind: str, label: str, node_type: str, text: str) -> bool:
+    normalized = _normalize_scope_text(text)
+    normalized_label = _normalize_scope_text(label)
+    if not normalized_label:
+        return False
+    if kind in {"figure", "table"}:
+        label_variants = {normalized_label}
+        roman_value = _roman_to_int(normalized_label)
+        if roman_value is not None:
+            label_variants.add(str(roman_value))
+        for value in label_variants:
+            if re.search(rf"\b(?:{kind}|{'fig' if kind == 'figure' else 'tbl'})\s*\.?\s*{re.escape(value)}\b", normalized):
+                return True
+        if node_type in ({kind, "image", "chart"} if kind == "figure" else {kind, "chart"}):
+            return any(re.search(rf"\b{re.escape(value)}\b", normalized) for value in label_variants)
+        return False
+    return normalized_label in normalized
+
+
+def _adjacent_scope_page_indices(
+    page_index: int,
+    allowed_page_set: set[int],
+    max_pages: int,
+) -> list[int]:
+    page_indices = []
+    for offset in range(0, max(1, int(max_pages))):
+        scoped_page = int(page_index) + offset
+        if scoped_page not in allowed_page_set:
+            continue
+        page_indices.append(scoped_page)
+    return page_indices
+
+
+def _normalize_scope_text(value: str) -> str:
+    return " ".join(str(value or "").lower().replace("_", " ").split())
+
+
+def _scope_match_relevance(label: str, text: str) -> int:
+    normalized_label = _normalize_scope_text(label)
+    normalized_text = _normalize_scope_text(text)
+    score = normalized_text.count(normalized_label) * 10
+    for term in normalized_label.split():
+        if len(term) >= 4:
+            score += normalized_text.count(term)
+    return score
+
+
+def _roman_to_int(value: str) -> int | None:
+    text = str(value or "").strip().lower()
+    if not re.fullmatch(r"[ivxlcdm]+", text):
+        return None
+    values = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+    total = 0
+    previous = 0
+    for char in reversed(text):
+        current = values[char]
+        if current < previous:
+            total -= current
+        else:
+            total += current
+            previous = current
+    return total if total > 0 else None
 
 
 def _node_question_relevance(node: dict, node_text: str, question: str) -> int:
@@ -457,6 +982,116 @@ def _candidate_question_relevance(candidate, state: EvidenceAgentState, question
     }
     score += min(20, sum(2 for term in question_terms if term in preview))
     return score
+
+
+def _auto_search_queries(benchmark_name: str, question: str) -> list[str]:
+    if benchmark_name != "mmlongbench":
+        return []
+    text = _normalized_question_text(question)
+    queries = []
+    year_match = re.search(r"\b(?:fy\s*)?(20\d{2})\b", text)
+    year = year_match.group(1) if year_match else ""
+    if _is_financial_ratio_question(text):
+        fields = []
+        if "gross profit" in text:
+            fields.extend(["gross profit", "revenue", "cost of goods sold"])
+        if "r&d to asset" in text or "research and development to asset" in text:
+            fields.extend(["research and development", "product development", "total assets"])
+        if "fixed asset turnover" in text:
+            fields.extend(["net revenues", "property and equipment", "fixed assets"])
+        if "interest coverage" in text:
+            fields.extend(["operating income", "interest expense"])
+        if "effective tax" in text:
+            fields.extend(["effective tax rate", "income tax expense", "income before income taxes"])
+        if "return on equity" in text:
+            fields.extend(["net income", "stockholders equity", "shareholders equity"])
+        if "debt to ebitda" in text:
+            fields.extend(["long-term debt", "operating income", "depreciation and amortization"])
+        if "operating profit margin before depreciation" in text:
+            fields.extend(["net sales", "operating income", "depreciation and amortization"])
+        if "inventory turnover" in text:
+            fields.extend(["cost of sales", "inventories"])
+        if "receive turnover" in text or "receivable turnover" in text:
+            fields.extend(["revenues", "accounts receivable"])
+        if "quick ratio" in text:
+            fields.extend(["cash and equivalents", "short-term investments", "accounts receivable", "current liabilities"])
+        if "cash conversion cycle" in text or "days payable" in text or "dpo" in text:
+            fields.extend(["cost of sales", "inventories", "accounts receivable", "accounts payable", "revenues"])
+        if "sales to working capital" in text:
+            fields.extend(["revenues", "working capital"])
+        if "sales to stockholder equity" in text or "sales to shareholder equity" in text:
+            fields.extend(["revenues", "stockholders equity", "shareholders equity"])
+        if "advertising expense to sales" in text:
+            fields.extend(["advertising", "marketing", "revenues"])
+        if "total assets" in text:
+            fields.append("total assets")
+        if "total debt" in text or "debt to total assets" in text:
+            fields.extend(["total debt", "long-term debt", "current debt", "total assets"])
+        if "cash ratio" in text:
+            fields.extend(["cash and cash equivalents", "short-term investments", "current liabilities"])
+        if "payables turnover" in text:
+            fields.extend(["cost of goods sold", "accounts payable"])
+        if "long-term debt" in text or "long term debt" in text:
+            fields.extend(["long-term debt", "current portion of long-term debt", "lease liabilities"])
+        if "total liabilities" in text:
+            fields.extend(["total liabilities", "balance sheet"])
+        if "ebitda" in text:
+            fields.extend(["operating income", "depreciation and amortization", "cash flow"])
+        if "working capital" in text:
+            fields.extend(["working capital", "total current assets", "total current liabilities"])
+        if not fields:
+            fields.extend(["consolidated statements", "balance sheet", "income statement"])
+        queries.append(" ".join(dict.fromkeys([*fields, year])).strip())
+        queries.append(" ".join(part for part in ("balance sheet income statement consolidated statements", year) if part).strip())
+    if re.search(r"\bpages?\s*\d|\bslides?\s*\d|\bpage\s+range\b|\bslide\s+range\b", text):
+        scope_terms = re.findall(r"\b(?:pages?|slides?)\s*\d+(?:\s*[-–—]\s*\d+)?", text)
+        query = " ".join(scope_terms + [term for term in ("table", "figure", "chart", "image") if term in text])
+        if query.strip():
+            queries.append(query.strip())
+    return list(dict.fromkeys(query for query in queries if query))
+
+
+def _is_financial_ratio_question(text: str) -> bool:
+    return any(marker in text for marker in (
+        "ratio",
+        "cash ratio",
+        "debt to total assets",
+        "total debt",
+        "total assets",
+        "gross profit",
+        "payables turnover",
+        "inventory turnover",
+        "receive turnover",
+        "receivable turnover",
+        "quick ratio",
+        "cash conversion cycle",
+        "days payable",
+        "dpo",
+        "effective tax",
+        "return on equity",
+        "debt to ebitda",
+        "interest coverage",
+        "fixed asset turnover",
+        "r&d to asset",
+        "research and development to asset",
+        "sales to working capital",
+        "sales to stockholder equity",
+        "sales to shareholder equity",
+        "advertising expense to sales",
+        "operating profit margin before depreciation",
+        "current liabilities",
+        "short-term investments",
+        "accounts payable",
+        "long-term debt",
+        "long term debt",
+        "total liabilities",
+        "ebitda",
+        "working capital",
+    ))
+
+
+def _normalized_question_text(question: str) -> str:
+    return " ".join(str(question or "").lower().replace("_", " ").split())
 
 
 def _resolve_candidate(candidate_id, candidate_by_id):

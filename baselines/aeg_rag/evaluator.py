@@ -120,6 +120,9 @@ class XMLEvaluator:
         return parse_agent_decision_xml(raw), str(raw)
 
     def build_prompt(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> str:
+        domain_guidance = self._domain_guidance(question)
+        if domain_guidance:
+            domain_guidance = "\n" + domain_guidance + "\n"
         return (
             "You are the AEG-RAG online evidence controller. Read the XML context and return only "
             "an <agent_decision> XML document matching the requested schema. Candidate actions are "
@@ -131,8 +134,44 @@ class XMLEvaluator:
             "If <candidate_actions> contains <none/>, do not emit selected_actions; "
             "either stop if the evidence is sufficient or issue a search_request. Do not emit top-level "
             "<action> elements.\n"
+            + domain_guidance
             + self.build_context_xml(question, state, candidates)
         )
+
+    def _domain_guidance(self, question: str) -> str:
+        text = str(question or "").lower()
+        lines = []
+        if re.search(r"\bpages?\s*\d|\bslides?\s*\d|\bpage\s+range\b|\bslide\s+range\b", text):
+            lines.extend([
+                "For questions naming specific pages or slides, first verify the requested page or slide scope.",
+                "Do not answer from unrelated retrieved pages when the requested scope is missing.",
+                "If candidate actions cannot reach the requested scope, issue a search_request for the page/slide and target evidence.",
+            ])
+        finance_markers = (
+            "ratio",
+            "cash ratio",
+            "debt to total assets",
+            "total debt",
+            "total assets",
+            "gross profit",
+            "payables turnover",
+            "current liabilities",
+            "short-term investments",
+            "accounts payable",
+        )
+        if any(marker in text for marker in finance_markers):
+            lines.extend([
+                "For financial ratio questions, identify the formula and required fields before selecting actions.",
+                "If any required financial field is missing from opened evidence, issue a search_request for that field and year.",
+                "Prefer annual statement tables over performance graphs or narrative summaries for financial calculations.",
+            ])
+        if re.search(r"\b(list|all|enumerate)\b", text) or re.search(r"\bwhich\s+(?:\w+\s+){0,3}(?:items?|sections?|pages?|figures?|examples?)\b", text):
+            lines.extend([
+                "For list or exhaustive questions, keep searching until all requested items and scopes are covered.",
+                "Do not stop after finding only one matching item when the question asks for all items, multiple examples, or a list.",
+                "Avoid adding nearby or related items unless the question explicitly asks for them.",
+            ])
+        return "\n".join(lines)
 
     def trace_input(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> dict[str, Any]:
         return {

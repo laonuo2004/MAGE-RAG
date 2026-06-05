@@ -167,6 +167,7 @@ class AEGRAGContextBuilder(ContextBuilder):
             raw_text_limit=int(get_config_value(self.cfg, "baselines.renderer.raw_text_char_limit_per_opened_node", 8192)),
         )
         content = renderer.render(benchmark_name, sample, state)
+        reader_input = renderer.trace_input(benchmark_name, sample, state, content)
         metadata = self._metadata(
             state,
             doc_key,
@@ -175,6 +176,7 @@ class AEGRAGContextBuilder(ContextBuilder):
             initial_pages[0],
             retrieval_metadata,
             stop_reason,
+            reader_input,
         )
         return ContextMessages([{"role": "user", "content": content}], metadata=metadata)
 
@@ -423,10 +425,7 @@ class AEGRAGContextBuilder(ContextBuilder):
         queries = _auto_search_queries(benchmark_name, question)
         if not queries:
             return
-        search_escape = bool(state.graph_escape or (
-            benchmark_name == "mmlongbench"
-            and _is_financial_ratio_question(_normalized_question_text(question))
-        ))
+        search_escape = bool(state.graph_escape)
         merged = []
         seen = set()
         for query in queries:
@@ -492,6 +491,7 @@ class AEGRAGContextBuilder(ContextBuilder):
                 },
                 "selected_action_execution_limit": self.max_selected_actions_per_iteration,
                 "selected_action_total_limit": self.max_total_selected_actions,
+                "state_snapshot_before": state.snapshot(),
             })
 
             if decision.stop and not any([
@@ -541,6 +541,7 @@ class AEGRAGContextBuilder(ContextBuilder):
                     })
                     continue
                 result = state.execute(action_from_candidate(candidate), iteration=iteration)
+                self._annotate_last_action_selection(state, selected, candidate, resolved_by="candidate_index_or_id")
                 if (
                     not result.ok
                     and candidate.action_type == "ActivateNode"
@@ -551,6 +552,7 @@ class AEGRAGContextBuilder(ContextBuilder):
                     page_result = state.execute(ActivatePage(page_index, "relation_target"), iteration=iteration)
                     if page_result.ok:
                         result = state.execute(action_from_candidate(candidate), iteration=iteration)
+                        self._annotate_last_action_selection(state, selected, candidate, resolved_by="activate_parent_page_retry")
                 made_progress = made_progress or result.ok
             if selected_action_attempts >= self.max_total_selected_actions:
                 state.trace.append({
@@ -650,7 +652,28 @@ class AEGRAGContextBuilder(ContextBuilder):
         )
         return [candidate for _, candidate in indexed[:limit]]
 
-    def _metadata(self, state, doc_key, graph_dir, allowed_pages, initial_page, retrieval_metadata, stop_reason):
+    def _annotate_last_action_selection(
+        self,
+        state: EvidenceAgentState,
+        selected: dict,
+        candidate: CandidateAction,
+        resolved_by: str,
+    ):
+        if not state.trace:
+            return
+        state.trace[-1]["selection"] = {
+            "candidate_index": selected.get("candidate_index"),
+            "candidate_id": selected.get("candidate_id") or candidate.id,
+            "resolved_candidate_id": candidate.id,
+            "resolved_by": resolved_by,
+            "utility": selected.get("utility") or "",
+            "reason": selected.get("reason") or "",
+            "candidate_action_type": candidate.action_type,
+            "candidate_payload": dict(candidate.payload),
+            "candidate_preview": candidate.preview,
+        }
+
+    def _metadata(self, state, doc_key, graph_dir, allowed_pages, initial_page, retrieval_metadata, stop_reason, reader_input):
         activated_pages = sorted(
             state.graph.node_page_index(node_id)
             for node_id, node_state in state.final_node_states().items()
@@ -667,6 +690,7 @@ class AEGRAGContextBuilder(ContextBuilder):
                 "initial_page": initial_page,
                 **retrieval_metadata,
             },
+            "reader_input": reader_input,
             "final_node_states": state.final_node_states(),
             "active_node_ids": state.active_node_ids(),
             "opened_node_ids": state.opened_node_ids(),
@@ -783,12 +807,6 @@ def _question_named_scope_specs(question: str) -> list[dict[str, str]]:
         specs.append({"kind": kind, "label": match.group("label")})
     if re.search(r"\bfaqs?\b|\bfrequently asked questions\b", text, flags=re.IGNORECASE):
         specs.append({"kind": "faq", "label": "frequently asked questions"})
-    if re.search(r"\bapplecare\b", text, flags=re.IGNORECASE) and re.search(
-        r"\b(call|phone|number|support|service)\b",
-        text,
-        flags=re.IGNORECASE,
-    ):
-        specs.append({"kind": "section", "label": "AppleCare Service and Support"})
     for match in re.finditer(r"\bsection\s+(\d+(?:\.\d+)*)\b", text, flags=re.IGNORECASE):
         specs.append({"kind": "section", "label": match.group(1)})
     if re.search(r"\bappendix\b", text, flags=re.IGNORECASE):
@@ -989,105 +1007,12 @@ def _auto_search_queries(benchmark_name: str, question: str) -> list[str]:
         return []
     text = _normalized_question_text(question)
     queries = []
-    year_match = re.search(r"\b(?:fy\s*)?(20\d{2})\b", text)
-    year = year_match.group(1) if year_match else ""
-    if _is_financial_ratio_question(text):
-        fields = []
-        if "gross profit" in text:
-            fields.extend(["gross profit", "revenue", "cost of goods sold"])
-        if "r&d to asset" in text or "research and development to asset" in text:
-            fields.extend(["research and development", "product development", "total assets"])
-        if "fixed asset turnover" in text:
-            fields.extend(["net revenues", "property and equipment", "fixed assets"])
-        if "interest coverage" in text:
-            fields.extend(["operating income", "interest expense"])
-        if "effective tax" in text:
-            fields.extend(["effective tax rate", "income tax expense", "income before income taxes"])
-        if "return on equity" in text:
-            fields.extend(["net income", "stockholders equity", "shareholders equity"])
-        if "debt to ebitda" in text:
-            fields.extend(["long-term debt", "operating income", "depreciation and amortization"])
-        if "operating profit margin before depreciation" in text:
-            fields.extend(["net sales", "operating income", "depreciation and amortization"])
-        if "inventory turnover" in text:
-            fields.extend(["cost of sales", "inventories"])
-        if "receive turnover" in text or "receivable turnover" in text:
-            fields.extend(["revenues", "accounts receivable"])
-        if "quick ratio" in text:
-            fields.extend(["cash and equivalents", "short-term investments", "accounts receivable", "current liabilities"])
-        if "cash conversion cycle" in text or "days payable" in text or "dpo" in text:
-            fields.extend(["cost of sales", "inventories", "accounts receivable", "accounts payable", "revenues"])
-        if "sales to working capital" in text:
-            fields.extend(["revenues", "working capital"])
-        if "sales to stockholder equity" in text or "sales to shareholder equity" in text:
-            fields.extend(["revenues", "stockholders equity", "shareholders equity"])
-        if "advertising expense to sales" in text:
-            fields.extend(["advertising", "marketing", "revenues"])
-        if "total assets" in text:
-            fields.append("total assets")
-        if "total debt" in text or "debt to total assets" in text:
-            fields.extend(["total debt", "long-term debt", "current debt", "total assets"])
-        if "cash ratio" in text:
-            fields.extend(["cash and cash equivalents", "short-term investments", "current liabilities"])
-        if "payables turnover" in text:
-            fields.extend(["cost of goods sold", "accounts payable"])
-        if "long-term debt" in text or "long term debt" in text:
-            fields.extend(["long-term debt", "current portion of long-term debt", "lease liabilities"])
-        if "total liabilities" in text:
-            fields.extend(["total liabilities", "balance sheet"])
-        if "ebitda" in text:
-            fields.extend(["operating income", "depreciation and amortization", "cash flow"])
-        if "working capital" in text:
-            fields.extend(["working capital", "total current assets", "total current liabilities"])
-        if not fields:
-            fields.extend(["consolidated statements", "balance sheet", "income statement"])
-        queries.append(" ".join(dict.fromkeys([*fields, year])).strip())
-        queries.append(" ".join(part for part in ("balance sheet income statement consolidated statements", year) if part).strip())
     if re.search(r"\bpages?\s*\d|\bslides?\s*\d|\bpage\s+range\b|\bslide\s+range\b", text):
         scope_terms = re.findall(r"\b(?:pages?|slides?)\s*\d+(?:\s*[-–—]\s*\d+)?", text)
         query = " ".join(scope_terms + [term for term in ("table", "figure", "chart", "image") if term in text])
         if query.strip():
             queries.append(query.strip())
     return list(dict.fromkeys(query for query in queries if query))
-
-
-def _is_financial_ratio_question(text: str) -> bool:
-    return any(marker in text for marker in (
-        "ratio",
-        "cash ratio",
-        "debt to total assets",
-        "total debt",
-        "total assets",
-        "gross profit",
-        "payables turnover",
-        "inventory turnover",
-        "receive turnover",
-        "receivable turnover",
-        "quick ratio",
-        "cash conversion cycle",
-        "days payable",
-        "dpo",
-        "effective tax",
-        "return on equity",
-        "debt to ebitda",
-        "interest coverage",
-        "fixed asset turnover",
-        "r&d to asset",
-        "research and development to asset",
-        "sales to working capital",
-        "sales to stockholder equity",
-        "sales to shareholder equity",
-        "advertising expense to sales",
-        "operating profit margin before depreciation",
-        "current liabilities",
-        "short-term investments",
-        "accounts payable",
-        "long-term debt",
-        "long term debt",
-        "total liabilities",
-        "ebitda",
-        "working capital",
-    ))
 
 
 def _normalized_question_text(question: str) -> str:

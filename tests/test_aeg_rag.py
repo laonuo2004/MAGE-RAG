@@ -11,21 +11,18 @@ from baselines.aeg_rag.actions import CandidateAction
 from baselines.aeg_rag.actions import ActivateNode, ActivatePage, FollowRelation, OpenNode, PruneNode, SearchEvidence
 from baselines.aeg_rag.builder import AEGRAGContextBuilder
 from baselines.aeg_rag.builder import _candidate_from_selected_alias
-from baselines.aeg_rag.builder import _auto_search_queries
 from baselines.aeg_rag.builder import _question_named_scope_specs
 from baselines.aeg_rag.builder import _question_page_indices
 from baselines.aeg_rag.builder import _resolve_candidate
 from baselines.aeg_rag.candidate_generator import CandidateGenerator
 from baselines.aeg_rag.evaluator import EvaluatorDecision, XMLEvaluator, parse_agent_decision_xml
 from baselines.aeg_rag.graph_store import EvidenceGraphStore
-from baselines.aeg_rag.postprocess import postprocess_mmlongbench_prediction
 from baselines.aeg_rag.retrieval import ColPaliTop1Retriever
 from baselines.aeg_rag.renderer import ReaderRenderer
 from baselines.aeg_rag.state import ACTIVE, OPENED, PRUNED, EvidenceAgentState
 from baselines.base import ContextMessages
 from baselines.wrapper import build_context_builder
 from benchmarks.adapters import MMLongBenchAdapter
-from benchmarks.adapters import LongDocURLAdapter
 
 
 class AEGRAGTests(unittest.TestCase):
@@ -78,24 +75,6 @@ class AEGRAGTests(unittest.TestCase):
         self.assertFalse(bool(cfg.renderer.include_opened_node_text_mmlongbench))
         self.assertFalse(bool(cfg.renderer.mmlongbench_include_opened_node_crops))
         self.assertEqual(int(cfg.renderer.mmlongbench_page_text_max_pages), 1)
-
-    def test_auto_search_queries_normalize_financial_question_spacing_and_underscores(self):
-        cash_queries = _auto_search_queries("mmlongbench", "What is cash_ratio in FY2021?")
-        payables_queries = _auto_search_queries("mmlongbench", "What is payables  turnover in FY2021?")
-        debt_queries = _auto_search_queries("mmlongbench", "what is long-term debt of Costco in FY 2021?")
-        ebitda_queries = _auto_search_queries("mmlongbench", "what is EBITDA for costco in FY2021?")
-        working_capital_queries = _auto_search_queries("mmlongbench", "What is Netflix working capital in FY2015?")
-
-        self.assertIn("cash and cash equivalents", cash_queries[0])
-        self.assertIn("short-term investments", cash_queries[0])
-        self.assertIn("current liabilities", cash_queries[0])
-        self.assertIn("cost of goods sold", payables_queries[0])
-        self.assertIn("accounts payable", payables_queries[0])
-        self.assertIn("long-term debt", debt_queries[0])
-        self.assertIn("lease liabilities", debt_queries[0])
-        self.assertIn("operating income", ebitda_queries[0])
-        self.assertIn("depreciation and amortization", ebitda_queries[0])
-        self.assertIn("working capital", working_capital_queries[0])
 
     def test_graph_store_loads_synthetic_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -372,19 +351,6 @@ class AEGRAGTests(unittest.TestCase):
 
         self.assertEqual(decision.selected_actions[0]["candidate_index"], 2)
         self.assertEqual(decision.selected_actions[0]["candidate_id"], "")
-
-    def test_xml_evaluator_prompt_adds_financial_ratio_search_guidance(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
-
-            prompt = XMLEvaluator("model").build_prompt(
-                "What is gross profit to total assets ratio for FY2023?",
-                state,
-                [],
-            )
-
-        self.assertIn("For financial ratio questions, identify the formula and required fields before selecting actions.", prompt)
-        self.assertIn("If any required financial field is missing from opened evidence, issue a search_request for that field and year.", prompt)
 
     def test_xml_evaluator_prompt_adds_page_scope_guidance(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -726,68 +692,6 @@ class AEGRAGTests(unittest.TestCase):
         self.assertIn("n1", messages.metadata["opened_node_ids"])
         self.assertEqual(messages.metadata["iteration_trace"][-1]["action"], "FinalOpenActiveNode")
 
-    def test_online_build_auto_searches_financial_ratio_fields_before_evaluator(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_root = os.path.join(tmp_dir, "graphs")
-            graph_dir = Path(self._write_graph(os.path.join(graph_root, "sample")))
-            with open(graph_dir / "nodes.jsonl", "a", encoding="utf-8") as handle:
-                handle.write(json.dumps({
-                    "id": "financial_table",
-                    "type": "table",
-                    "doc_id": "sample",
-                    "page_index": 1,
-                    "abstract": "consolidated statement gross profit total assets fiscal 2023",
-                    "text": "Gross profit 4625. Total assets 7379. Fiscal 2023.",
-                }) + "\n")
-            cfg = OmegaConf.create({
-                "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": True,
-                        "initial_retrieval_top_k": 1,
-                    },
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
-                },
-                "benchmarks": {
-                    "name": "mmlongbench",
-                    "evidence_graph_dir": graph_root,
-                    "max_pages": 2,
-                    "resolution": 144,
-                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
-                },
-            })
-            builder = AEGRAGContextBuilder(cfg)
-            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
-                [{"page_index": 0, "page_number": 1, "score": 2.0}],
-                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
-            )
-            seen_candidate_ids = []
-
-            def fake_call(client, question, state, candidates):
-                seen_candidate_ids.extend(candidate.id for candidate in candidates)
-                return (
-                    EvaluatorDecision(stop=True, reason="done"),
-                    "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
-                )
-
-            builder.evaluator.call = fake_call
-
-            messages = builder.build(
-                "mmlongbench",
-                {
-                    "doc_id": "sample.pdf",
-                    "question_id": "q1",
-                    "question": "What is Gross Profit to Total Assets ratio for fiscal 2023?",
-                },
-                client=object(),
-            )
-
-        self.assertIn("act:ActivatePage:search:1", seen_candidate_ids)
-        auto_search_trace = next(item for item in messages.metadata["iteration_trace"] if item.get("action") == "AutoSearchEvidence")
-        self.assertIn("gross profit", auto_search_trace["query"].lower())
-        self.assertGreaterEqual(auto_search_trace["result_count"], 1)
-
     def test_online_search_decision_opens_top_search_result(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             graph_root = os.path.join(tmp_dir, "graphs")
@@ -1086,53 +990,6 @@ class AEGRAGTests(unittest.TestCase):
         self.assertIn("Candidate visible labels from retrieved evidence:", prompt)
         self.assertIn("Table 15: Leading destination of exports (UGX Billion): July-June", prompt)
 
-    def test_longdocurl_postprocess_expands_unique_locating_table_number(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = Path(self._write_graph(tmp_dir))
-            lines = graph_dir.joinpath("nodes.jsonl").read_text(encoding="utf-8").splitlines()
-            node = json.loads(lines[0])
-            node["type"] = "table"
-            node["caption"] = "Table 1 Dietary benefit of carbohydrates"
-            lines[0] = json.dumps(node)
-            graph_dir.joinpath("nodes.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
-            sample = {
-                "question": "Which tables provide details about dietary benefit?",
-                "answer_format": "List",
-                "prepare_metadata": {
-                    "graph_dir": str(graph_dir),
-                    "final_node_states": {"n1": "Opened"},
-                },
-            }
-
-            pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "Table 1")
-
-        self.assertEqual(pred, "Table 1 Dietary benefit of carbohydrates")
-        self.assertEqual(metadata["type"], "locating_label")
-
-    def test_longdocurl_postprocess_maps_unique_page_table_description_to_label(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = Path(self._write_graph(tmp_dir))
-            lines = graph_dir.joinpath("nodes.jsonl").read_text(encoding="utf-8").splitlines()
-            node = json.loads(lines[0])
-            node["type"] = "table"
-            node["caption"] = "Table 2 Initial Study Checklist"
-            node["page_index"] = 21
-            lines[0] = json.dumps(node)
-            graph_dir.joinpath("nodes.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
-            sample = {
-                "question": "Select table names from the doc that best answer the question.",
-                "answer_format": "List",
-                "prepare_metadata": {
-                    "graph_dir": str(graph_dir),
-                    "final_node_states": {"n1": "Opened"},
-                },
-            }
-
-            pred, metadata = LongDocURLAdapter.postprocess_prediction(sample, "The table on page 22")
-
-        self.assertEqual(pred, "Table 2 Initial Study Checklist")
-        self.assertEqual(metadata["type"], "locating_label")
-
     def test_reader_renderer_compact_mmlongbench_adds_answer_format_instructions(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
@@ -1204,27 +1061,6 @@ class AEGRAGTests(unittest.TestCase):
         self.assertIn("For color questions, use common color names rather than hex codes.", prompt)
         self.assertNotIn("If the answer cannot be found", prompt)
         self.assertNotIn("Retrieved document pages:", prompt)
-
-    def test_reader_renderer_compact_mmlongbench_plain_mode_adds_financial_ratio_hint(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
-            state.execute(ActivatePage(0, "initial_retrieval"))
-
-            content = ReaderRenderer(
-                OmegaConf.create({
-                    "benchmarks": {},
-                    "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "plain"}},
-                }),
-                include_page_images=False,
-            ).render(
-                "mmlongbench",
-                {"question": "What is the FY2021 total debt to total assets ratio?"},
-                state,
-            )
-
-        prompt = content[0]["text"]
-        self.assertIn("For financial ratio questions, identify the formula first.", prompt)
-        self.assertIn("Do not use total liabilities as total debt unless the document explicitly defines it that way.", prompt)
 
     def test_reader_renderer_compact_mmlongbench_plain_mode_adds_page_scope_hint(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1353,6 +1189,69 @@ class AEGRAGTests(unittest.TestCase):
         self.assertIn("final_node_states", messages.metadata)
         self.assertIn("iteration_trace", messages.metadata)
         self.assertIn("validation_errors", messages.metadata)
+
+    def test_final_context_metadata_records_reader_input_without_base64_images(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            self._write_graph(os.path.join(graph_root, "sample"))
+            page_dir = Path(tmp_dir) / "pngs" / "sample"
+            page_dir.mkdir(parents=True)
+            from PIL import Image
+
+            Image.new("RGB", (1, 1), color="white").save(page_dir / "page_0001_dpi144.png")
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "params": {"policy": "full", "graph_escape": False},
+                    "renderer": {"include_page_images": True},
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 1,
+                    "resolution": 144,
+                    "pdf_png_dir": str(Path(tmp_dir) / "pngs"),
+                },
+            })
+            builder = AEGRAGContextBuilder(cfg)
+
+            messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "Q?"})
+
+        reader_input = messages.metadata["reader_input"]
+        self.assertIn("Q?", reader_input["text_parts"][0])
+        self.assertEqual(reader_input["content_part_count"], len(messages[0]["content"]))
+        self.assertTrue(reader_input["image_refs"])
+        self.assertEqual(reader_input["image_refs"][0]["page_index"], 0)
+        serialized = json.dumps(reader_input)
+        self.assertNotIn("base64", serialized)
+        self.assertNotIn("data:image", serialized)
+
+    def test_online_trace_records_selection_and_state_snapshots(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            builder = AEGRAGContextBuilder(OmegaConf.create({
+                "baselines": {
+                    "name": "aeg-rag",
+                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                }
+            }))
+            builder.evaluator.call = lambda client, question, state, candidates: (
+                EvaluatorDecision(selected_actions=[{"candidate_index": 1, "candidate_id": "", "reason": "inspect"}]),
+                "<agent_decision><selected_actions><action index=\"1\"><reason>inspect</reason></action></selected_actions></agent_decision>",
+            )
+
+            builder._run_agent("mmlongbench", "question", state, client=object())
+
+        decision_trace = next(item for item in state.trace if item.get("action") == "EvaluatorDecision")
+        self.assertIn("prompt_text", decision_trace["evaluator_input"])
+        self.assertIn("<agent_step_context>", decision_trace["evaluator_input"]["prompt_text"])
+        self.assertIn("state_snapshot_before", decision_trace)
+        executed = next(item for item in state.trace if item.get("action") == "ActivateNode")
+        self.assertEqual(executed["selection"]["candidate_index"], 1)
+        self.assertEqual(executed["selection"]["reason"], "inspect")
+        self.assertIn("state_snapshot_after", executed)
+        self.assertIn("n1", executed["state_snapshot_after"]["active_node_ids"])
 
     def test_initial_retrieval_activates_multiple_top_pages(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1592,16 +1491,12 @@ class AEGRAGTests(unittest.TestCase):
         self.assertNotIn({"kind": "figure", "label": "in"}, specs)
         self.assertIn({"kind": "figure", "label": "A"}, specs)
 
-    def test_named_scope_specs_detect_case_insensitive_section_and_applecare_support(self):
+    def test_named_scope_specs_detect_case_insensitive_section(self):
         section_specs = _question_named_scope_specs(
             "How many website URLs are included in the Section Internet Industry in the slides?"
         )
-        support_specs = _question_named_scope_specs(
-            "Which number shall I call for seeking AppleCare service and support?"
-        )
 
         self.assertIn({"kind": "section", "label": "Internet Industry"}, section_specs)
-        self.assertIn({"kind": "section", "label": "AppleCare Service and Support"}, support_specs)
 
     def test_named_scope_specs_detect_numeric_section_and_appendix(self):
         section_specs = _question_named_scope_specs("How many papers are not mentioned in Section 3.4?")
@@ -2032,196 +1927,6 @@ class AEGRAGTests(unittest.TestCase):
 
         self.assertNotIn("Opened evidence text:", mmlong[0]["text"])
         self.assertIn("Opened evidence text:", longdoc[0]["text"])
-
-    def test_aeg_postprocess_sums_items_for_related_dataset_columns(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = Path(tmp_dir)
-            node = {
-                "id": "stats_table",
-                "type": "table",
-                "html": (
-                    "<table><tr><td>Dataset</td><td>Amazon-beauty</td><td>Amazon-music</td><td>Personality'18</td></tr>"
-                    "<tr><td># of items</td><td>85</td><td>8,895</td><td>21,776</td></tr>"
-                    "<tr><td># of users</td><td>991</td><td>1,791</td><td>678</td></tr></table>"
-                ),
-            }
-            (graph_dir / "nodes.jsonl").write_text(json.dumps(node) + "\n", encoding="utf-8")
-            sample = {
-                "question": "How many items in total of Amazon related datasets in the paper?",
-                "answer_format": "Int",
-                "prepare_metadata": {
-                    "context_builder": "aeg-rag",
-                    "graph_dir": str(graph_dir),
-                    "opened_node_ids": ["stats_table"],
-                },
-            }
-
-            pred, metadata = postprocess_mmlongbench_prediction(sample, "3")
-
-        self.assertEqual(pred, "8980")
-        self.assertEqual(metadata["type"], "related_dataset_item_total")
-
-    def test_mmlongbench_adapter_uses_aeg_postprocess_for_related_dataset_items(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = Path(tmp_dir)
-            node = {
-                "id": "stats_table",
-                "type": "table",
-                "html": (
-                    "<table><tr><td>Dataset</td><td>Amazon-beauty</td><td>Amazon-music</td></tr>"
-                    "<tr><td># of items</td><td>85</td><td>8,895</td></tr></table>"
-                ),
-            }
-            (graph_dir / "nodes.jsonl").write_text(json.dumps(node) + "\n", encoding="utf-8")
-            sample = {
-                "question": "How many items in total of Amazon related datasets in the paper?",
-                "answer_format": "Int",
-                "prepare_metadata": {
-                    "context_builder": "aeg-rag",
-                    "graph_dir": str(graph_dir),
-                    "opened_node_ids": ["stats_table"],
-                },
-            }
-
-            pred, metadata = MMLongBenchAdapter.postprocess_prediction(sample, "3")
-
-        self.assertEqual(pred, "8980")
-        self.assertEqual(metadata["type"], "related_dataset_item_total")
-
-    def test_aeg_postprocess_computes_claim_difference_between_dataset_domains(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = Path(tmp_dir)
-            node = {
-                "id": "comparison_table",
-                "type": "table",
-                "html": (
-                    "<table><tr><td colspan=\"2\">Statistics</td><td>TabFact</td><td>FEVEROUS</td><td>SEM-TAB-FACTS</td><td>SCITAB</td></tr>"
-                    "<tr><td>Domain</td><td></td><td>Wiki Tables</td><td>Wiki Tables</td><td>Scientific Articles</td><td>Scientific Articles</td></tr>"
-                    "<tr><td colspan=\"2\">Total # of Claims</td><td>117,854</td><td>87,026</td><td>5,715</td><td>1,225</td></tr></table>"
-                ),
-            }
-            (graph_dir / "nodes.jsonl").write_text(json.dumps(node) + "\n", encoding="utf-8")
-            sample = {
-                "question": "How many more claims does the Wiki Table datasets have comparing to scientific articles datasets?",
-                "answer_format": "Int",
-                "prepare_metadata": {
-                    "context_builder": "aeg-rag",
-                    "graph_dir": str(graph_dir),
-                    "opened_node_ids": ["comparison_table"],
-                },
-            }
-
-            pred, metadata = postprocess_mmlongbench_prediction(sample, "1053")
-
-        self.assertEqual(pred, "197940")
-        self.assertEqual(metadata["type"], "dataset_domain_claim_difference")
-
-    def test_aeg_postprocess_counts_strategy_table_methods_not_mentioned_in_page_section(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = Path(tmp_dir)
-            table = {
-                "id": "table2",
-                "type": "table",
-                "page_index": 5,
-                "html": (
-                    "<table><tr><td>Method</td><td>Source</td><td>Format</td><td>Strategy</td></tr>"
-                    "<tr><td>Self-Refine (Madaan et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
-                    "<tr><td>Clinical SV (Gero et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
-                    "<tr><td>Reflexion (Shinn et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
-                    "<tr><td>IterRefinement (Chen et al., 2023d)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
-                    "<tr><td>Auto-Post-Editing (Raunak et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
-                    "<tr><td>RCI (Kim et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
-                    "<tr><td>SelFee (Ye et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
-                    "<tr><td>SelfCheckGPT (Manakul et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr>"
-                    "<tr><td>LLM Self Defense (Helbling et al., 2023)</td><td>Language Model</td><td>NL</td><td>Self-Refine</td></tr></table>"
-                ),
-            }
-            section_a = {
-                "id": "page9_para1",
-                "type": "paragraph",
-                "page_index": 8,
-                "text": "Self-Refine, Clinical Self-Verification, and Reflexion extend this approach.",
-            }
-            section_b = {
-                "id": "page9_para2",
-                "type": "paragraph",
-                "page_index": 8,
-                "text": "SelFee proposes training models to emulate self-correction.",
-            }
-            (graph_dir / "nodes.jsonl").write_text(
-                "\n".join(json.dumps(node) for node in [table, section_a, section_b]) + "\n",
-                encoding="utf-8",
-            )
-            sample = {
-                "question": (
-                    "For the papers that adopted the Self-Refine strategy in Table 2, "
-                    "how many of them are not mentioned in the \"Self-Correction\" section of page 9?"
-                ),
-                "answer_format": "Int",
-                "prepare_metadata": {
-                    "context_builder": "aeg-rag",
-                    "graph_dir": str(graph_dir),
-                    "opened_node_ids": ["table2", "page9_para1", "page9_para2"],
-                },
-            }
-
-            pred, metadata = postprocess_mmlongbench_prediction(sample, "3")
-
-        self.assertEqual(pred, "5")
-        self.assertEqual(metadata["type"], "table_strategy_not_mentioned_count")
-
-    def test_aeg_postprocess_counts_strategy_table_methods_not_mentioned_in_numbered_section(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = Path(tmp_dir)
-            table = {
-                "id": "table2",
-                "type": "table",
-                "page_index": 5,
-                "html": (
-                    "<table><tr><td>Method</td><td>Source</td><td>Format</td><td>Strategy</td></tr>"
-                    "<tr><td>Multiagent Debate (Du et al., 2023)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
-                    "<tr><td>LM vs LM (Cohen et al., 2023)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
-                    "<tr><td>ICL-AIF (Fu et al., 2023)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
-                    "<tr><td>PRD (Li et al., 2023c)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
-                    "<tr><td>MADRA (Wang et al., 2023b)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr>"
-                    "<tr><td>ReConcile (Chen et al., 2023c)</td><td>Language Model</td><td>NL</td><td>Model Debate</td></tr></table>"
-                ),
-            }
-            title = {"id": "page10_block2", "type": "title", "page_index": 9, "text": "Section heading: 3.4 Multi-Agent Debate."}
-            para1 = {
-                "id": "page10_block3",
-                "type": "paragraph",
-                "page_index": 9,
-                "text": "Du et al. (2023) trialed this in arithmetic reasoning. PRD (Li et al., 2023c) enhanced this.",
-            }
-            para2 = {
-                "id": "page10_block4",
-                "type": "paragraph",
-                "page_index": 9,
-                "text": "Cohen et al. (2023) used a debate approach. Fu et al. (2023) extended this.",
-            }
-            next_title = {"id": "page10_block7", "type": "title", "page_index": 9, "text": "Section heading: 4 Discussion."}
-            (graph_dir / "nodes.jsonl").write_text(
-                "\n".join(json.dumps(node) for node in [table, title, para1, para2, next_title]) + "\n",
-                encoding="utf-8",
-            )
-            sample = {
-                "question": (
-                    "For the papers that adopted the Model Debate strategy in Table 2, "
-                    "how many of them are not mentioned in Section 3.4?"
-                ),
-                "answer_format": "Int",
-                "prepare_metadata": {
-                    "context_builder": "aeg-rag",
-                    "graph_dir": str(graph_dir),
-                    "opened_node_ids": ["table2"],
-                },
-            }
-
-            pred, metadata = postprocess_mmlongbench_prediction(sample, "0.0")
-
-        self.assertEqual(pred, "2")
-        self.assertEqual(metadata["type"], "table_strategy_not_mentioned_count")
 
     def test_reader_renderer_prioritizes_question_scope_pages_for_mmlongbench(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

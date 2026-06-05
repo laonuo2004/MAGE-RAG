@@ -78,6 +78,10 @@ class AEGRAGPlugin(AnalysisPlugin):
             "page_rows": page_rows,
             "node_rows": node_rows,
             "trace_rows": trace_rows,
+            "reader_input": _reader_input(metadata),
+            "reader_image_refs": _reader_image_refs(metadata),
+            "evaluator_rows": _evaluator_rows(trace_rows),
+            "expansion_rows": _expansion_rows(trace_rows),
             "validation_errors": metadata.get("validation_errors") or [],
             "summary_artifacts": metadata.get("summary_artifacts") or [],
         }
@@ -209,9 +213,90 @@ def _trace_rows(trace: list[dict[str, Any]], page_lookup: dict[str, int]) -> lis
                 "decision": step.get("decision") if isinstance(step.get("decision"), dict) else None,
                 "raw_response": step.get("raw_response"),
                 "evaluator_input": step.get("evaluator_input") if isinstance(step.get("evaluator_input"), dict) else None,
+                "selection": step.get("selection") if isinstance(step.get("selection"), dict) else None,
+                "state_snapshot_before": step.get("state_snapshot_before") if isinstance(step.get("state_snapshot_before"), dict) else None,
+                "state_snapshot_after": step.get("state_snapshot_after") if isinstance(step.get("state_snapshot_after"), dict) else None,
             }
         )
     return rows
+
+
+def _reader_input(metadata: dict[str, Any]) -> dict[str, Any]:
+    value = metadata.get("reader_input")
+    return value if isinstance(value, dict) else {}
+
+
+def _reader_image_refs(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    refs = _reader_input(metadata).get("image_refs")
+    return [ref for ref in refs if isinstance(ref, dict)] if isinstance(refs, list) else []
+
+
+def _evaluator_rows(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for row in trace_rows:
+        evaluator_input = row.get("evaluator_input")
+        if row.get("action") != "EvaluatorDecision" and not evaluator_input and not row.get("raw_response"):
+            continue
+        evaluator_input = evaluator_input if isinstance(evaluator_input, dict) else {}
+        candidate_actions = evaluator_input.get("candidate_actions")
+        opened_image_refs = evaluator_input.get("opened_image_refs")
+        rows.append({
+            "step_index": row.get("step_index"),
+            "iteration": row.get("iteration"),
+            "prompt_text": evaluator_input.get("prompt_text"),
+            "context_xml": evaluator_input.get("context_xml"),
+            "candidate_actions": candidate_actions if isinstance(candidate_actions, list) else [],
+            "candidate_action_count": len(candidate_actions) if isinstance(candidate_actions, list) else 0,
+            "opened_image_refs": opened_image_refs if isinstance(opened_image_refs, list) else [],
+            "raw_response": row.get("raw_response"),
+            "decision": row.get("decision"),
+            "state_snapshot_before": row.get("state_snapshot_before"),
+        })
+    return rows
+
+
+def _expansion_rows(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows = []
+    for row in trace_rows:
+        before = row.get("state_snapshot_before") if isinstance(row.get("state_snapshot_before"), dict) else {}
+        after = row.get("state_snapshot_after") if isinstance(row.get("state_snapshot_after"), dict) else before
+        selection = row.get("selection") if isinstance(row.get("selection"), dict) else {}
+        rows.append({
+            "step_index": row.get("step_index"),
+            "iteration": row.get("iteration"),
+            "action": row.get("action"),
+            "ok": row.get("ok"),
+            "page_index": row.get("page_index"),
+            "page_number": row.get("page_number"),
+            "node_id": row.get("node_id"),
+            "edge_id": row.get("edge_id"),
+            "message": row.get("message"),
+            "selected_candidate_index": selection.get("candidate_index"),
+            "selected_candidate_id": selection.get("candidate_id") or selection.get("resolved_candidate_id"),
+            "selected_candidate_type": selection.get("candidate_action_type"),
+            "selection_reason": selection.get("reason"),
+            "active_nodes": _snapshot_count(after, "active"),
+            "opened_nodes": _snapshot_count(after, "opened"),
+            "pruned_nodes": _snapshot_count(after, "pruned"),
+            "active_delta": _snapshot_delta(before, after, "active_node_ids"),
+            "opened_delta": _snapshot_delta(before, after, "opened_node_ids"),
+            "pruned_delta": _snapshot_delta(before, after, "pruned_node_ids"),
+        })
+    return rows
+
+
+def _snapshot_count(snapshot: dict[str, Any], state: str) -> int | None:
+    count = snapshot.get(f"{state}_count")
+    if count is not None:
+        return _optional_int(count)
+    values = snapshot.get(f"{state}_node_ids")
+    return len(values) if isinstance(values, list) else None
+
+
+def _snapshot_delta(before: dict[str, Any], after: dict[str, Any], key: str) -> list[str]:
+    before_values = set(str(value) for value in before.get(key) or []) if isinstance(before.get(key), list) else set()
+    after_values = set(str(value) for value in after.get(key) or []) if isinstance(after.get(key), list) else set()
+    return sorted(after_values - before_values)
 
 
 def _page_rows(

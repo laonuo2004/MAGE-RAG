@@ -222,5 +222,5 @@ logs/
 # Local result dashboard cache
 analysis_cache/
 
-results/longdocurl/aeg_rag
-results/mmlongbench/aeg_rag
+# Other
+index.html*

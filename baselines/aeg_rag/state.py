@@ -184,6 +184,27 @@ class EvidenceAgentState:
     def final_node_states(self) -> dict[str, str]:
         return dict(sorted(self.node_states.items()))
 
+    def snapshot(self) -> dict[str, Any]:
+        active_node_ids = self.active_node_ids()
+        opened_node_ids = self.opened_node_ids()
+        pruned_node_ids = self.pruned_node_ids()
+        active_page_indices = sorted(
+            self.graph.node_page_index(node_id)
+            for node_id in active_node_ids + opened_node_ids
+            if self.graph.is_page_node(self.graph.node(node_id))
+        )
+        return {
+            "active_node_ids": active_node_ids,
+            "opened_node_ids": opened_node_ids,
+            "pruned_node_ids": pruned_node_ids,
+            "active_page_indices": active_page_indices,
+            "active_edge_ids": sorted(self.active_edges),
+            "summary_ids": [str(summary.get("summary_id")) for summary in self.summaries],
+            "active_count": len(active_node_ids),
+            "opened_count": len(opened_node_ids),
+            "pruned_count": len(pruned_node_ids),
+        }
+
     def _validation(self, action_type: str, message: str) -> ActionResult:
         error = {"action_type": action_type, "message": message}
         self.validation_errors.append(error)
@@ -196,4 +217,5 @@ class EvidenceAgentState:
             "ok": result.ok,
             "message": result.message,
             "payload": result.payload,
+            "state_snapshot_after": self.snapshot(),
         })

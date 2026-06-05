@@ -84,6 +84,33 @@ def _prepare_messages(sample: Dict[str, Any], cfg, context_builder, benchmark_na
     return messages, qa_model_name, extractor_model_name
 
 
+def _process_self_answering_sample(
+    sample: Dict[str, Any],
+    context_builder,
+    benchmark_name: str,
+    client,
+) -> Dict[str, Any] | None:
+    if not hasattr(context_builder, "run_sample"):
+        return None
+    run_start = perf_counter()
+    payload = context_builder.run_sample(benchmark_name, sample, client=client)
+    if payload is None:
+        return None
+    metadata = dict(payload.get("metadata") or {})
+    metadata["duration_seconds"] = round(perf_counter() - run_start, 3)
+    sample["prepare_metadata"] = metadata
+    sample["generation_metadata"] = {
+        "model": metadata.get("model"),
+        "response": payload.get("response"),
+        "duration_seconds": metadata["duration_seconds"],
+    }
+    if payload.get("usage") is not None:
+        sample["generation_metadata"]["usage"] = payload.get("usage")
+    sample["pred"] = payload.get("pred")
+    sample["pred_format"] = payload.get("pred_format")
+    return sample
+
+
 def _generate_response(sample: Dict[str, Any], messages, model_name: str, client, log_prefix: str) -> str:
     generation_start = perf_counter()
     completion = call_llm_messages(
@@ -127,14 +154,6 @@ def _extract_prediction(sample: Dict[str, Any], messages, model_name: str, clien
     }
     return parse_extraction_result(extracted_res)
 
-
-def _is_aeg_rag_cfg(cfg) -> bool:
-    return str(get_config_value(cfg, "baselines.name", "")) == "aeg-rag"
-
-
-def _mmlongbench_expected_extraction_format(sample: Dict[str, Any]) -> str | None:
-    answer_format = str(sample.get("answer_format") or "")
-    return answer_format if answer_format in {"Int", "Float", "List"} else None
 
 
 def _levenshtein_distance(s1: str, s2: str) -> int:
@@ -229,6 +248,7 @@ def _maybe_parse_literal(value: Any) -> Any:
 
 
 
+
 class MMLongBenchAdapter:
     name = "mmlongbench"
 
@@ -252,7 +272,8 @@ class MMLongBenchAdapter:
     def score(gt: Any, pred: Any, answer_type: str) -> float:
         if answer_type == "Int":
             try:
-                gt, pred = int(gt), int(float(pred))
+                gt = int(float(MMLongBenchAdapter._clean_string(gt)))
+                pred = int(float(MMLongBenchAdapter._clean_string(pred)))
             except Exception:
                 pred = ""
             score = gt == pred
@@ -328,251 +349,30 @@ class MMLongBenchAdapter:
         self,
         sample: Dict[str, Any],
         response: Any,
-        expected_answer_format: str | None = None,
     ) -> List[Dict[str, Any]]:
         question = "" if sample.get("question") is None else str(sample.get("question"))
         output = "" if response is None else str(response)
         prompt = self.extractor_prompt + "\n\nQuestion: " + question + "\nAnalysis: " + output
-        if expected_answer_format and expected_answer_format != "None":
-            prompt += (
-                "\n\nExpected answer format for this sample: "
-                + expected_answer_format
-                + ". Use this format when extracting the final answer. "
-                + "If the analysis clearly says the answer cannot be found, output Not answerable instead."
-            )
         return [{"role": "user", "content": text_content_parts(prompt)}]
-
-    @staticmethod
-    def postprocess_prediction(sample: Dict[str, Any], pred: Any) -> tuple[Any, Dict[str, Any] | None]:
-        answer_format = str(sample.get("answer_format") or "")
-        question = str(sample.get("question") or "")
-        if answer_format == "List":
-            normalizers = (
-                ("short_list", MMLongBenchAdapter._postprocess_short_list_prediction),
-                ("list_synonym", MMLongBenchAdapter._postprocess_list_synonym_prediction),
-            )
-            for metadata_type, normalizer in normalizers:
-                normalized = normalizer(pred)
-                if normalized != pred:
-                    return normalized, {"type": metadata_type, "original_pred": pred}
-        if answer_format in {"Str", "String"}:
-            normalizers = (
-                ("phone_format", MMLongBenchAdapter._postprocess_phone_prediction),
-                ("range_format", MMLongBenchAdapter._postprocess_range_prediction),
-                ("color_name", MMLongBenchAdapter._postprocess_color_prediction),
-                ("specific_phrase", MMLongBenchAdapter._postprocess_specific_phrase_prediction),
-            )
-            for metadata_type, normalizer in normalizers:
-                normalized = normalizer(sample, pred, question)
-                if normalized != pred:
-                    return normalized, {"type": metadata_type, "original_pred": pred}
-        if answer_format == "None":
-            normalized = MMLongBenchAdapter._postprocess_not_answerable_prediction(sample, pred)
-            if normalized != pred:
-                return normalized, {"type": "not_answerable_signal", "original_pred": pred}
-        return pred, None
-
-    @staticmethod
-    def _postprocess_short_list_prediction(pred: Any) -> Any:
-        text = str(pred or "").strip()
-        try:
-            parsed = ast.literal_eval(text)
-            if isinstance(parsed, list):
-                return pred
-        except Exception:
-            pass
-        if len(text) > 160 or not any(separator in text for separator in (",", ";", "\n")):
-            return pred
-        lowered = text.lower()
-        if re.search(r"\b(has|had|contains|include|includes|with|there are|there is)\b", lowered):
-            return pred
-        parts = re.split(r"[,;\n]+", text)
-        parts = [part.strip().strip("'\"") for part in parts if part.strip()]
-        if 1 < len(parts) <= 8:
-            return repr(parts)
-        return pred
-
-    @staticmethod
-    def _postprocess_list_synonym_prediction(pred: Any) -> Any:
-        text = str(pred or "").strip()
-        try:
-            values = ast.literal_eval(text)
-        except Exception:
-            return pred
-        if not isinstance(values, list):
-            return pred
-        replacements = {
-            "united kingdom": "UK",
-            "union bank of india": "Unioon Bank of India",
-            "predictive modelling": "Predictive modeling",
-            "recombination repair": "Recombinational Repair",
-            "patient registration/demographics": "Patient registration/ demographics",
-            "microsoft office onenote": "Mircosoft Office OneNote",
-            "xse v6": "XSE6",
-            "menu button": "Menu Buttons",
-            "home button": "Home Buttons",
-            "back button": "Back Buttons",
-            "is the service safe?": "Is the servife safe?",
-            "is the service caring?": "Is the serve caring?",
-            "television": "Televison",
-        }
-        normalized = []
-        changed = False
-        for value in values:
-            value_text = str(value)
-            replacement = replacements.get(value_text.lower())
-            if replacement is not None:
-                normalized.append(replacement)
-                changed = True
-            else:
-                normalized.append(value)
-        return repr(normalized) if changed else pred
-
-    @staticmethod
-    def _postprocess_phone_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        text_pred = str(pred or "").strip()
-        lowered_question = question.lower()
-        phone_markers = ("telephone", "phone", "contact no", "tel no", "telephone no")
-        if not text_pred.isdigit() or not any(marker in lowered_question for marker in phone_markers):
-            return pred
-        response = str((sample.get("generation_metadata") or {}).get("response") or "")
-        phone_pattern = re.compile(r"(?<!\w)(?:\+?\(?\d[\d\s().-]{5,}\d)(?!\w)")
-        pred_digits = re.sub(r"\D+", "", text_pred)
-        candidates = []
-        for match in phone_pattern.finditer(response):
-            value = match.group(0).strip()
-            if re.sub(r"\D+", "", value) == pred_digits and any(char in value for char in (" ", "(", ")", "-")):
-                candidates.append(value)
-        return candidates[-1] if candidates else pred
-
-    @staticmethod
-    def _postprocess_range_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        text = str(pred or "").strip()
-        lowered_question = question.lower()
-        if "range" not in lowered_question and "represents" not in lowered_question:
-            return pred
-        normalized = re.sub(
-            r"\b(\d+(?:\.\d+)?)\s*(?:to|–|—)\s*(\d+(?:\.\d+)?)(\s*miles?)?\b",
-            lambda match: f"{match.group(1)}-{match.group(2)}{match.group(3) or ''}",
-            text,
-            flags=re.IGNORECASE,
-        )
-        return normalized if normalized != text else pred
-
-    @staticmethod
-    def _postprocess_color_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        if "color" not in question.lower() and "colour" not in question.lower():
-            return pred
-        response = str((sample.get("generation_metadata") or {}).get("response") or "")
-        match = re.search(
-            r"shade of (?:light |dark )?(red|green|blue|purple|yellow|orange|pink|gray|grey|black|white)\b",
-            response,
-            flags=re.IGNORECASE,
-        )
-        if not match:
-            return pred
-        color = match.group(1).lower()
-        return "gray" if color == "grey" else color
-
-    @staticmethod
-    def _postprocess_specific_phrase_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        text = str(pred or "").strip()
-        lowered_question = question.lower()
-        if text.startswith("["):
-            try:
-                values = ast.literal_eval(text)
-            except Exception:
-                values = None
-            if isinstance(values, list) and values:
-                if (
-                    (len(values) == 1 and "which stages" not in lowered_question)
-                    or "what degree" in lowered_question
-                    or "what buildings appear in the first picture" in lowered_question
-                ):
-                    return str(values[0])
-        if "subgroup among hispanics" in lowered_question:
-            normalized = re.sub(r"^hispanics? with\s+", "", text, flags=re.IGNORECASE)
-            normalized = re.sub(r"\s+education$", "", normalized, flags=re.IGNORECASE)
-            return normalized if normalized != text else pred
-        if "how many cm" in lowered_question and re.fullmatch(r"\d+(?:\.\d+)?-\d+(?:\.\d+)?", text):
-            return text + "cm"
-        if "speed up" in lowered_question and re.fullmatch(r"\d+(?:\.\d+)?", text):
-            return text + "x"
-        if "which stages" in lowered_question and re.fullmatch(r"Stage\s+\d+", text, flags=re.IGNORECASE):
-            return repr([text])
-        if "which creation has more steps" in lowered_question and "crisper" in text.lower():
-            return "Crisper"
-        if "highest proportion" in lowered_question and text.lower().endswith(" democrats"):
-            return re.sub(r"\s+democrats$", "", text, flags=re.IGNORECASE)
-        if "first animal" in lowered_question and text.lower().startswith("giant "):
-            return re.sub(r"^giant\s+", "", text, flags=re.IGNORECASE)
-        if "coffee brand" in lowered_question and text.lower().endswith(" coffee"):
-            return re.sub(r"\s+coffee$", "", text, flags=re.IGNORECASE)
-        if "how many people" in lowered_question and re.fullmatch(r"\d{6,}", text):
-            value = int(text)
-            if value % 1_000_000 == 0:
-                return f"{value // 1_000_000} million"
-        if "which side" in lowered_question and text.lower() in {"left", "right"}:
-            return "on the " + text.lower()
-        if "technology" in lowered_question and text.lower().endswith(" connectivity"):
-            return text.rsplit(" ", 1)[0]
-        if "utility derived" in lowered_question and re.fullmatch(r"\d+(?:\.\d+)?", text):
-            return "+" + text
-        if "which was greater" in lowered_question:
-            normalized = re.sub(r"\s+index value$", "", text, flags=re.IGNORECASE)
-            return normalized if normalized != text else pred
-        if "implemented class name" in lowered_question and text == "SOLOHead":
-            return "DecoupledSOLOHead"
-        if "degree have the highest average monthly salary" in lowered_question and text == "BBA":
-            return "BBA - Bachelor of Business Administration"
-        if "costco rely heavily" in lowered_question and "u.s. and canadian operations" in text.lower():
-            return "the financial performance of our U.S. and Canadian operations."
-        if "who visited" in lowered_question and "tim ziemer" in text.lower():
-            return "Tim Ziemer"
-        if "ranking prompt example" in lowered_question and text.lower() == "sedan":
-            return "Mercedes-Benz E-Class Sedan"
-        if "job of the contact person" in lowered_question and text.lower() == "president":
-            return "Vice President of Product Alliances"
-        if "available data" in lowered_question and text.lower().startswith("semantic parsing"):
-            return "semantic parsing"
-        if "signal has the least frequency" in lowered_question and text == "3840 x 2160":
-            return '"3840 x 2160" at 30 Hz'
-        if "record merchandise inventories" in lowered_question and text.lower().startswith("lower of cost"):
-            return "the " + text
-        if "most important applications" in lowered_question and "electronic medical record" in text.lower():
-            return "Electronic Medical Records"
-        return pred
-
-    @staticmethod
-    def _postprocess_not_answerable_prediction(sample: Dict[str, Any], pred: Any) -> Any:
-        response = str((sample.get("generation_metadata") or {}).get("response") or "")
-        abstain_patterns = (
-            r"not (?:explicitly )?(?:provided|stated|shown|available|mentioned|visible)",
-            r"do(?:es)? not explicitly (?:label|identify|show|state|mention)",
-            r"cannot be (?:determined|found|answered)",
-            r"(?:provided|retrieved) (?:pages|images|information|document).*do(?:es)? not "
-            r"(?:include|show|provide|state|mention)",
-            r"insufficient (?:information|evidence)",
-            r"no (?:clear|explicit) (?:information|evidence)",
-            r"none of (?:these|the) pages fall within the specified range",
-            r"(?:highly likely|likely|assume|assuming|infer|inferred|appears to refer)",
-        )
-        if any(re.search(pattern, response, flags=re.IGNORECASE | re.DOTALL) for pattern in abstain_patterns):
-            return "Not answerable"
-        return pred
 
     def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         sample = dict(sample)
         _reset_sample_fields(sample, COMMON_RESULT_FIELDS)
+        self_answered = _process_self_answering_sample(sample, context_builder, "mmlongbench", client)
+        if self_answered is not None:
+            if self_answered.get("pred") is None:
+                return None
+            self_answered["score"] = self.score(
+                self_answered["answer"],
+                self_answered["pred"],
+                self_answered["answer_format"],
+            )
+            return self_answered
         messages, qa_model_name, extractor_model_name = _prepare_messages(sample, cfg, context_builder, "mmlongbench", client)
         response = _generate_response(sample, messages, qa_model_name, client, "MMLongBench generation")
         pred, pred_format = _extract_prediction(
             sample,
-            self.build_extraction_messages(
-                sample,
-                response,
-                expected_answer_format=_mmlongbench_expected_extraction_format(sample) if _is_aeg_rag_cfg(cfg) else None,
-            ),
+            self.build_extraction_messages(sample, response),
             extractor_model_name,
             client,
             self.parse_extraction_result,
@@ -581,10 +381,6 @@ class MMLongBenchAdapter:
         if pred is None:
             logger.warning("Failed to extract MMLongBench answer. doc_id=%s", sample.get("doc_id"))
             return None
-        if _is_aeg_rag_cfg(cfg):
-            pred, postprocess_metadata = self.postprocess_prediction(sample, pred)
-            if postprocess_metadata is not None:
-                sample["extraction_metadata"]["postprocess"] = postprocess_metadata
         sample["pred"] = pred
         sample["pred_format"] = pred_format
         sample["score"] = self.score(sample["answer"], pred, sample["answer_format"])
@@ -811,384 +607,19 @@ class LongDocURLAdapter:
         pred_format = format_match.group(1).strip() if format_match else None
         return self.parse_concise_answer(concise_answer), pred_format
 
-    @staticmethod
-    def postprocess_prediction(sample: Dict[str, Any], pred: Any) -> tuple[Any, Dict[str, Any] | None]:
-        answer_format = str(sample.get("answer_format") or "")
-        question = str(sample.get("question") or "")
-        if answer_format in {"String", "Str", "List"}:
-            normalized = LongDocURLAdapter._postprocess_locating_label_prediction(sample, pred, question)
-            if normalized != pred:
-                return normalized, {"type": "locating_label", "original_pred": pred}
-        if answer_format == "Integer":
-            normalized = LongDocURLAdapter._postprocess_integer_prediction(sample, pred, question)
-            if normalized != pred:
-                return normalized, {"type": "integer_format", "original_pred": pred}
-        if answer_format in {"Integer", "Float"}:
-            normalized = LongDocURLAdapter._postprocess_numeric_prediction(sample, pred, question)
-            if normalized != pred:
-                return normalized, {"type": "numeric_format", "original_pred": pred}
-        if answer_format in {"String", "Str"}:
-            normalized = LongDocURLAdapter._postprocess_figure_caption_prediction(sample, pred, question)
-            if normalized != pred:
-                return normalized, {"type": "figure_caption", "original_pred": pred}
-            normalized = LongDocURLAdapter._postprocess_string_prediction(sample, pred, question)
-            if normalized != pred:
-                return normalized, {"type": "string_format", "original_pred": pred}
-        if answer_format == "List":
-            normalized = LongDocURLAdapter._postprocess_list_prediction(sample, pred, question)
-            if normalized != pred:
-                return normalized, {"type": "list_format", "original_pred": pred}
-        if answer_format == "None":
-            normalized = LongDocURLAdapter._postprocess_none_prediction(sample, pred, question)
-            if normalized != pred:
-                return normalized, {"type": "none_format", "original_pred": pred}
-        return pred, None
-
-    @staticmethod
-    def _postprocess_integer_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        text = str(pred).strip()
-        if re.fullmatch(r"\d+\.0+", text):
-            return text.split(".")[0]
-        if not re.fullmatch(r"\d{6,}", text) or not text.endswith("000"):
-            return pred
-        lowered_question = question.lower()
-        if not any(marker in lowered_question for marker in ("amount", "liabilities", "assets", "cash", "revenues")):
-            return pred
-        scaled = str(int(text) // 1000)
-        response = str((sample.get("generation_metadata") or {}).get("response") or "")
-        compact_response = re.sub(r"[,\s]+", "", response.lower())
-        if f"{scaled}k" in compact_response or f"{scaled}thousand" in compact_response:
-            return scaled
-        return pred
-
-    @staticmethod
-    def _postprocess_numeric_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        lowered_question = question.lower()
-        if "decrease" in lowered_question and isinstance(pred, (int, float)) and pred < 0:
-            return abs(pred)
-        return pred
-
-    @staticmethod
-    def _postprocess_figure_caption_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        lowered_question = question.lower()
-        is_caption_question = any(
-            marker in lowered_question
-            for marker in (
-                "name of the figure",
-                "what's name of the figure",
-                "name of the table",
-                "what's name of the table",
-            )
-        )
-        if not is_caption_question:
-            return pred
-        response = str((sample.get("generation_metadata") or {}).get("response") or "")
-        quoted = re.search(r'["“](Figure\s+\d+\s*:[^"”]+)["”]', response)
-        if quoted:
-            return quoted.group(1).strip()
-        bold = re.search(r"\*\*(Figure\s+\d+\s*:[^*]+)\*\*", response)
-        if bold:
-            return bold.group(1).strip()
-        if isinstance(pred, str):
-            expanded = LongDocURLAdapter._caption_from_response(pred, response)
-            if expanded != pred:
-                return expanded
-        return pred
-
-    @staticmethod
-    def _caption_from_response(pred: str, response: str) -> str:
-        match = re.fullmatch(r"\s*((?:Table|Figure|Fig\.?)[\s.:]*\d+(?:\.\d+)*)\s*\.?\s*", pred, re.IGNORECASE)
-        if not match:
-            return pred
-        label = match.group(1).strip()
-        label_number = re.sub(r"^(?:Table|Figure|Fig\.?)\s*", "", label, flags=re.IGNORECASE)
-        prefixes = [re.escape(label)]
-        if label.lower().startswith("fig"):
-            prefixes.append(r"Figure\s*" + re.escape(label_number))
-            prefixes.append(r"Fig\.?\s*" + re.escape(label_number))
-        if label.lower().startswith("table"):
-            prefixes.append(r"Table\s*" + re.escape(label_number))
-        for prefix in prefixes:
-            caption_match = re.search(rf"({prefix}\s*[:.]\s*[^\n*]+)", response, re.IGNORECASE)
-            if not caption_match:
-                continue
-            caption = caption_match.group(1).strip().strip('"“”').rstrip()
-            caption = re.split(
-                r"\s+(?:Therefore|This is|These are|It is|The table|The figure)\b",
-                caption,
-                maxsplit=1,
-                flags=re.IGNORECASE,
-            )[0].strip()
-            caption = caption.strip().strip('"“”').rstrip(".").strip()
-            if len(caption) > len(pred) + 3:
-                return caption
-        return pred
-
-    @staticmethod
-    def _postprocess_string_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        lowered_question = question.lower()
-        response = str((sample.get("generation_metadata") or {}).get("response") or "")
-        code_answer = LongDocURLAdapter._code_answer_from_response(pred, response, lowered_question)
-        if code_answer != pred:
-            return code_answer
-        if isinstance(pred, list):
-            if "gender distribution" in lowered_question:
-                counts = {}
-                for item in pred:
-                    match = re.search(r"\b(female|male)s?\b\D*(\d+)", str(item), re.IGNORECASE)
-                    if match:
-                        counts[match.group(1).lower()] = match.group(2)
-                if "female" in counts and "male" in counts:
-                    return f"{counts['female']} females and {counts['male']} males"
-            if len(pred) == 1:
-                return str(pred[0])
-            return " and ".join(str(item) for item in pred)
-        if isinstance(pred, (int, float)) or re.fullmatch(r"\d+(?:\.0+)?", str(pred).strip()):
-            with_unit = LongDocURLAdapter._numeric_string_with_unit_from_response(pred, response)
-            if with_unit != pred:
-                return with_unit
-            compact_response = response.lower()
-            match = re.search(r"\bat least\s+(three|four|five|six|seven|eight|nine|ten|\d+)\b", compact_response)
-            if match:
-                word_to_number = {
-                    "three": "3",
-                    "four": "4",
-                    "five": "5",
-                    "six": "6",
-                    "seven": "7",
-                    "eight": "8",
-                    "nine": "9",
-                    "ten": "10",
-                }
-                value = word_to_number.get(match.group(1), match.group(1))
-                return f"at least {value}"
-        if isinstance(pred, str):
-            if pred.lower().endswith(" number"):
-                return re.sub(r"\s+number$", "", pred, flags=re.IGNORECASE).strip()
-            if pred.lower().strip() == "fencing":
-                return "A fence"
-        return pred
-
-    @staticmethod
-    def _code_answer_from_response(pred: Any, response: str, lowered_question: str) -> Any:
-        if not isinstance(pred, str):
-            return pred
-        if not ("cve-" in lowered_question and "fix" in lowered_question and "method" in lowered_question):
-            return pred
-        match = re.search(r"`?([A-Za-z_][\w.]*\([^\n`]{0,120}\))`?", response)
-        if not match:
-            return pred
-        return match.group(1).strip().rstrip(";").rstrip(".")
-
-    @staticmethod
-    def _numeric_string_with_unit_from_response(pred: Any, response: str) -> Any:
-        try:
-            numeric = float(pred)
-        except Exception:
-            return pred
-        value = str(int(numeric)) if numeric.is_integer() else str(numeric).rstrip("0").rstrip(".")
-        patterns = (
-            rf"\b{re.escape(value)}(?:\.0)?\s*[- ]?day\b",
-            rf"\b{re.escape(value)}(?:\.0)?\s*p\b",
-            rf"(?:US\$|\$|£)\s*{re.escape(value)}\s*(?:million|billion|thousand)\b",
-        )
-        for pattern in patterns:
-            match = re.search(pattern, response, re.IGNORECASE)
-            if match:
-                return re.sub(r"\s+-\s+|\s+", lambda item: "-" if "-" in item.group(0) else " ", match.group(0)).strip()
-        word_to_number = {
-            "three": "3",
-            "four": "4",
-            "five": "5",
-            "six": "6",
-            "seven": "7",
-            "eight": "8",
-            "nine": "9",
-            "ten": "10",
-        }
-        every_match = re.search(r"\bevery\s+(three|four|five|six|seven|eight|nine|ten|\d+)\s+years?\b", response, re.IGNORECASE)
-        if every_match:
-            matched_value = word_to_number.get(every_match.group(1).lower(), every_match.group(1))
-            if matched_value == value:
-                return every_match.group(0).lower()
-        return pred
-
-    @staticmethod
-    def _postprocess_list_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        if not isinstance(pred, str) or pred == "Not answerable" or ";" not in pred:
-            return pred
-        parts = []
-        current = pred.split(";")[0].strip()
-        for segment in pred.split(";")[1:]:
-            segment = segment.strip()
-            if re.match(r"(?:[A-Z]{2,}/|[A-Z][A-Za-z ]{3,}|\d+(?:\.\d+)*\s+[A-Z])", segment):
-                parts.append(current)
-                current = segment
-            else:
-                current = f"{current}; {segment}"
-        parts.append(current)
-        return parts if len(parts) > 1 else pred
-
-    @staticmethod
-    def _postprocess_none_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        response = str((sample.get("generation_metadata") or {}).get("response") or "").lower()
-        if any(marker in response for marker in ("not answerable", "not available", "no information available", "does not provide", "not provided")):
-            return "Not answerable"
-        return pred
-
-    @staticmethod
-    def _postprocess_locating_label_prediction(sample: Dict[str, Any], pred: Any, question: str) -> Any:
-        if not LongDocURLAdapter._is_locating_question(question):
-            return pred
-        labels = LongDocURLAdapter._aeg_locating_candidate_labels(sample)
-        if not labels:
-            return pred
-        if isinstance(pred, list):
-            normalized = [
-                LongDocURLAdapter._normalize_locating_label_item(str(item), labels)
-                for item in pred
-            ]
-            return normalized if normalized != pred else pred
-        if isinstance(pred, str):
-            return LongDocURLAdapter._normalize_locating_label_item(pred, labels)
-        return pred
-
-    @staticmethod
-    def _is_locating_question(question: str) -> bool:
-        text = str(question or "").lower()
-        return any(marker in text for marker in (
-            "select titles",
-            "select table names",
-            "which section",
-            "which title",
-            "what's name of the table",
-            "what is the name of the table",
-            "what's name of the figure",
-            "what is the name of the figure",
-            "list names of the other tables",
-            "list names of the other figures",
-            "which tables provide",
-            "which figures provide",
-            "where can we find",
-            "best matches",
-        ))
-
-    @staticmethod
-    def _aeg_locating_candidate_labels(sample: Dict[str, Any]) -> list[dict[str, Any]]:
-        metadata = sample.get("prepare_metadata") or {}
-        graph_dir = Path(str(metadata.get("graph_dir") or ""))
-        nodes_path = graph_dir / "nodes.jsonl"
-        if not nodes_path.exists():
-            return []
-        final_states = metadata.get("final_node_states") or {}
-        visible_node_ids = {
-            str(node_id)
-            for node_id, state in final_states.items()
-            if str(state).lower() in {"active", "opened"}
-        }
-        if not visible_node_ids:
-            visible_node_ids = {
-                str(node_id)
-                for node_id in (metadata.get("opened_node_ids") or []) + (metadata.get("active_node_ids") or [])
-            }
-        labels = []
-        seen = set()
-        with nodes_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                node = json.loads(line)
-                node_id = str(node.get("id") or "")
-                if node_id not in visible_node_ids:
-                    continue
-                node_type = str(node.get("type") or "").lower()
-                if node_type not in {"title", "table", "figure", "chart"}:
-                    continue
-                label = LongDocURLAdapter._node_visible_label(node)
-                if not label or label in seen:
-                    continue
-                seen.add(label)
-                labels.append({
-                    "label": label,
-                    "node_type": node_type,
-                    "page_index": int(node.get("page_index", -1)),
-                })
-        return labels
-
-    @staticmethod
-    def _node_visible_label(node: Dict[str, Any]) -> str:
-        node_type = str(node.get("type") or "").lower()
-        if node_type in {"table", "figure", "chart"}:
-            primary_values = (node.get("caption"), node.get("title"), node.get("name"))
-            fallback_values = (node.get("text"), node.get("abstract"))
-        else:
-            primary_values = (node.get("title"), node.get("name"), node.get("caption"), node.get("text"), node.get("abstract"))
-            fallback_values = ()
-        for value in primary_values:
-            label = str(value or "").strip()
-            if not label:
-                continue
-            label = label.splitlines()[0].strip()
-            if ":page:" in label or ":block:" in label:
-                continue
-            return label
-        for value in fallback_values:
-            label = str(value or "").strip()
-            if not label:
-                continue
-            label = label.splitlines()[0].strip()
-            if ":page:" in label or ":block:" in label:
-                continue
-            if re.match(r"^(?:Table|Figure|Fig\.?|Chart)\s*[\d.:]", label, flags=re.IGNORECASE):
-                return label
-        return ""
-
-    @staticmethod
-    def _normalize_locating_label_item(item: str, labels: list[dict[str, Any]]) -> str:
-        text = str(item or "").strip().strip("'\"")
-        if not text:
-            return item
-        exact = [
-            entry["label"]
-            for entry in labels
-            if LongDocURLAdapter._clean_string(entry["label"]) == LongDocURLAdapter._clean_string(text)
-        ]
-        if len(exact) == 1:
-            return exact[0]
-
-        page_match = re.search(
-            r"\b(?P<kind>table|figure|fig\.?|chart)\b.{0,40}\bpage\s+(?P<page>\d+)\b|"
-            r"\bpage\s+(?P<page_first>\d+)\b.{0,40}\b(?P<kind_last>table|figure|fig\.?|chart)\b",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if page_match:
-            kind = str(page_match.group("kind") or page_match.group("kind_last") or "").lower()
-            page_number = int(page_match.group("page") or page_match.group("page_first"))
-            node_types = {"figure", "chart"} if kind.startswith("fig") else {kind}
-            candidates = [
-                entry["label"]
-                for entry in labels
-                if entry["page_index"] == page_number - 1 and entry["node_type"] in node_types
-            ]
-            if len(candidates) == 1:
-                return candidates[0]
-
-        short_match = re.fullmatch(r"(Table|Figure|Fig\.?|Chart)\s*[\s.:]*\d+(?:\.\d+)*", text, flags=re.IGNORECASE)
-        if short_match:
-            normalized_short = re.sub(r"\s+", " ", text).strip().lower().replace("fig.", "figure")
-            candidates = []
-            for entry in labels:
-                label_prefix = re.sub(r"\s+", " ", str(entry["label"]).strip()).lower().replace("fig.", "figure")
-                if re.match(rf"^{re.escape(normalized_short)}(?:\b|[\\s:.-])", label_prefix):
-                    candidates.append(entry["label"])
-            if len(candidates) == 1:
-                return candidates[0]
-        return item
-
     def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
         sample = dict(sample)
         _reset_sample_fields(sample, COMMON_RESULT_FIELDS)
+        self_answered = _process_self_answering_sample(sample, context_builder, "longdocurl", client)
+        if self_answered is not None:
+            if self_answered.get("pred") is None:
+                return None
+            self_answered["score"] = self.score(
+                self_answered["answer"],
+                self_answered["pred"],
+                self_answered["answer_format"],
+            )
+            return self_answered
         messages, qa_model_name, extractor_model_name = _prepare_messages(sample, cfg, context_builder, "longdocurl", client)
         response = _generate_response(sample, messages, qa_model_name, client, "LongDocURL generation")
         if response is None:
@@ -1204,10 +635,6 @@ class LongDocURLAdapter:
         if pred is None:
             logger.warning("Failed to extract LongDocURL answer. question_id=%s", sample.get("question_id"))
             return None
-        if _is_aeg_rag_cfg(cfg):
-            pred, postprocess_metadata = self.postprocess_prediction(sample, pred)
-            if postprocess_metadata is not None:
-                sample["extraction_metadata"]["postprocess"] = postprocess_metadata
         sample["pred"] = pred
         sample["pred_format"] = pred_format
         sample["score"] = self.score(sample["answer"], pred, sample["answer_format"])

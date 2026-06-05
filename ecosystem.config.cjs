@@ -21,7 +21,7 @@ module.exports = {
       args: "128k",
       cwd: "/root/autodl-tmp/ylz/NeurIPS_2026/code",
       env: {
-        CUDA_VISIBLE_DEVICES: "1",
+        CUDA_VISIBLE_DEVICES: "0",
         PORT: "8010",
         GPU_MEMORY_UTILIZATION: "0.6",
         VLLM_SERVE_SCRIPT: "scripts/serve_qwen3_vl_vllm.sh",

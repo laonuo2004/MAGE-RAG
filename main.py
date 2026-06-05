@@ -12,11 +12,6 @@ from utils.logging_utils import apply_logging_config
 
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env")
 
-
-def prepare_baseline_cache(cfg):
-    prepare_embedding_cache(cfg)
-
-
 @hydra.main(version_base="1.3", config_path="configs", config_name="config")
 def main(cfg: DictConfig) -> None:
     apply_logging_config(cfg)
@@ -25,7 +20,7 @@ def main(cfg: DictConfig) -> None:
     logger.info("Starting Benchmark With The Following Configuration:")
     logger.info("\n" + OmegaConf.to_yaml(cfg, resolve=True))
 
-    prepare_baseline_cache(cfg)
+    prepare_embedding_cache(cfg)
     run_benchmark(cfg)
 
     logger.info(f"Hydra Output Dir: {HydraConfig.get().runtime.output_dir}")

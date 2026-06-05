@@ -147,24 +147,6 @@ class XMLEvaluator:
                 "Do not answer from unrelated retrieved pages when the requested scope is missing.",
                 "If candidate actions cannot reach the requested scope, issue a search_request for the page/slide and target evidence.",
             ])
-        finance_markers = (
-            "ratio",
-            "cash ratio",
-            "debt to total assets",
-            "total debt",
-            "total assets",
-            "gross profit",
-            "payables turnover",
-            "current liabilities",
-            "short-term investments",
-            "accounts payable",
-        )
-        if any(marker in text for marker in finance_markers):
-            lines.extend([
-                "For financial ratio questions, identify the formula and required fields before selecting actions.",
-                "If any required financial field is missing from opened evidence, issue a search_request for that field and year.",
-                "Prefer annual statement tables over performance graphs or narrative summaries for financial calculations.",
-            ])
         if re.search(r"\b(list|all|enumerate)\b", text) or re.search(r"\bwhich\s+(?:\w+\s+){0,3}(?:items?|sections?|pages?|figures?|examples?)\b", text):
             lines.extend([
                 "For list or exhaustive questions, keep searching until all requested items and scopes are covered.",
@@ -175,6 +157,7 @@ class XMLEvaluator:
 
     def trace_input(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> dict[str, Any]:
         return {
+            "prompt_text": self.build_prompt(question, state, candidates),
             "context_xml": self.build_context_xml(question, state, candidates),
             "candidate_actions": [
                 {

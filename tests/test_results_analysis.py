@@ -357,6 +357,71 @@ def test_aeg_rag_plugin_builds_case_visualization_from_trace_and_graph(tmp_path)
     assert data["node_rows"][0]["preview"] == "Important title"
 
 
+def test_aeg_rag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
+    graph_dir = tmp_path / "graph"
+    _write_json(graph_dir / "graph.json", {"doc_key": "doc"})
+    _write_jsonl(
+        graph_dir / "nodes.jsonl",
+        [
+            {"id": "doc:page:0", "type": "page", "page_index": 0, "abstract": "Page"},
+            {"id": "doc:page:0:block:0:title", "type": "title", "page_index": 0, "abstract": "Title"},
+        ],
+    )
+    _write_jsonl(graph_dir / "edges.jsonl", [])
+    record = {
+        "question_id": "q1",
+        "score": 1.0,
+        "prepare_metadata": {
+            "graph_dir": str(graph_dir),
+            "allowed_pages": [0],
+            "reader_input": {
+                "text_parts": ["Reader prompt"],
+                "image_refs": [{"page_index": 0, "image_path": str(tmp_path / "page.png")}],
+                "content_part_count": 2,
+            },
+            "final_node_states": {
+                "doc:page:0": "Active",
+                "doc:page:0:block:0:title": "Opened",
+            },
+            "iteration_trace": [
+                {
+                    "iteration": 1,
+                    "action": "EvaluatorDecision",
+                    "evaluator_input": {
+                        "prompt_text": "controller prompt",
+                        "context_xml": "<agent_step_context><question>Q</question></agent_step_context>",
+                        "candidate_actions": [{"index": 1, "action_type": "OpenNode"}],
+                    },
+                    "raw_response": "<agent_decision><stop>false</stop></agent_decision>",
+                    "decision": {"stop": False},
+                    "state_snapshot_before": {"active_node_ids": ["doc:page:0"], "opened_node_ids": []},
+                },
+                {
+                    "iteration": 1,
+                    "action": "OpenNode",
+                    "ok": True,
+                    "payload": {"node_id": "doc:page:0:block:0:title", "previous_state": "Active"},
+                    "selection": {"candidate_index": 1, "candidate_id": "act:OpenNode:test"},
+                    "state_snapshot_after": {
+                        "active_node_ids": ["doc:page:0"],
+                        "opened_node_ids": ["doc:page:0:block:0:title"],
+                    },
+                },
+            ],
+        },
+    }
+
+    data = AEGRAGPlugin().case_visualization(record)
+
+    assert data["reader_input"]["text_parts"] == ["Reader prompt"]
+    assert data["reader_image_refs"][0]["page_index"] == 0
+    assert data["evaluator_rows"][0]["prompt_text"] == "controller prompt"
+    assert data["evaluator_rows"][0]["candidate_action_count"] == 1
+    assert data["expansion_rows"][1]["action"] == "OpenNode"
+    assert data["expansion_rows"][1]["selected_candidate_index"] == 1
+    assert data["expansion_rows"][1]["opened_nodes"] == 1
+
+
 def test_aeg_rag_plugin_handles_missing_graph_dir_without_crashing():
     data = AEGRAGPlugin().case_visualization(
         {

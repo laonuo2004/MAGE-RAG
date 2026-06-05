@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -438,7 +439,7 @@ def render_agent_trace_case(record: dict[str, Any], data: dict[str, Any]) -> Non
     with page_col:
         render_page_board(data.get("page_rows") or [])
 
-    detail_tabs = st.tabs(["Page Details", "Trace Steps", "Evaluator I/O", "Artifacts"])
+    detail_tabs = st.tabs(["Page Details", "Trace Steps", "Evaluator I/O", "Reader Input", "Graph Expansion", "Images", "Artifacts"])
     with detail_tabs[0]:
         render_page_details(data)
     with detail_tabs[1]:
@@ -446,6 +447,12 @@ def render_agent_trace_case(record: dict[str, Any], data: dict[str, Any]) -> Non
     with detail_tabs[2]:
         render_evaluator_io(data)
     with detail_tabs[3]:
+        render_reader_input(data)
+    with detail_tabs[4]:
+        render_graph_expansion(data)
+    with detail_tabs[5]:
+        render_agent_images(data)
+    with detail_tabs[6]:
         if data.get("validation_errors"):
             st.subheader("Validation errors")
             st.json(data["validation_errors"])
@@ -531,7 +538,7 @@ def render_trace_steps(data: dict[str, Any]) -> None:
 
 
 def render_evaluator_io(data: dict[str, Any]) -> None:
-    evaluator_rows = [
+    evaluator_rows = data.get("evaluator_rows") or [
         row for row in data.get("trace_rows") or []
         if row.get("action") == "EvaluatorDecision" or row.get("evaluator_input") or row.get("raw_response")
     ]
@@ -541,9 +548,14 @@ def render_evaluator_io(data: dict[str, Any]) -> None:
     selected_step = st.selectbox("Evaluator step", [row["step_index"] for row in evaluator_rows], key="agent_evaluator_step")
     row = next(row for row in evaluator_rows if row["step_index"] == selected_step)
     evaluator_input = row.get("evaluator_input") or {}
+    if not evaluator_input:
+        evaluator_input = row
+    if evaluator_input.get("prompt_text"):
+        st.subheader("Full evaluator prompt")
+        render_xml_or_code(evaluator_input["prompt_text"], key=f"evaluator_prompt_{selected_step}")
     if evaluator_input.get("context_xml"):
         st.subheader("Context XML")
-        st.code(evaluator_input["context_xml"], language="xml")
+        render_xml_or_code(evaluator_input["context_xml"], key=f"evaluator_context_{selected_step}")
     if evaluator_input.get("candidate_actions"):
         st.subheader("Candidate actions")
         st.dataframe(pd.DataFrame(evaluator_input["candidate_actions"]), use_container_width=True, hide_index=True)
@@ -555,7 +567,161 @@ def render_evaluator_io(data: dict[str, Any]) -> None:
         st.json(row["decision"])
     if row.get("raw_response"):
         st.subheader("Raw response")
-        st.code(str(row["raw_response"]), language="xml")
+        render_xml_or_code(str(row["raw_response"]), key=f"evaluator_raw_{selected_step}")
+
+
+def render_reader_input(data: dict[str, Any]) -> None:
+    reader_input = data.get("reader_input") or {}
+    if not reader_input:
+        st.info("No reader input trace recorded for this sample.")
+        return
+    st.write({
+        "content_part_count": reader_input.get("content_part_count"),
+        "text_parts": len(reader_input.get("text_parts") or []),
+        "image_refs": len(reader_input.get("image_refs") or []),
+    })
+    text_parts = reader_input.get("text_parts") or []
+    if text_parts:
+        selected = st.selectbox("Text part", list(range(len(text_parts))), format_func=lambda index: f"Text part {index + 1}", key="reader_text_part")
+        render_xml_or_code(str(text_parts[int(selected)]), key=f"reader_text_{selected}")
+    image_refs = reader_input.get("image_refs") or []
+    if image_refs:
+        st.subheader("Reader image refs")
+        st.dataframe(pd.DataFrame(image_refs), use_container_width=True, hide_index=True)
+    with st.expander("Sanitized messages"):
+        st.json(reader_input.get("messages") or [])
+
+
+def render_graph_expansion(data: dict[str, Any]) -> None:
+    rows = data.get("expansion_rows") or []
+    if not rows:
+        st.info("No graph expansion trace available.")
+        return
+    df = pd.DataFrame(rows)
+    actions = st.multiselect("Expansion action", sorted(df["action"].dropna().unique()), key="expansion_action_filter")
+    if actions:
+        df = df[df["action"].isin(actions)]
+    display_cols = [
+        "step_index",
+        "iteration",
+        "action",
+        "ok",
+        "page_number",
+        "node_id",
+        "selected_candidate_index",
+        "selected_candidate_type",
+        "active_nodes",
+        "opened_nodes",
+        "pruned_nodes",
+        "message",
+    ]
+    st.dataframe(df[[col for col in display_cols if col in df.columns]], use_container_width=True, hide_index=True)
+    if df.empty:
+        return
+    selected_step = st.selectbox("Expansion step", df["step_index"].astype(int).tolist(), key="agent_expansion_step")
+    row = next(row for row in rows if int(row.get("step_index")) == int(selected_step))
+    st.json(row)
+
+
+def render_agent_images(data: dict[str, Any]) -> None:
+    refs = []
+    refs.extend(data.get("reader_image_refs") or [])
+    for row in data.get("evaluator_rows") or []:
+        refs.extend(row.get("opened_image_refs") or [])
+    for row in data.get("page_rows") or []:
+        if row.get("page_image_path"):
+            refs.append({
+                "kind": "page_detail",
+                "page_index": row.get("page_index"),
+                "page_number": row.get("page_number"),
+                "image_path": row.get("page_image_path"),
+            })
+    for row in data.get("node_rows") or []:
+        if row.get("image_path"):
+            refs.append({
+                "kind": "node",
+                "node_id": row.get("node_id"),
+                "page_index": row.get("page_index"),
+                "page_number": row.get("page_number"),
+                "image_path": row.get("image_path"),
+            })
+    deduped = []
+    seen = set()
+    for ref in refs:
+        path = ref.get("image_path")
+        key = (ref.get("kind"), ref.get("node_id"), ref.get("page_index"), path)
+        if not path or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(ref)
+    if not deduped:
+        st.info("No image refs available.")
+        return
+    st.dataframe(pd.DataFrame(deduped), use_container_width=True, hide_index=True)
+    selected = st.selectbox(
+        "Image",
+        list(range(len(deduped))),
+        format_func=lambda index: _image_ref_label(deduped[int(index)]),
+        key="agent_image_ref",
+    )
+    ref = deduped[int(selected)]
+    image_path = Path(str(ref.get("image_path")))
+    if image_path.exists():
+        st.image(str(image_path), caption=str(image_path), use_container_width=True)
+    else:
+        st.info(f"Missing image path: {image_path}")
+
+
+def render_xml_or_code(text: str, key: str) -> None:
+    view = st.radio("View", ["Structured", "Raw"], horizontal=True, key=f"{key}_view")
+    if view == "Raw":
+        st.code(text, language="xml")
+        return
+    try:
+        root = ET.fromstring(_extract_xml_document(text))
+    except ET.ParseError:
+        st.code(text, language="xml")
+        return
+    render_xml_node(root, key=key)
+
+
+def render_xml_node(node: ET.Element, key: str, depth: int = 0) -> None:
+    text = " ".join((node.text or "").split())
+    label = node.tag
+    if node.attrib:
+        attrs = " ".join(f'{name}="{value}"' for name, value in node.attrib.items())
+        label = f"{label} {attrs}"
+    if text:
+        label = f"{label}: {text[:80]}"
+    children = list(node)
+    if children:
+        with st.expander(label, expanded=depth < 2):
+            if node.attrib:
+                st.json(dict(node.attrib))
+            if text:
+                st.write(text)
+            for index, child in enumerate(children):
+                render_xml_node(child, key=f"{key}_{depth}_{index}", depth=depth + 1)
+        return
+    st.write(label)
+
+
+def _extract_xml_document(text: str) -> str:
+    value = str(text or "").strip()
+    if "<agent_step_context" in value:
+        return value[value.index("<agent_step_context") :]
+    if "<agent_decision" in value:
+        return value[value.index("<agent_decision") :]
+    return value
+
+
+def _image_ref_label(ref: dict[str, Any]) -> str:
+    pieces = [str(ref.get("kind") or "image")]
+    if ref.get("page_number") is not None:
+        pieces.append(f"page {ref['page_number']}")
+    if ref.get("node_id"):
+        pieces.append(str(ref["node_id"]))
+    return " | ".join(pieces)
 
 
 def _agent_trace_index(records: list[dict[str, Any]]) -> pd.DataFrame:

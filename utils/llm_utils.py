@@ -1,5 +1,7 @@
 """Helpers for LiteLLM/OpenAI-compatible chat completion calls."""
 
+import time
+
 from openai import OpenAI
 
 from utils.config_utils import require_config_value
@@ -47,8 +49,9 @@ def call_llm_messages(
     exception. This keeps benchmark-specific failure semantics out of the
     retry loop.
     """
+    total_attempts = int(retries)
     last_error = None
-    for attempt in range(1, int(retries) + 1):
+    for attempt in range(1, total_attempts + 1):
         try:
             completion = client.chat.completions.create(
                 model=model_name,
@@ -62,15 +65,30 @@ def call_llm_messages(
             return completion
         except Exception as exc:
             last_error = exc
+            if attempt == total_attempts:
+                if logger is not None:
+                    logger.warning(
+                        "%s failed. model=%s attempt=%s/%s error=%s",
+                        log_prefix,
+                        model_name,
+                        attempt,
+                        retries,
+                        exc,
+                    )
+                continue
+
+            delay = 5 * (2 ** (attempt - 1))
             if logger is not None:
                 logger.warning(
-                    "%s failed. model=%s attempt=%s/%s error=%s",
+                    "%s failed. model=%s attempt=%s/%s retry_in=%ss error=%s",
                     log_prefix,
                     model_name,
                     attempt,
                     retries,
+                    delay,
                     exc,
                 )
+            time.sleep(delay)
 
     if callable(failure_value):
         return failure_value(last_error)

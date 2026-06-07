@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from analysis.plugins import AnalysisPlugin, ParameterSpec, get_plugin, registered_plugins
-from analysis.plugins.aeg_rag import AEGRAGPlugin
+from analysis.plugins.magerag import MAGERAGPlugin
 from analysis.results_loader import parse_run_parameters, read_jsonl_cached, scan_runs
 from analysis.results_metrics import (
     build_leaderboard,
@@ -47,10 +47,13 @@ def test_plugin_registry_discovers_builtin_and_defaults_unknown_baselines():
 
     assert "bm25" in plugin_names
     assert "m3docrag_iterate" in plugin_names
-    assert "aeg_rag" in plugin_names
+    assert "magerag" in plugin_names
     assert get_plugin("bm25").name == "bm25"
-    assert get_plugin("aeg-rag").name == "aeg_rag"
-    assert get_plugin("aeg_rag").name == "aeg_rag"
+    assert get_plugin("magerag").name == "magerag"
+    assert get_plugin("mage-rag").name == "default"
+    assert get_plugin("mage_rag").name == "default"
+    assert get_plugin("aeg-rag").name == "default"
+    assert get_plugin("aeg_rag").name == "default"
     assert get_plugin("toy_reranker").name == "default"
 
 
@@ -269,7 +272,7 @@ def test_root_dashboard_entrypoint_uses_absolute_imports():
     assert "sys.path" not in source
 
 
-def test_aeg_rag_plugin_builds_case_visualization_from_trace_and_graph(tmp_path):
+def test_magerag_plugin_builds_case_visualization_from_trace_and_graph(tmp_path):
     graph_dir = tmp_path / "graph"
     _write_json(graph_dir / "graph.json", {"doc_key": "doc"})
     _write_jsonl(
@@ -341,7 +344,7 @@ def test_aeg_rag_plugin_builds_case_visualization_from_trace_and_graph(tmp_path)
         },
     }
 
-    data = AEGRAGPlugin().case_visualization(record)
+    data = MAGERAGPlugin().case_visualization(record)
 
     assert data["summary"]["trace_steps"] == 2
     assert data["summary"]["opened_nodes"] == 1
@@ -357,7 +360,7 @@ def test_aeg_rag_plugin_builds_case_visualization_from_trace_and_graph(tmp_path)
     assert data["node_rows"][0]["preview"] == "Important title"
 
 
-def test_aeg_rag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
+def test_magerag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
     graph_dir = tmp_path / "graph"
     _write_json(graph_dir / "graph.json", {"doc_key": "doc"})
     _write_jsonl(
@@ -411,7 +414,7 @@ def test_aeg_rag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
         },
     }
 
-    data = AEGRAGPlugin().case_visualization(record)
+    data = MAGERAGPlugin().case_visualization(record)
 
     assert data["reader_input"]["text_parts"] == ["Reader prompt"]
     assert data["reader_image_refs"][0]["page_index"] == 0
@@ -422,8 +425,8 @@ def test_aeg_rag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
     assert data["expansion_rows"][1]["opened_nodes"] == 1
 
 
-def test_aeg_rag_plugin_handles_missing_graph_dir_without_crashing():
-    data = AEGRAGPlugin().case_visualization(
+def test_magerag_plugin_handles_missing_graph_dir_without_crashing():
+    data = MAGERAGPlugin().case_visualization(
         {
             "question_id": "q-missing",
             "score": 0.0,

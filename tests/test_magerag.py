@@ -7,74 +7,97 @@ from pathlib import Path
 
 from omegaconf import OmegaConf
 
-from baselines.aeg_rag.actions import CandidateAction
-from baselines.aeg_rag.actions import ActivateNode, ActivatePage, FollowRelation, OpenNode, PruneNode, SearchEvidence
-from baselines.aeg_rag.builder import AEGRAGContextBuilder
-from baselines.aeg_rag.builder import _candidate_from_selected_alias
-from baselines.aeg_rag.builder import _question_named_scope_specs
-from baselines.aeg_rag.builder import _question_page_indices
-from baselines.aeg_rag.builder import _resolve_candidate
-from baselines.aeg_rag.candidate_generator import CandidateGenerator
-from baselines.aeg_rag.evaluator import EvaluatorDecision, XMLEvaluator, parse_agent_decision_xml
-from baselines.aeg_rag.graph_store import EvidenceGraphStore
-from baselines.aeg_rag.retrieval import ColPaliTop1Retriever
-from baselines.aeg_rag.renderer import ReaderRenderer
-from baselines.aeg_rag.state import ACTIVE, OPENED, PRUNED, EvidenceAgentState
+from baselines.magerag.actions import CandidateAction
+from baselines.magerag.actions import ActivateNode, ActivatePage, FollowRelation, OpenNode, PruneNode, SearchEvidence
+from baselines.magerag.builder import MAGERAGContextBuilder
+from baselines.magerag.builder import _candidate_from_selected_alias
+from baselines.magerag.builder import _question_named_scope_specs
+from baselines.magerag.builder import _question_page_indices
+from baselines.magerag.builder import _resolve_candidate
+from baselines.magerag.candidate_generator import CandidateGenerator
+from baselines.magerag.evaluator import EvaluatorDecision, XMLEvaluator, parse_agent_decision_xml
+from baselines.magerag.graph_store import EvidenceGraphStore
+from baselines.magerag.retrieval import ColPaliTop1Retriever
+from baselines.magerag.renderer import ReaderRenderer
+from baselines.magerag.state import ACTIVE, OPENED, PRUNED, EvidenceAgentState
 from baselines.base import ContextMessages
 from baselines.wrapper import build_context_builder
 from benchmarks.adapters import MMLongBenchAdapter
 
 
-class AEGRAGTests(unittest.TestCase):
-    def test_build_context_builder_routes_aeg_rag(self):
-        builder = build_context_builder(OmegaConf.create({"baselines": {"name": "aeg-rag"}}))
+class MAGERAGTests(unittest.TestCase):
+    def test_build_context_builder_routes_magerag(self):
+        builder = build_context_builder(OmegaConf.create({"baselines": {"name": "magerag"}}))
 
-        self.assertEqual(builder.name, "aeg-rag")
+        self.assertEqual(builder.name, "magerag")
 
-    def test_retriever_uses_benchmark_specific_initial_top_k(self):
+    def test_build_context_builder_rejects_old_aeg_rag_name(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported context_builder: aeg-rag"):
+            build_context_builder(OmegaConf.create({"baselines": {"name": "aeg-rag"}}))
+
+    def test_build_context_builder_rejects_delimited_mage_names(self):
+        for old_name in ("mage-rag", "mage_rag"):
+            with self.subTest(old_name=old_name):
+                with self.assertRaisesRegex(ValueError, f"Unsupported context_builder: {old_name}"):
+                    build_context_builder(OmegaConf.create({"baselines": {"name": old_name}}))
+
+    def test_builder_rejects_legacy_mage_config_sections(self):
+        with self.assertRaisesRegex(ValueError, "legacy config sections: baselines.agent"):
+            MAGERAGContextBuilder(OmegaConf.create({
+                "baselines": {
+                    "name": "magerag",
+                    "agent": {"run_online": True},
+                }
+            }))
+
+    def test_retriever_uses_single_params_top_k_for_all_benchmarks(self):
         retriever = ColPaliTop1Retriever(OmegaConf.create({
             "baselines": {
-                "agent": {
-                    "initial_retrieval_top_k": 5,
-                    "initial_retrieval_top_k_longdocurl": 10,
-                    "initial_retrieval_top_k_mmlongbench": 15,
-                }
+                "params": {"top_k": 7}
             }
         }))
 
-        self.assertEqual(retriever.top_k_for("longdocurl"), 10)
-        self.assertEqual(retriever.top_k_for("mmlongbench"), 15)
+        self.assertEqual(retriever.top_k_for("longdocurl"), 7)
+        self.assertEqual(retriever.top_k_for("mmlongbench"), 7)
 
-    def test_default_aeg_config_uses_benchmark_specific_fair_top_k(self):
-        cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
+    def test_default_mage_config_uses_single_fair_top_k(self):
+        cfg = OmegaConf.load("configs/baselines/magerag.yaml")
 
         retriever = ColPaliTop1Retriever(OmegaConf.create({"baselines": cfg}))
 
         self.assertEqual(retriever.top_k_for("longdocurl"), 5)
         self.assertEqual(retriever.top_k_for("mmlongbench"), 5)
 
-    def test_default_aeg_config_uses_bounded_online_iteration_budget(self):
-        cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
+    def test_default_mage_config_is_compact_and_uses_new_schema(self):
+        cfg = OmegaConf.load("configs/baselines/magerag.yaml")
 
-        self.assertLessEqual(int(cfg.safety.watchdog_iterations), 6)
-
-    def test_default_aeg_config_limits_selected_actions_per_iteration(self):
-        cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
-
-        self.assertLessEqual(int(cfg.agent.max_selected_actions_per_iteration), 5)
-
-    def test_default_aeg_config_limits_total_executed_agent_actions(self):
-        cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
-
-        self.assertLessEqual(int(cfg.agent.max_total_selected_actions), 24)
-
-    def test_default_aeg_config_uses_top_k_page_text_for_mmlongbench_reader(self):
-        cfg = OmegaConf.load("configs/baselines/aeg-rag.yaml")
-
-        self.assertEqual(str(cfg.renderer.mmlongbench_prompt_mode), "plain")
-        self.assertFalse(bool(cfg.renderer.include_opened_node_text_mmlongbench))
-        self.assertFalse(bool(cfg.renderer.mmlongbench_include_opened_node_crops))
-        self.assertEqual(int(cfg.renderer.mmlongbench_page_text_max_pages), 1)
+        self.assertEqual(str(cfg.name), "magerag")
+        self.assertEqual(int(cfg.params.top_k), 5)
+        self.assertNotIn("graph_escape", cfg.params)
+        self.assertNotIn("online_agent", cfg.params)
+        self.assertEqual(set(cfg.params.keys()), {"top_k"})
+        self.assertEqual(str(cfg.models.evaluator), "Qwen3-VL-8B-Instruct")
+        self.assertEqual(str(cfg.evaluator.prompt_style), "structured")
+        self.assertTrue(bool(cfg.evaluator.include_few_shot_examples))
+        self.assertEqual(int(cfg.evaluator.reason_max_words), 30)
+        self.assertEqual(int(cfg.evaluator.raw_text_char_limit), 1200)
+        self.assertEqual(int(cfg.evaluator.max_candidate_actions), 120)
+        self.assertEqual(int(cfg.evaluator.max_selected_actions_per_iteration), 4)
+        self.assertEqual(int(cfg.evaluator.max_total_selected_actions), 24)
+        self.assertEqual(int(cfg.controller.watchdog_iterations), 6)
+        self.assertEqual(int(cfg.controller.watchdog_repeated_noop_rounds), 2)
+        self.assertEqual(int(cfg.controller.auto_open_max_nodes_per_page), 24)
+        self.assertEqual(int(cfg.controller.final_open_active_node_limit), 16)
+        self.assertEqual(str(cfg.reader.mode), "compact")
+        self.assertEqual(str(cfg.reader.prompt_style), "structured")
+        self.assertEqual(str(cfg.reader.not_answerable_text), "Not answerable.")
+        self.assertTrue(bool(cfg.reader.include_self_check_instruction))
+        self.assertTrue(bool(cfg.reader.include_image_page_labels))
+        self.assertNotIn("mmlongbench_prompt", cfg.reader)
+        self.assertNotIn("mmlongbench_include_image_page_labels", cfg.reader)
+        self.assertNotIn("agent", cfg)
+        self.assertIn("evaluator", cfg)
+        self.assertNotIn("safety", cfg)
 
     def test_graph_store_loads_synthetic_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -85,7 +108,7 @@ class AEGRAGTests(unittest.TestCase):
         self.assertIn("e1", graph.edges)
         self.assertEqual(graph.parent_page_node_id("n1"), "page:0")
 
-    def test_graph_escape_false_blocks_activation_outside_allowed_pages(self):
+    def test_activation_outside_allowed_pages_is_blocked(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
 
@@ -352,7 +375,7 @@ class AEGRAGTests(unittest.TestCase):
         self.assertEqual(decision.selected_actions[0]["candidate_index"], 2)
         self.assertEqual(decision.selected_actions[0]["candidate_id"], "")
 
-    def test_xml_evaluator_prompt_adds_page_scope_guidance(self):
+    def test_xml_evaluator_prompt_uses_structured_generic_policy(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
 
@@ -362,21 +385,29 @@ class AEGRAGTests(unittest.TestCase):
                 [],
             )
 
-        self.assertIn("For questions naming specific pages or slides, first verify the requested page or slide scope.", prompt)
-        self.assertIn("Do not answer from unrelated retrieved pages when the requested scope is missing.", prompt)
+        self.assertIn("<decision_policy>", prompt)
+        self.assertIn("<grounding_policy>", prompt)
+        self.assertIn("<output_schema>", prompt)
+        self.assertIn("<self_check>", prompt)
+        self.assertIn("<few_shot_examples>", prompt)
+        self.assertIn("<agent_step_context>", prompt)
+        self.assertNotIn("For questions naming specific pages or slides", prompt)
+        self.assertNotIn("For list or exhaustive questions", prompt)
 
-    def test_xml_evaluator_prompt_adds_exhaustive_list_guidance(self):
+    def test_xml_evaluator_prompt_does_not_add_question_keyword_hints(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
 
             prompt = XMLEvaluator("model").build_prompt(
-                "List all sections that discuss the experiment setup.",
+                "List all sections and enumerate every color mentioned on slides 1-3.",
                 state,
                 [],
             )
 
-        self.assertIn("For list or exhaustive questions, keep searching until all requested items and scopes are covered.", prompt)
-        self.assertIn("Do not stop after finding only one matching item when the question asks for all items, multiple examples, or a list.", prompt)
+        self.assertNotIn("For questions naming specific pages or slides", prompt)
+        self.assertNotIn("For list or exhaustive questions", prompt)
+        self.assertNotIn("For color questions", prompt)
+        self.assertNotIn("page/slide and target evidence", prompt)
 
     def test_xml_evaluator_accepts_direct_action_candidate_output(self):
         decision = parse_agent_decision_xml(
@@ -428,12 +459,12 @@ class AEGRAGTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "safety": {"watchdog_iterations": 3, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
                 }
             }))
+            builder.max_selected_actions_per_iteration = 2
             builder.evaluator.call = lambda client, question, state, candidates: (
                 EvaluatorDecision(selected_actions=[{"candidate_id": "missing"}]),
                 "<agent_decision/>",
@@ -449,41 +480,58 @@ class AEGRAGTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
                 }
             }))
-            builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(selected_actions=[{"candidate_index": 1, "candidate_id": ""}]),
-                "<agent_decision/>",
-            )
+            def fake_call(client, question, state, candidates):
+                index = next(index for index, candidate in enumerate(candidates, start=1) if candidate.id == "act:ActivateNode:n1")
+                return (
+                    EvaluatorDecision(selected_actions=[{"candidate_index": index, "candidate_id": ""}]),
+                    "<agent_decision/>",
+                )
+
+            builder.evaluator.call = fake_call
 
             builder._run_agent("question", state, client=object())
 
         self.assertIn("n1", state.active_node_ids())
         decision_trace = next(item for item in state.trace if item.get("action") == "EvaluatorDecision")
-        self.assertEqual(decision_trace["candidate_index_map"]["1"], "act:ActivateNode:n1")
+        self.assertIn("act:ActivateNode:n1", decision_trace["candidate_index_map"].values())
 
     def test_agent_truncates_selected_actions_per_iteration(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "agent": {"max_selected_actions_per_iteration": 2},
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
                 }
             }))
-            builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(selected_actions=[
-                    {"candidate_index": index, "candidate_id": ""}
-                    for index in range(1, 6)
-                ]),
-                "<agent_decision/>",
-            )
+            builder.max_selected_actions_per_iteration = 2
+            call_count = 0
+
+            def fake_call(client, question, state, candidates):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    return EvaluatorDecision(stop=True, reason="done"), "<agent_decision><stop>true</stop></agent_decision>"
+                return (
+                    EvaluatorDecision(selected_actions=[
+                        {"candidate_id": candidate_id}
+                        for candidate_id in [
+                            "act:ActivateNode:n1",
+                            "act:ActivateNode:n3",
+                            "act:ActivateNode:n_title",
+                            "act:ActivateNode:n2",
+                            "missing",
+                        ]
+                    ]),
+                    "<agent_decision/>",
+                )
+
+            builder.evaluator.call = fake_call
 
             builder._run_agent("question", state, client=object())
 
@@ -501,16 +549,13 @@ class AEGRAGTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "agent": {
-                        "max_selected_actions_per_iteration": 2,
-                        "max_total_selected_actions": 3,
-                    },
-                    "safety": {"watchdog_iterations": 8, "watchdog_repeated_noop_rounds": 8},
+                    "name": "magerag",
                 }
             }))
+            builder.max_selected_actions_per_iteration = 2
+            builder.max_total_selected_actions = 3
             call_count = 0
 
             def fake_call(client, question, state, candidates):
@@ -537,10 +582,9 @@ class AEGRAGTests(unittest.TestCase):
     def test_empty_candidate_numeric_selection_is_ignored_without_validation_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
                 }
             }))
             builder.evaluator.call = lambda client, question, state, candidates: (
@@ -569,10 +613,9 @@ class AEGRAGTests(unittest.TestCase):
             state.execute(ActivatePage(0, "initial_retrieval"))
             state.execute(ActivateNode("n1"))
             state.execute(OpenNode("n1"))
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
                 }
             }))
             builder.evaluator.call = lambda client, question, state, candidates: (
@@ -611,14 +654,8 @@ class AEGRAGTests(unittest.TestCase):
             self._write_graph(os.path.join(graph_root, "sample"))
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": True,
-                        "auto_open_initial_page_nodes": True,
-                        "initial_retrieval_top_k": 1,
-                    },
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -628,7 +665,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
@@ -655,13 +692,8 @@ class AEGRAGTests(unittest.TestCase):
             self._write_graph(os.path.join(graph_root, "sample"))
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": True,
-                        "initial_retrieval_top_k": 1,
-                    },
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -671,15 +703,27 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
             )
-            builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(selected_actions=[{"candidate_index": 1, "candidate_id": ""}]),
-                "<agent_decision><selected_actions><action index=\"1\"/></selected_actions></agent_decision>",
-            )
+            call_count = 0
+
+            def fake_call(client, question, state, candidates):
+                nonlocal call_count
+                call_count += 1
+                if call_count > 1:
+                    return (
+                        EvaluatorDecision(stop=True, reason="done"),
+                        "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                    )
+                return (
+                    EvaluatorDecision(selected_actions=[{"candidate_id": "act:ActivateNode:n1"}]),
+                    "<agent_decision><selected_actions><action candidate_id=\"act:ActivateNode:n1\"/></selected_actions></agent_decision>",
+                )
+
+            builder.evaluator.call = fake_call
 
             messages = builder.build(
                 "mmlongbench",
@@ -690,7 +734,7 @@ class AEGRAGTests(unittest.TestCase):
         decision_trace = next(item for item in messages.metadata["iteration_trace"] if item.get("action") == "EvaluatorDecision")
         self.assertEqual(decision_trace["evaluator_input"]["opened_image_refs"], [])
         self.assertIn("n1", messages.metadata["opened_node_ids"])
-        self.assertEqual(messages.metadata["iteration_trace"][-1]["action"], "FinalOpenActiveNode")
+        self.assertTrue(any(item.get("action") == "FinalOpenActiveNode" for item in messages.metadata["iteration_trace"]))
 
     def test_online_search_decision_opens_top_search_result(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -707,14 +751,8 @@ class AEGRAGTests(unittest.TestCase):
                 }) + "\n")
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": True,
-                        "initial_retrieval_top_k": 1,
-                        "final_open_active_nodes": False,
-                    },
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -724,7 +762,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
@@ -761,12 +799,9 @@ class AEGRAGTests(unittest.TestCase):
                 }) + "\n")
             state = EvidenceAgentState(EvidenceGraphStore(graph_dir, allowed_pages=[0, 1]))
             state.execute(ActivatePage(page_index=1, source="search"), iteration=1)
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "agent": {
-                        "final_open_active_node_limit_mmlongbench": 4,
-                    },
+                    "name": "magerag",
                 },
             }))
 
@@ -839,13 +874,12 @@ class AEGRAGTests(unittest.TestCase):
                 "abstract": "needle answer revenue table",
                 "text": "needle answer revenue table",
             }
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "agent": {"max_evaluator_candidate_actions": 5},
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
                 }
             }))
+            builder.max_evaluator_candidate_actions = 5
             seen_candidate_ids = []
 
             def fake_call(client, question, state, candidates):
@@ -891,7 +925,10 @@ class AEGRAGTests(unittest.TestCase):
             state.execute(PruneNode("n1", "irrelevant"))
             state.summaries.append({"summary_id": "summary:iter1:0", "source_node_ids": ["n1"], "text": "summary text"})
 
-            content = ReaderRenderer(OmegaConf.create({"benchmarks": {}}), include_page_images=False).render(
+            content = ReaderRenderer(
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "full"}}}),
+                include_page_images=False,
+            ).render(
                 "mmlongbench",
                 {"question": "Q?"},
                 state,
@@ -901,14 +938,17 @@ class AEGRAGTests(unittest.TestCase):
         self.assertNotIn("[n1] type=", prompt)
         self.assertIn("summary text", prompt)
 
-    def test_reader_renderer_warns_not_to_answer_with_evidence_ids_for_locating(self):
+    def test_reader_renderer_full_mode_uses_general_evidence_id_warning(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
             state.execute(ActivateNode("n_title"))
             state.execute(OpenNode("n_title"))
 
-            content = ReaderRenderer(OmegaConf.create({"benchmarks": {}}), include_page_images=False).render(
+            content = ReaderRenderer(
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "full"}}}),
+                include_page_images=False,
+            ).render(
                 "longdocurl",
                 {
                     "question": "Which section best matches the description?",
@@ -920,8 +960,8 @@ class AEGRAGTests(unittest.TestCase):
 
         prompt = content[0]["text"]
         self.assertIn("Do not answer with evidence node ids", prompt)
-        self.assertIn("Candidate answer strings", prompt)
         self.assertIn("Important Section Title", prompt)
+        self.assertNotIn("Candidate answer strings", prompt)
         self.assertNotIn("[n_title]", prompt)
 
     def test_reader_renderer_compact_mode_omits_full_active_graph(self):
@@ -932,7 +972,7 @@ class AEGRAGTests(unittest.TestCase):
             state.execute(ActivateNode("n1"))
 
             content = ReaderRenderer(
-                OmegaConf.create({"benchmarks": {}, "baselines": {"renderer": {"reader_text_mode": "compact"}}}),
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "compact"}}}),
                 include_page_images=False,
             ).render(
                 "longdocurl",
@@ -941,10 +981,12 @@ class AEGRAGTests(unittest.TestCase):
             )
 
         prompt = content[0]["text"]
-        self.assertIn("Following is our question:", prompt)
+        self.assertIn("<task>", prompt)
         self.assertIn("<question>Which section best matches the description?</question>", prompt)
-        self.assertIn("Candidate visible labels from retrieved evidence:", prompt)
-        self.assertIn("Important Section Title", prompt)
+        self.assertIn("<answer_policy>", prompt)
+        self.assertIn("If the answer cannot be found, answer exactly: Not answerable.", prompt)
+        self.assertNotIn("Candidate visible labels from retrieved evidence:", prompt)
+        self.assertNotIn("Important Section Title", prompt)
         self.assertNotIn("Active evidence graph:", prompt)
         self.assertNotIn("provenance_id=n_title", prompt)
         self.assertNotIn("needle source", prompt)
@@ -956,7 +998,7 @@ class AEGRAGTests(unittest.TestCase):
             state.execute(ActivateNode("n_title"))
 
             content = ReaderRenderer(
-                OmegaConf.create({"benchmarks": {}, "baselines": {"renderer": {"reader_text_mode": "compact"}}}),
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "compact"}}}),
                 include_page_images=False,
             ).render(
                 "longdocurl",
@@ -968,7 +1010,7 @@ class AEGRAGTests(unittest.TestCase):
         self.assertNotIn("Candidate visible labels", prompt)
         self.assertNotIn("Important Section Title", prompt)
 
-    def test_reader_renderer_compact_includes_caption_candidates_for_table_figure_name_questions(self):
+    def test_reader_renderer_compact_uses_opened_text_without_table_name_candidates(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.graph.nodes["n1"]["type"] = "table"
@@ -978,7 +1020,7 @@ class AEGRAGTests(unittest.TestCase):
             state.execute(OpenNode("n1"))
 
             content = ReaderRenderer(
-                OmegaConf.create({"benchmarks": {}, "baselines": {"renderer": {"reader_text_mode": "compact"}}}),
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "compact"}}}),
                 include_page_images=False,
             ).render(
                 "longdocurl",
@@ -987,10 +1029,10 @@ class AEGRAGTests(unittest.TestCase):
             )
 
         prompt = content[0]["text"]
-        self.assertIn("Candidate visible labels from retrieved evidence:", prompt)
+        self.assertNotIn("Candidate visible labels from retrieved evidence:", prompt)
         self.assertIn("Table 15: Leading destination of exports (UGX Billion): July-June", prompt)
 
-    def test_reader_renderer_compact_mmlongbench_adds_answer_format_instructions(self):
+    def test_reader_renderer_compact_uses_generic_structured_answer_prompt(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
@@ -998,16 +1040,20 @@ class AEGRAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "format"}},
+                    "baselines": {"reader": {"mode": "compact"}},
                 }),
                 include_page_images=False,
             ).render("mmlongbench", {"question": "Which area is not shown?"}, state)
 
         prompt = content[0]["text"]
+        self.assertIn("<task>", prompt)
+        self.assertIn("<evidence_policy>", prompt)
+        self.assertIn("<answer_policy>", prompt)
+        self.assertIn("<self_check>", prompt)
         self.assertIn("If the answer cannot be found, answer exactly: Not answerable.", prompt)
         self.assertIn("Do not answer with None, null, [], or an empty string.", prompt)
 
-    def test_reader_renderer_compact_mmlongbench_keeps_answer_format_instructions_when_multiple_pages_retrieved(self):
+    def test_reader_renderer_compact_lists_retrieved_pages_generically(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
             state.execute(ActivatePage(0, "initial_retrieval"), iteration=0)
@@ -1016,17 +1062,17 @@ class AEGRAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "format"}},
+                    "baselines": {"reader": {"mode": "compact"}},
                 }),
                 include_page_images=False,
             ).render("mmlongbench", {"question": "Which area is shown?"}, state)
 
         prompt = content[0]["text"]
-        self.assertIn("Retrieved document pages: 1, 2.", prompt)
+        self.assertIn("<retrieved_pages>1, 2</retrieved_pages>", prompt)
         self.assertIn("If the answer cannot be found, answer exactly: Not answerable.", prompt)
         self.assertIn("Return only the final answer.", prompt)
 
-    def test_reader_renderer_compact_mmlongbench_plain_mode_omits_format_instructions(self):
+    def test_reader_renderer_compact_no_longer_supports_plain_prompt_mode(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
@@ -1034,17 +1080,17 @@ class AEGRAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "plain"}},
+                    "baselines": {"reader": {"mode": "compact"}},
                 }),
                 include_page_images=False,
             ).render("mmlongbench", {"question": "Which area is shown?"}, state)
 
         prompt = content[0]["text"]
-        self.assertNotIn("If the answer cannot be found", prompt)
-        self.assertNotIn("Retrieved document pages:", prompt)
+        self.assertIn("If the answer cannot be found", prompt)
+        self.assertIn("<retrieved_pages>1</retrieved_pages>", prompt)
         self.assertNotIn("For color questions", prompt)
 
-    def test_reader_renderer_compact_mmlongbench_plain_mode_adds_color_hint_only_for_color_questions(self):
+    def test_reader_renderer_compact_omits_color_question_hint(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
@@ -1052,17 +1098,17 @@ class AEGRAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "plain"}},
+                    "baselines": {"reader": {"mode": "compact"}},
                 }),
                 include_page_images=False,
             ).render("mmlongbench", {"question": "What color is the highlighted area?"}, state)
 
         prompt = content[0]["text"]
-        self.assertIn("For color questions, use common color names rather than hex codes.", prompt)
-        self.assertNotIn("If the answer cannot be found", prompt)
-        self.assertNotIn("Retrieved document pages:", prompt)
+        self.assertNotIn("For color questions, use common color names rather than hex codes.", prompt)
+        self.assertIn("If the answer cannot be found", prompt)
+        self.assertIn("<retrieved_pages>1</retrieved_pages>", prompt)
 
-    def test_reader_renderer_compact_mmlongbench_plain_mode_adds_page_scope_hint(self):
+    def test_reader_renderer_compact_omits_page_scope_hint(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
@@ -1070,7 +1116,7 @@ class AEGRAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "plain"}},
+                    "baselines": {"reader": {"mode": "compact"}},
                 }),
                 include_page_images=False,
             ).render(
@@ -1080,17 +1126,17 @@ class AEGRAGTests(unittest.TestCase):
             )
 
         prompt = content[0]["text"]
-        self.assertIn("For questions that name specific pages or slides, answer only from those named pages or slides.", prompt)
-        self.assertIn("If the retrieved pages do not include the requested page or slide scope, answer exactly: Not answerable.", prompt)
+        self.assertNotIn("For questions that name specific pages or slides", prompt)
+        self.assertNotIn("If the retrieved pages do not include the requested page or slide scope", prompt)
 
     def test_reader_renderer_can_label_mmlongbench_page_images(self):
         renderer = ReaderRenderer(
             OmegaConf.create({
                 "benchmarks": {},
                 "baselines": {
-                    "renderer": {
-                        "reader_text_mode": "compact",
-                        "mmlongbench_include_image_page_labels": True,
+                    "reader": {
+                        "mode": "compact",
+                        "include_image_page_labels": True,
                     }
                 },
             }),
@@ -1118,7 +1164,7 @@ class AEGRAGTests(unittest.TestCase):
             renderer = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"renderer": {"mmlongbench_max_opened_node_crops": 1}},
+                    "baselines": {"reader": {"mmlongbench_max_opened_node_crops": 1}},
                 }),
                 include_page_images=False,
             )
@@ -1149,8 +1195,8 @@ class AEGRAGTests(unittest.TestCase):
                 OmegaConf.create({
                     "benchmarks": {},
                     "baselines": {
-                        "renderer": {
-                            "reader_text_mode": "compact",
+                        "reader": {
+                            "mode": "compact",
                             "mmlongbench_page_text_char_limit": 80,
                             "mmlongbench_page_text_max_pages": 1,
                         }
@@ -1160,9 +1206,9 @@ class AEGRAGTests(unittest.TestCase):
             ).render("mmlongbench", {"question": "How much time was spent with family?"}, state)
 
         prompt = content[0]["text"]
-        self.assertIn("Retrieved page text snippets:", prompt)
-        self.assertIn("document page 2", prompt)
-        self.assertNotIn("document page 1", prompt)
+        self.assertIn("<retrieved_page_text_snippets>", prompt)
+        self.assertIn('<page_text page="2">', prompt)
+        self.assertNotIn('<page_text page="1">', prompt)
         self.assertIn("With family and friends 20%", prompt)
 
     def test_final_context_metadata_contains_trace_and_node_state_fields(self):
@@ -1170,7 +1216,7 @@ class AEGRAGTests(unittest.TestCase):
             graph_root = os.path.join(tmp_dir, "graphs")
             self._write_graph(os.path.join(graph_root, "sample"))
             cfg = OmegaConf.create({
-                "baselines": {"name": "aeg-rag", "params": {"policy": "full", "graph_escape": False}},
+                "baselines": {"name": "magerag", "params": {}},
                 "benchmarks": {
                     "name": "mmlongbench",
                     "evidence_graph_dir": graph_root,
@@ -1179,12 +1225,12 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
 
             messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "Q?"})
 
         self.assertIsInstance(messages, ContextMessages)
-        self.assertEqual(messages.metadata["context_builder"], "aeg-rag")
+        self.assertEqual(messages.metadata["context_builder"], "magerag")
         self.assertEqual(messages.metadata["allowed_pages"], [0])
         self.assertIn("final_node_states", messages.metadata)
         self.assertIn("iteration_trace", messages.metadata)
@@ -1201,9 +1247,9 @@ class AEGRAGTests(unittest.TestCase):
             Image.new("RGB", (1, 1), color="white").save(page_dir / "page_0001_dpi144.png")
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "renderer": {"include_page_images": True},
+                    "name": "magerag",
+                    "params": {},
+                    "reader": {"include_page_images": True},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1213,7 +1259,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": str(Path(tmp_dir) / "pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
 
             messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "Q?"})
 
@@ -1230,10 +1276,9 @@ class AEGRAGTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
-            builder = AEGRAGContextBuilder(OmegaConf.create({
+            builder = MAGERAGContextBuilder(OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "safety": {"watchdog_iterations": 1, "watchdog_repeated_noop_rounds": 1},
+                    "name": "magerag",
                 }
             }))
             builder.evaluator.call = lambda client, question, state, candidates: (
@@ -1259,9 +1304,8 @@ class AEGRAGTests(unittest.TestCase):
             self._write_graph(os.path.join(graph_root, "sample"))
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {"initial_retrieval_top_k": 2},
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1271,7 +1315,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [
                     {"page_index": 0, "page_number": 1, "score": 2.0},
@@ -1289,19 +1333,14 @@ class AEGRAGTests(unittest.TestCase):
         self.assertIn("page:0", messages.metadata["active_node_ids"])
         self.assertIn("page:1", messages.metadata["active_node_ids"])
 
-    def test_retrieval_only_mode_skips_online_agent_and_auto_activates_salient_nodes(self):
+    def test_build_runs_online_agent_by_default(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             graph_root = os.path.join(tmp_dir, "graphs")
             self._write_graph(os.path.join(graph_root, "sample"))
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_activate_initial_page_nodes": True,
-                        "initial_retrieval_top_k": 1,
-                    },
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1311,17 +1350,21 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
             )
+            builder.evaluator.call = lambda client, question, state, candidates: (
+                EvaluatorDecision(stop=True, reason="done"),
+                "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+            )
 
             messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "Q?"}, client=object())
 
-        self.assertEqual(messages.metadata["stop_reason"], "retrieval_only")
-        self.assertIn("n_title", messages.metadata["active_node_ids"])
-        self.assertNotIn("EvaluatorDecision", [item.get("action") for item in messages.metadata["iteration_trace"]])
+        self.assertEqual(messages.metadata["stop_reason"], "normal_stop")
+        self.assertIn("EvaluatorDecision", [item.get("action") for item in messages.metadata["iteration_trace"]])
+        self.assertNotIn("run_online_agent", messages.metadata)
 
     def test_initial_page_nodes_are_opened_and_rendered_without_expanding_top_k(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1329,16 +1372,12 @@ class AEGRAGTests(unittest.TestCase):
             self._write_graph(os.path.join(graph_root, "sample"))
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_open_initial_page_nodes": True,
-                        "initial_retrieval_top_k": 1,
-                    },
-                    "renderer": {
-                        "reader_text_mode": "compact",
+                    "name": "magerag",
+                    "params": {},
+                    "reader": {
+                        "mode": "compact",
                         "include_opened_node_text": True,
+                        "include_opened_node_text_mmlongbench": True,
                         "opened_node_text_char_limit": 200,
                     },
                 },
@@ -1350,39 +1389,52 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
             )
+            call_count = 0
+
+            def fake_call(client, question, state, candidates):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return (
+                        EvaluatorDecision(selected_actions=[
+                            {"candidate_id": "act:ActivateNode:n_title"},
+                            {"candidate_id": "act:ActivateNode:n1"},
+                        ]),
+                        "<agent_decision><selected_actions><action candidate_id=\"act:ActivateNode:n_title\"/><action candidate_id=\"act:ActivateNode:n1\"/></selected_actions></agent_decision>",
+                    )
+                return (
+                    EvaluatorDecision(stop=True, reason="done"),
+                    "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                )
+
+            builder.evaluator.call = fake_call
 
             messages = builder.build(
                 "mmlongbench",
                 {"doc_id": "sample.pdf", "question_id": "q1", "question": "What does the source evidence say?"},
+                client=object(),
             )
 
         self.assertEqual(len(messages.metadata["initial_retrieval"]["retrieved_pages"]), 1)
         self.assertIn("n_title", messages.metadata["opened_node_ids"])
         self.assertIn("n1", messages.metadata["opened_node_ids"])
         prompt = messages[0]["content"][0]["text"]
-        self.assertIn("Opened evidence text:", prompt)
+        self.assertIn("<opened_evidence_text>", prompt)
         self.assertIn("needle source evidence", prompt)
 
-    def test_mmlongbench_can_use_benchmark_specific_auto_open_limit(self):
+    def test_mmlongbench_uses_fixed_default_auto_open_limit(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             graph_root = os.path.join(tmp_dir, "graphs")
             self._write_graph(os.path.join(graph_root, "sample"))
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_open_initial_page_nodes": True,
-                        "auto_open_max_nodes_per_page": 24,
-                        "auto_open_max_nodes_per_page_mmlongbench": 1,
-                        "initial_retrieval_top_k": 1,
-                    },
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1392,18 +1444,39 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
             )
+            call_count = 0
+
+            def fake_call(client, question, state, candidates):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return (
+                        EvaluatorDecision(selected_actions=[
+                            {"candidate_id": "act:ActivateNode:n_title"},
+                            {"candidate_id": "act:ActivateNode:n1"},
+                        ]),
+                        "<agent_decision><selected_actions><action candidate_id=\"act:ActivateNode:n_title\"/><action candidate_id=\"act:ActivateNode:n1\"/></selected_actions></agent_decision>",
+                    )
+                return (
+                    EvaluatorDecision(stop=True, reason="done"),
+                    "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                )
+
+            builder.evaluator.call = fake_call
 
             messages = builder.build(
                 "mmlongbench",
                 {"doc_id": "sample.pdf", "question_id": "q1", "question": "What does the source evidence say?"},
+                client=object(),
             )
 
-        self.assertEqual(len(messages.metadata["opened_node_ids"]), 1)
+        self.assertIn("n_title", messages.metadata["opened_node_ids"])
+        self.assertIn("n1", messages.metadata["opened_node_ids"])
 
     def test_mmlongbench_opens_nodes_on_explicit_question_page(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1436,14 +1509,8 @@ class AEGRAGTests(unittest.TestCase):
             Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_open_initial_page_nodes": True,
-                        "auto_open_max_nodes_per_page_mmlongbench": 4,
-                        "initial_retrieval_top_k": 1,
-                    },
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1453,7 +1520,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.embedding_page_count = lambda benchmark_name, sample: 100
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
@@ -1534,14 +1601,8 @@ class AEGRAGTests(unittest.TestCase):
             Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_open_initial_page_nodes": True,
-                        "auto_open_max_nodes_per_page_mmlongbench": 4,
-                        "initial_retrieval_top_k": 1,
-                    },
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1551,7 +1612,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.embedding_page_count = lambda benchmark_name, sample: 80
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
@@ -1603,14 +1664,8 @@ class AEGRAGTests(unittest.TestCase):
             Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_open_initial_page_nodes": True,
-                        "auto_open_max_nodes_per_page_mmlongbench": 4,
-                        "initial_retrieval_top_k": 1,
-                    },
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1620,7 +1675,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.embedding_page_count = lambda benchmark_name, sample: 8
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
@@ -1685,14 +1740,8 @@ class AEGRAGTests(unittest.TestCase):
             Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_open_initial_page_nodes": True,
-                        "auto_open_max_nodes_per_page_mmlongbench": 4,
-                        "initial_retrieval_top_k": 1,
-                    },
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1702,7 +1751,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.embedding_page_count = lambda benchmark_name, sample: 24
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
@@ -1769,14 +1818,8 @@ class AEGRAGTests(unittest.TestCase):
             Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_open_initial_page_nodes": True,
-                        "auto_open_max_nodes_per_page_mmlongbench": 4,
-                        "initial_retrieval_top_k": 1,
-                    },
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1786,7 +1829,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.embedding_page_count = lambda benchmark_name, sample: 30
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
@@ -1859,14 +1902,8 @@ class AEGRAGTests(unittest.TestCase):
             Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
             cfg = OmegaConf.create({
                 "baselines": {
-                    "name": "aeg-rag",
-                    "params": {"policy": "full", "graph_escape": False},
-                    "agent": {
-                        "run_online": False,
-                        "auto_open_initial_page_nodes": True,
-                        "auto_open_max_nodes_per_page_mmlongbench": 4,
-                        "initial_retrieval_top_k": 1,
-                    },
+                    "name": "magerag",
+                    "params": {},
                 },
                 "benchmarks": {
                     "name": "mmlongbench",
@@ -1876,7 +1913,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.embedding_page_count = lambda benchmark_name, sample: 16
             builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
@@ -1910,8 +1947,8 @@ class AEGRAGTests(unittest.TestCase):
             cfg = OmegaConf.create({
                 "benchmarks": {},
                 "baselines": {
-                    "renderer": {
-                        "reader_text_mode": "compact",
+                    "reader": {
+                        "mode": "compact",
                         "include_opened_node_text": True,
                         "include_opened_node_text_mmlongbench": False,
                     }
@@ -1925,8 +1962,8 @@ class AEGRAGTests(unittest.TestCase):
                 "longdocurl", {"question": "What does the source evidence say?"}, state
             )
 
-        self.assertNotIn("Opened evidence text:", mmlong[0]["text"])
-        self.assertIn("Opened evidence text:", longdoc[0]["text"])
+        self.assertNotIn("<opened_evidence_text>", mmlong[0]["text"])
+        self.assertIn("<opened_evidence_text>", longdoc[0]["text"])
 
     def test_reader_renderer_prioritizes_question_scope_pages_for_mmlongbench(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1935,7 +1972,7 @@ class AEGRAGTests(unittest.TestCase):
             state.execute(ActivatePage(1, "question_page_scope"))
             cfg = OmegaConf.create({
                 "benchmarks": {},
-                "baselines": {"renderer": {"reader_text_mode": "compact", "mmlongbench_prompt_mode": "format"}},
+                "baselines": {"reader": {"mode": "compact"}},
             })
 
             content = ReaderRenderer(cfg, include_page_images=False).render(
@@ -1944,14 +1981,14 @@ class AEGRAGTests(unittest.TestCase):
                 state,
             )
 
-        self.assertIn("Retrieved document pages: 2, 1.", content[0]["text"])
+        self.assertIn("<retrieved_pages>2, 1</retrieved_pages>", content[0]["text"])
 
     def test_mmlongbench_allowed_pages_use_embedding_page_count(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             graph_root = os.path.join(tmp_dir, "graphs")
             self._write_graph(os.path.join(graph_root, "sample"))
             cfg = OmegaConf.create({
-                "baselines": {"name": "aeg-rag", "params": {"policy": "full", "graph_escape": False}},
+                "baselines": {"name": "magerag", "params": {}},
                 "benchmarks": {
                     "name": "mmlongbench",
                     "evidence_graph_dir": graph_root,
@@ -1960,7 +1997,7 @@ class AEGRAGTests(unittest.TestCase):
                     "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
                 },
             })
-            builder = AEGRAGContextBuilder(cfg)
+            builder = MAGERAGContextBuilder(cfg)
             builder.retriever.embedding_page_count = lambda benchmark_name, sample: 2
 
             messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "Q?"})

@@ -200,6 +200,174 @@ class BenchmarkAdapterTests(unittest.TestCase):
     def test_longdocurl_adapter_has_no_prediction_postprocess_hook(self):
         self.assertFalse(hasattr(LongDocURLAdapter, "postprocess_prediction"))
 
+    def test_mmlongbench_correction_runs_for_non_full_score_and_updates_final_score(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion(
+                        "The total grants made for community engagement in 2020 were $22 million.",
+                        model="qa-served",
+                    )
+                if len(calls) == 2:
+                    return completion(
+                        "Extracted answer: 22000000\nAnswer format: Integer",
+                        model="extractor-served",
+                    )
+                return completion(
+                    "Extracted answer: 22 million\nAnswer format: String",
+                    model="correction-served",
+                )
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                    "correction_enabled": True,
+                    "correction_model_name": "correction-model",
+                }
+            })
+            sample = {
+                "doc_id": "d1",
+                "question": "What was the total amount of grants made for community engagement in 2020?",
+                "answer": "22 million",
+                "answer_format": "String",
+            }
+
+            result = MMLongBenchAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        self.assertEqual([call[0][1] for call in calls], ["qa-model", "extractor-model", "correction-model"])
+        correction_prompt = calls[2][0][2][0]["content"][0]["text"]
+        self.assertIn("<question>", correction_prompt)
+        self.assertIn(sample["question"], correction_prompt)
+        self.assertIn("<gold_truth>", correction_prompt)
+        self.assertIn("22 million", correction_prompt)
+        self.assertIn("<model_response>", correction_prompt)
+        self.assertIn("<initial_formatted_extraction>", correction_prompt)
+        self.assertIn("def score", correction_prompt)
+        self.assertIn("<initial_score>0.0</initial_score>", correction_prompt)
+        self.assertEqual(result["pred"], "22 million")
+        self.assertEqual(result["pred_format"], "String")
+        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["correction_metadata"]["initial_pred"], "22000000")
+        self.assertEqual(result["correction_metadata"]["corrected_pred"], "22 million")
+        self.assertTrue(result["correction_metadata"]["applied"])
+
+    def test_longdocurl_correction_reparses_xml_and_preserves_original_extraction_metadata(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion("The workforce share was 84%.", model="qa-served")
+                if len(calls) == 2:
+                    return completion(
+                        "Extracted answer: <concise_answer>84</concise_answer>\n"
+                        "Answer format: <answer_format>Integer</answer_format>",
+                        model="extractor-served",
+                    )
+                return completion(
+                    "Extracted answer: <concise_answer>84 percent</concise_answer>\n"
+                    "Answer format: <answer_format>String</answer_format>",
+                    model="correction-served",
+                )
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                    "correction_enabled": True,
+                    "correction_model_name": "correction-model",
+                }
+            })
+            sample = {
+                "question_id": "q1",
+                "question": "What was the percentage of the U.S. workforce employed in service sectors by 2010?",
+                "answer": "84 percent",
+                "answer_format": "String",
+            }
+
+            result = LongDocURLAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        self.assertEqual(result["extraction_metadata"]["extracted_res"], (
+            "Extracted answer: <concise_answer>84</concise_answer>\n"
+            "Answer format: <answer_format>Integer</answer_format>"
+        ))
+        self.assertEqual(result["pred"], "84 percent")
+        self.assertEqual(result["pred_format"], "String")
+        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["correction_metadata"]["corrected_score"], 1.0)
+        self.assertTrue(result["correction_metadata"]["applied"])
+
+    def test_correction_is_skipped_for_full_initial_score(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion("answer", model="qa-served")
+                return completion("Extracted answer: answer\nAnswer format: String", model="extractor-served")
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                    "correction_enabled": True,
+                    "correction_model_name": "correction-model",
+                }
+            })
+            sample = {"doc_id": "d1", "question": "q", "answer": "answer", "answer_format": "String"}
+
+            result = MMLongBenchAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        self.assertEqual([call[0][1] for call in calls], ["qa-model", "extractor-model"])
+        self.assertNotIn("correction_metadata", result)
+
+    def test_correction_parse_failure_preserves_initial_result(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion("The answer is $22 million.", model="qa-served")
+                if len(calls) == 2:
+                    return completion("Extracted answer: 22000000\nAnswer format: Integer", model="extractor-served")
+                return completion("not parseable", model="correction-served")
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                    "correction_enabled": True,
+                    "correction_model_name": "correction-model",
+                }
+            })
+            sample = {"doc_id": "d1", "question": "q", "answer": "22 million", "answer_format": "String"}
+
+            result = MMLongBenchAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        self.assertEqual(result["pred"], "22000000")
+        self.assertEqual(result["score"], 0.0)
+        self.assertFalse(result["correction_metadata"]["applied"])
+        self.assertIn("error", result["correction_metadata"])
+
 
 if __name__ == "__main__":
     unittest.main()

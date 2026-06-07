@@ -24,6 +24,7 @@ export http_proxy="${LITELLM_PROXY_URL}"
 export https_proxy="${LITELLM_PROXY_URL}"
 export NO_PROXY="${NO_PROXY:+${NO_PROXY},}127.0.0.1,localhost,117.156.131.215"
 export no_proxy="${no_proxy:+${no_proxy},}127.0.0.1,localhost,117.156.131.215"
+export DISABLE_SCHEMA_UPDATE="${DISABLE_SCHEMA_UPDATE:-true}"
 
 cd "${CODE_ROOT}"
 ARGS=(--config "${CONFIG_PATH}" --port "${PORT}")

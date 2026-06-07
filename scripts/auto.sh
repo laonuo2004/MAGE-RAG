@@ -11,12 +11,12 @@ MODEL_DIR="/hy-tmp/Qwen3-VL-8B-Instruct"
 SERVED_MODEL_NAME="Qwen3-VL-8B-Instruct"
 PIP_INDEX_URL="https://pypi.doubanio.com/simple/"
 
-MAX_MODEL_LEN=16384
-MAX_NUM_SEQS=4
-MAX_NUM_BATCHED_TOKENS=2048
+MAX_MODEL_LEN=65536
+MAX_NUM_SEQS=16
+MAX_NUM_BATCHED_TOKENS=8192
 PORT=8080
 DATA_PARALLEL_SIZE=1
-TENSOR_PARALLEL_SIZE=1
+TENSOR_PARALLEL_SIZE=2
 
 export VLLM_VERSION=0.19.1
 export CUDA_VERSION=128
@@ -88,7 +88,7 @@ vllm serve "${MODEL_DIR}" \\
   --port ${PORT} \\
   --trust-remote-code \\
   --max-model-len ${MAX_MODEL_LEN} \\
-  --gpu-memory-utilization 0.95 \\
+  --gpu-memory-utilization 0.9 \\
   --max-num-seqs ${MAX_NUM_SEQS} \\
   --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} \\
   --limit-mm-per-prompt.video 0 \\
@@ -105,5 +105,6 @@ echo "[INFO] Setup finished."
 echo "[INFO] Start server with:"
 echo "bash ${WORKDIR}/serve.sh"
 
+echo "set -g mouse on" >> ~/.tmux.conf && tmux set -g mouse on
 tmux new-session -d -s vllm "bash ${WORKDIR}/serve.sh"
 tmux attach -t vllm

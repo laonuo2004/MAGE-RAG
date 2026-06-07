@@ -25,7 +25,6 @@ class MAGERAGPlugin(AnalysisPlugin):
     def parameter_specs(self) -> tuple[ParameterSpec, ...]:
         return (
             ParameterSpec("top_k", "top-k pages", "int", numeric=True),
-            ParameterSpec("graph_escape", "graph escape", "bool"),
             ParameterSpec("evaluator_model_name", "evaluator model", "str"),
         )
 
@@ -185,7 +184,6 @@ def _summary(
         "validation_errors": len(metadata.get("validation_errors") or []),
         "duration_seconds": _to_float(metadata.get("duration_seconds")),
         "evaluator_model_name": metadata.get("evaluator_model_name"),
-        "graph_escape": metadata.get("graph_escape"),
     }
 
 

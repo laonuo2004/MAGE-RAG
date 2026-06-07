@@ -25,27 +25,7 @@ from benchmarks.utils.data_utils import mmlongbench_file_id
 from utils.config_utils import get_config_value, require_config_value
 
 
-# 这些常量刻意集中在 builder 中：MAGE-RAG 的实验开关应通过统一配置面暴露，
-# 而不是散落到 evaluator、renderer、state 等底层模块里。
-EVALUATOR_MODEL_DEFAULT = "Qwen3-VL-8B-Instruct"
-EVALUATOR_TEMPERATURE = 0.0
-EVALUATOR_RETRIES = 2
-EVALUATOR_RAW_TEXT_CHAR_LIMIT = 1200
-EVALUATOR_INCLUDE_OPENED_NODE_IMAGES = False
-MAX_EVALUATOR_CANDIDATE_ACTIONS = 120
-EVALUATOR_CANDIDATE_PREVIEW_CHAR_LIMIT = 160
-MAX_SELECTED_ACTIONS_PER_ITERATION = 4
-MAX_TOTAL_SELECTED_ACTIONS = 24
-WATCHDOG_ITERATIONS = 6
-WATCHDOG_REPEATED_NOOP_ROUNDS = 2
-AUTO_OPEN_MAX_NODES_PER_PAGE = 24
-FINAL_OPEN_ACTIVE_NODE_LIMIT = 16
-FINAL_OPEN_ACTIVE_NODE_LIMIT_LONGDOCURL = 24
-FINAL_OPEN_ACTIVE_NODE_LIMIT_MMLONGBENCH = 8
-READER_INCLUDE_PAGE_IMAGES = True
-READER_INCLUDE_OPENED_NODE_IMAGES = True
-READER_RAW_TEXT_CHAR_LIMIT = 8192
-LEGACY_CONFIG_SECTIONS = ("agent", "evaluator", "renderer", "safety")
+LEGACY_CONFIG_SECTIONS = ("agent", "renderer", "safety")
 
 
 class MAGERAGContextBuilder(ContextBuilder):
@@ -62,39 +42,48 @@ class MAGERAGContextBuilder(ContextBuilder):
         super().__init__(cfg)
         _reject_legacy_config_sections(cfg)
         self.params = dict(get_config_value(cfg, "baselines.params", {}) or {})
-        self.graph_escape = bool(get_config_value(cfg, "baselines.params.graph_escape", False))
-        self.evaluator_model_name = str(get_config_value(cfg, "baselines.models.evaluator", EVALUATOR_MODEL_DEFAULT))
+        self.evaluator_model_name = str(get_config_value(cfg, "baselines.models.evaluator", "Qwen3-VL-8B-Instruct"))
         self.evaluator = XMLEvaluator(
             self.evaluator_model_name,
-            temperature=EVALUATOR_TEMPERATURE,
-            retries=EVALUATOR_RETRIES,
-            raw_text_char_limit=EVALUATOR_RAW_TEXT_CHAR_LIMIT,
-            include_images_for_opened_nodes=EVALUATOR_INCLUDE_OPENED_NODE_IMAGES,
-            max_candidate_actions=MAX_EVALUATOR_CANDIDATE_ACTIONS,
-            candidate_preview_char_limit=EVALUATOR_CANDIDATE_PREVIEW_CHAR_LIMIT,
-            max_selected_actions_per_iteration=MAX_SELECTED_ACTIONS_PER_ITERATION,
+            temperature=get_config_value(cfg, "baselines.evaluator.temperature", 0.0),
+            retries=get_config_value(cfg, "baselines.evaluator.retries", 2),
+            raw_text_char_limit=get_config_value(cfg, "baselines.evaluator.raw_text_char_limit", 1200),
+            include_images_for_opened_nodes=get_config_value(cfg, "baselines.evaluator.include_opened_node_images", False),
+            max_candidate_actions=get_config_value(cfg, "baselines.evaluator.max_candidate_actions", 120),
+            candidate_preview_char_limit=get_config_value(cfg, "baselines.evaluator.candidate_preview_char_limit", 160),
+            max_selected_actions_per_iteration=get_config_value(cfg, "baselines.evaluator.max_selected_actions_per_iteration", 4),
+            prompt_style=get_config_value(cfg, "baselines.evaluator.prompt_style", "structured"),
+            include_few_shot_examples=get_config_value(cfg, "baselines.evaluator.include_few_shot_examples", True),
+            reason_max_words=get_config_value(cfg, "baselines.evaluator.reason_max_words", 30),
         )
-        self.max_evaluator_candidate_actions = MAX_EVALUATOR_CANDIDATE_ACTIONS
+        self.max_evaluator_candidate_actions = int(get_config_value(cfg, "baselines.evaluator.max_candidate_actions", 120))
         self.max_selected_actions_per_iteration = max(
             1,
-            MAX_SELECTED_ACTIONS_PER_ITERATION,
+            int(get_config_value(cfg, "baselines.evaluator.max_selected_actions_per_iteration", 4)),
         )
         self.max_total_selected_actions = max(
             1,
-            MAX_TOTAL_SELECTED_ACTIONS,
+            int(get_config_value(cfg, "baselines.evaluator.max_total_selected_actions", 24)),
         )
-        self.watchdog_iterations = WATCHDOG_ITERATIONS
-        self.watchdog_repeated_noop_rounds = WATCHDOG_REPEATED_NOOP_ROUNDS
-        self.run_online_agent = bool(get_config_value(cfg, "baselines.params.online_agent", False))
+        self.watchdog_iterations = max(1, int(get_config_value(cfg, "baselines.controller.watchdog_iterations", 6)))
+        self.watchdog_repeated_noop_rounds = max(1, int(get_config_value(cfg, "baselines.controller.watchdog_repeated_noop_rounds", 2)))
         self.auto_activate_initial_page_nodes = True
         self.auto_open_initial_page_nodes = True
-        self.auto_open_max_nodes_per_page = AUTO_OPEN_MAX_NODES_PER_PAGE
-        self.auto_open_max_nodes_per_page_longdocurl = AUTO_OPEN_MAX_NODES_PER_PAGE
-        self.auto_open_max_nodes_per_page_mmlongbench = AUTO_OPEN_MAX_NODES_PER_PAGE
+        self.auto_open_max_nodes_per_page = int(get_config_value(cfg, "baselines.controller.auto_open_max_nodes_per_page", 24))
+        self.auto_open_max_nodes_per_page_longdocurl = int(
+            get_config_value(cfg, "baselines.controller.auto_open_max_nodes_per_page_longdocurl", self.auto_open_max_nodes_per_page)
+        )
+        self.auto_open_max_nodes_per_page_mmlongbench = int(
+            get_config_value(cfg, "baselines.controller.auto_open_max_nodes_per_page_mmlongbench", self.auto_open_max_nodes_per_page)
+        )
         self.final_open_active_nodes = True
-        self.final_open_active_node_limit = FINAL_OPEN_ACTIVE_NODE_LIMIT
-        self.final_open_active_node_limit_longdocurl = FINAL_OPEN_ACTIVE_NODE_LIMIT_LONGDOCURL
-        self.final_open_active_node_limit_mmlongbench = FINAL_OPEN_ACTIVE_NODE_LIMIT_MMLONGBENCH
+        self.final_open_active_node_limit = int(get_config_value(cfg, "baselines.controller.final_open_active_node_limit", 16))
+        self.final_open_active_node_limit_longdocurl = int(
+            get_config_value(cfg, "baselines.controller.final_open_active_node_limit_longdocurl", self.final_open_active_node_limit)
+        )
+        self.final_open_active_node_limit_mmlongbench = int(
+            get_config_value(cfg, "baselines.controller.final_open_active_node_limit_mmlongbench", self.final_open_active_node_limit)
+        )
         self.retriever = ColPaliTop1Retriever(cfg)
 
     def build_mmlongbench(self, sample, **kwargs):
@@ -122,24 +111,12 @@ class MAGERAGContextBuilder(ContextBuilder):
 
     def _build(self, benchmark_name, sample, doc_key, graph_dir, allowed_pages, client):
         graph = EvidenceGraphStore(graph_dir, allowed_pages=allowed_pages)
-        state = EvidenceAgentState(graph, graph_escape=self.graph_escape)
+        state = EvidenceAgentState(graph)
 
         # Stage I: ColPali 做 page-level grounding，先把最相关页面放入工作记忆。
         initial_pages, retrieval_metadata = self._initial_pages(benchmark_name, sample, allowed_pages)
         for initial_page in initial_pages:
             state.execute(ActivatePage(page_index=initial_page["page_index"], source="initial_retrieval"), iteration=0)
-            if self.run_online_agent:
-                continue
-            # online_agent 关闭时，MAGE-RAG 退化成“检索页 + 页面内显著元素”的强基线。
-            if self.auto_open_initial_page_nodes:
-                self._open_initial_page_nodes(
-                    state,
-                    initial_page["page_index"],
-                    sample["question"],
-                    self._auto_open_limit_for(benchmark_name),
-                )
-            elif self.auto_activate_initial_page_nodes:
-                self._activate_salient_page_nodes(state, initial_page["page_index"])
 
         # 题目显式指定 page/figure/table/section 时，不完全依赖 top-1 retrieval。
         # 这类 scope hint 更像人类直接翻到被点名的位置。
@@ -155,12 +132,11 @@ class MAGERAGContextBuilder(ContextBuilder):
             state,
             allowed_pages,
         )
-        if self.run_online_agent:
-            self._run_auto_searches(benchmark_name, sample["question"], state)
+        self._run_auto_searches(benchmark_name, sample["question"], state)
 
         # Stage II: evaluator 反复选择有边际收益的扩展动作，直到 stop 或 watchdog 触发。
-        stop_reason = self._run_agent(benchmark_name, sample["question"], state, client) if self.run_online_agent else "retrieval_only"
-        if self.run_online_agent and self.final_open_active_nodes:
+        stop_reason = self._run_agent(benchmark_name, sample["question"], state, client)
+        if self.final_open_active_nodes:
             # 最后一轮把仍处于 Active 的高相关节点打开，避免 reader 只看到 abstract。
             self._final_open_active_nodes(
                 benchmark_name,
@@ -169,9 +145,9 @@ class MAGERAGContextBuilder(ContextBuilder):
             )
         renderer = ReaderRenderer(
             self.cfg,
-            include_page_images=READER_INCLUDE_PAGE_IMAGES,
-            include_opened_node_images=READER_INCLUDE_OPENED_NODE_IMAGES,
-            raw_text_limit=READER_RAW_TEXT_CHAR_LIMIT,
+            include_page_images=get_config_value(self.cfg, "baselines.reader.include_page_images", True),
+            include_opened_node_images=get_config_value(self.cfg, "baselines.reader.include_opened_node_images", True),
+            raw_text_limit=get_config_value(self.cfg, "baselines.reader.raw_text_char_limit", 8192),
         )
         # Stage III: evidence graph state -> LVLM reader messages，同时保留 trace 供分析插件复盘。
         content = renderer.render(benchmark_name, sample, state)
@@ -439,12 +415,11 @@ class MAGERAGContextBuilder(ContextBuilder):
         queries = _auto_search_queries(benchmark_name, question)
         if not queries:
             return
-        # 自动搜索只覆盖少数高风险问题形态，作为进入 evaluator 前的额外 jump seed。
-        search_escape = bool(state.graph_escape)
+        # 自动搜索只在 sample/benchmark 允许的页面范围内引入额外候选入口。
         merged = []
         seen = set()
         for query in queries:
-            results = state.graph.search(query, limit=12, graph_escape=search_escape)
+            results = state.graph.search(query, limit=12)
             for item in results:
                 node_id = str(item["node"]["id"])
                 if node_id in seen:
@@ -455,7 +430,6 @@ class MAGERAGContextBuilder(ContextBuilder):
                 "iteration": 0,
                 "action": "AutoSearchEvidence",
                 "query": query,
-                "graph_escape": search_escape,
                 "result_count": len(results),
                 "result_node_ids": [str(item["node"]["id"]) for item in results],
             })
@@ -727,11 +701,9 @@ class MAGERAGContextBuilder(ContextBuilder):
             "stop_reason": stop_reason,
             "validation_errors": list(state.validation_errors),
             "evaluator_model_name": self.evaluator_model_name,
-            "run_online_agent": self.run_online_agent,
             "max_evaluator_candidate_actions": self.max_evaluator_candidate_actions,
             "max_selected_actions_per_iteration": self.max_selected_actions_per_iteration,
             "max_total_selected_actions": self.max_total_selected_actions,
-            "graph_escape": self.graph_escape,
         }
 
 
@@ -745,7 +717,7 @@ def _reject_legacy_config_sections(cfg) -> None:
         joined = ", ".join(f"baselines.{section}" for section in legacy)
         raise ValueError(
             f"MAGE-RAG no longer supports legacy config sections: {joined}. "
-            "Use baselines.params, baselines.models, and baselines.reader instead."
+            "Use baselines.params, baselines.models, baselines.evaluator, baselines.controller, and baselines.reader instead."
         )
 
 
@@ -1129,7 +1101,7 @@ def _candidate_from_selected_alias(candidate_id, state: EvidenceAgentState):
     if candidate_id in state.graph.nodes:
         action_type = "OpenNode" if state.state_of(candidate_id) == "Active" else "ActivateNode"
         page_index = state.graph.node_page_index(candidate_id)
-        if not state.graph.is_page_allowed(page_index, state.graph_escape):
+        if not state.graph.is_page_allowed(page_index):
             return None
         return CandidateAction(
             id=f"act:{action_type}:{candidate_id}",
@@ -1147,7 +1119,7 @@ def _candidate_from_selected_alias(candidate_id, state: EvidenceAgentState):
         if node_id is None:
             return None
         page_index = state.graph.node_page_index(node_id)
-        if not state.graph.is_page_allowed(page_index, state.graph_escape):
+        if not state.graph.is_page_allowed(page_index):
             return None
         return CandidateAction(
             id=candidate_id,
@@ -1164,7 +1136,7 @@ def _nearest_node_alias(node_id: str, state: EvidenceAgentState) -> str | None:
     if parsed is None:
         return None
     prefix, page_index, block_index, node_type = parsed
-    if not state.graph.is_page_allowed(page_index, state.graph_escape):
+    if not state.graph.is_page_allowed(page_index):
         return None
     page_nodes = state.graph.nodes_on_page(page_index)
     if not page_nodes:

@@ -32,7 +32,6 @@ class EvidenceAgentState:
     """
 
     graph: EvidenceGraphStore
-    graph_escape: bool = False
     node_states: dict[str, str] = field(default_factory=dict)
     prune_reasons: dict[str, str] = field(default_factory=dict)
     active_edges: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -67,7 +66,7 @@ class EvidenceAgentState:
 
     def activate_page(self, page_index: int, source: str) -> ActionResult:
         page_index = int(page_index)
-        if not self.graph.is_page_allowed(page_index, self.graph_escape):
+        if not self.graph.is_page_allowed(page_index):
             return self._validation("ActivatePage", f"page_index {page_index} is outside allowed_pages")
         node_id = self.graph.page_node_id(page_index)
         previous_state = self.state_of(node_id)
@@ -82,7 +81,7 @@ class EvidenceAgentState:
     def activate_node(self, node_id: str) -> ActionResult:
         node_id = str(node_id)
         node = self.graph.node(node_id)
-        if not self.graph.is_page_allowed(self.graph.node_page_index(node), self.graph_escape):
+        if not self.graph.is_page_allowed(self.graph.node_page_index(node)):
             return self._validation(
                 "ActivateNode",
                 f"node {node_id} is on page {self.graph.node_page_index(node)}, outside allowed_pages",
@@ -133,7 +132,7 @@ class EvidenceAgentState:
         target_id = str(edge["target"])
         target = self.graph.node(target_id)
         target_page = self.graph.node_page_index(target)
-        if not self.graph.is_page_allowed(target_page, self.graph_escape):
+        if not self.graph.is_page_allowed(target_page):
             return self._validation("FollowRelation", f"target page {target_page} is outside allowed_pages")
         self.active_edges[str(edge_id)] = edge
         candidates = []
@@ -152,7 +151,7 @@ class EvidenceAgentState:
         })
 
     def search_evidence(self, query: str) -> ActionResult:
-        results = self.graph.search(query, graph_escape=self.graph_escape)
+        results = self.graph.search(query)
         self.search_results = results
         return ActionResult(True, "SearchEvidence", payload={
             "query": str(query),

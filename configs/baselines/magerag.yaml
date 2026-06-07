@@ -2,12 +2,45 @@ name: magerag
 
 params:
   top_k: 5
-  graph_escape: false
-  online_agent: false
 
 models:
   evaluator: Qwen3-VL-8B-Instruct
 
+evaluator:
+  temperature: 0.0
+  retries: 2
+  prompt_style: structured
+  include_few_shot_examples: true
+  reason_max_words: 30
+  raw_text_char_limit: 1200
+  include_opened_node_images: false
+  max_candidate_actions: 120
+  max_selected_actions_per_iteration: 4
+  max_total_selected_actions: 24
+  candidate_preview_char_limit: 160
+
+controller:
+  watchdog_iterations: 6
+  watchdog_repeated_noop_rounds: 2
+  auto_open_max_nodes_per_page: 24
+  final_open_active_node_limit: 16
+  final_open_active_node_limit_longdocurl: 24
+  final_open_active_node_limit_mmlongbench: 8
+
 reader:
   mode: compact
-  mmlongbench_prompt: plain
+  prompt_style: structured
+  not_answerable_text: Not answerable.
+  include_self_check_instruction: true
+  include_page_images: true
+  include_opened_node_images: true
+  raw_text_char_limit: 8192
+  mmlongbench_page_text_char_limit: 1200
+  mmlongbench_page_text_max_pages: 1
+  include_image_page_labels: true
+  include_opened_node_text: true
+  include_opened_node_text_longdocurl: true
+  include_opened_node_text_mmlongbench: false
+  opened_node_text_char_limit: 1200
+  mmlongbench_include_opened_node_crops: false
+  mmlongbench_max_opened_node_crops: 4

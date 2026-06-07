@@ -56,9 +56,8 @@ class EvidenceGraphStore:
             }
             self.page_nodes[page_index] = node_id
 
-    def is_page_allowed(self, page_index: int, graph_escape: bool = False) -> bool:
-        # allowed_pages 是 benchmark/sample 的可见范围；graph_escape 只给显式实验开关使用。
-        return bool(graph_escape or self.allowed_pages is None or int(page_index) in self.allowed_pages)
+    def is_page_allowed(self, page_index: int) -> bool:
+        return bool(self.allowed_pages is None or int(page_index) in self.allowed_pages)
 
     def is_page_node(self, node: dict[str, Any]) -> bool:
         return str(node.get("type") or "").lower() == PAGE_NODE_TYPE or str(node.get("id") or "").startswith("page:")
@@ -122,14 +121,14 @@ class EvidenceGraphStore:
                     parts.append(str(value))
         return "\n".join(dict.fromkeys(parts))
 
-    def search(self, query: str, limit: int = 8, graph_escape: bool = False) -> list[dict[str, Any]]:
+    def search(self, query: str, limit: int = 8) -> list[dict[str, Any]]:
         # 当前 search 是 lightweight lexical fallback，不替代 Stage I 的 ColPali 检索。
         # 它服务于 evaluator 的 Jump/SearchEvidence，用来在已有 graph artifact 内找新的入口点。
         terms = [term.lower() for term in str(query).split() if term.strip()]
         scored = []
         for node_id, node in self.nodes.items():
             page_index = self.node_page_index(node)
-            if not self.is_page_allowed(page_index, graph_escape=graph_escape):
+            if not self.is_page_allowed(page_index):
                 continue
             haystack = f"{node.get('type', '')} {self.node_text(node_id)}".lower()
             score = sum(haystack.count(term) for term in terms) if terms else 0

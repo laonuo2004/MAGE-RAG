@@ -56,14 +56,14 @@ class CandidateGenerator:
                     continue
                 target_id = str(edge["target"])
                 target_page = self.graph.node_page_index(target_id)
-                if self.graph.is_page_allowed(target_page, state.graph_escape):
+                if self.graph.is_page_allowed(target_page):
                     add("FollowRelation", {"edge_id": str(edge["id"])}, self.graph.preview_node(target_id))
 
         # 3. 已 follow 的边在下一轮转化为目标页面/节点激活候选。
         for edge in state.active_edges.values():
             target_id = str(edge["target"])
             target_page = self.graph.node_page_index(target_id)
-            if not self.graph.is_page_allowed(target_page, state.graph_escape):
+            if not self.graph.is_page_allowed(target_page):
                 continue
             page_id = self.graph.parent_page_node_id(target_id)
             if state.state_of(page_id) == INACTIVE:

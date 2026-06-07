@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import re
+import html
 
 from baselines.image import VISION_SYSTEM_PROMPT
 from benchmarks.utils.document_preprocess import encode_image_file_to_base64, encode_pil_image_to_base64
@@ -29,11 +29,17 @@ class ReaderRenderer:
         self.mmlongbench_page_text_max_pages = int(
             get_config_value(cfg, "baselines.reader.mmlongbench_page_text_max_pages", 1)
         )
-        self.mmlongbench_prompt_mode = str(
-            get_config_value(cfg, "baselines.reader.mmlongbench_prompt", "plain")
+        self.prompt_style = str(
+            get_config_value(cfg, "baselines.reader.prompt_style", "structured")
         )
-        self.mmlongbench_include_image_page_labels = bool(
-            get_config_value(cfg, "baselines.reader.mmlongbench_include_image_page_labels", True)
+        self.not_answerable_text = str(
+            get_config_value(cfg, "baselines.reader.not_answerable_text", "Not answerable.")
+        )
+        self.include_self_check_instruction = bool(
+            get_config_value(cfg, "baselines.reader.include_self_check_instruction", True)
+        )
+        self.include_image_page_labels = bool(
+            get_config_value(cfg, "baselines.reader.include_image_page_labels", True)
         )
         self.include_opened_node_text = bool(
             get_config_value(cfg, "baselines.reader.include_opened_node_text", True)
@@ -102,92 +108,79 @@ class ReaderRenderer:
 
     def _full_text_context(self, question: str, state) -> str:
         lines = [
-            VISION_SYSTEM_PROMPT.strip(),
-            f"Question: {question}",
-            "",
-            "Answer using the document content only. Evidence node ids are for provenance only.",
-            "Do not answer with evidence node ids, page ids, block ids, or bracketed provenance labels.",
+            self._reader_prompt_header(question, state),
+            "  <active_evidence_graph>",
         ]
-        if self._is_locating_question(question):
-            lines.extend([
-                "For title/table locating questions, return the exact visible title or table name from the document.",
-                "Do not return an evidence identifier such as 4106951:page:72:block:0:title.",
-            ])
-        candidate_strings = self._candidate_answer_strings(state) if self._is_locating_question(question) else []
-        if candidate_strings:
-            lines.extend(["", "Candidate answer strings from opened evidence:"])
-            for value in candidate_strings:
-                lines.append(f"- {value}")
-        lines.extend(["", "Active evidence graph:"])
         for node_id in state.active_node_ids():
             node = state.graph.node(node_id)
             lines.append(
-                f"- provenance_id={node_id} | type={node.get('type')} | page={state.graph.node_page_index(node) + 1} | "
-                f"abstract={node.get('abstract', '')}"
+                f'    <node provenance_id="{_esc_xml(node_id)}" type="{_esc_xml(node.get("type", ""))}" '
+                f'page="{state.graph.node_page_index(node) + 1}">'
+                f"<abstract>{_esc_xml(node.get('abstract', ''))}</abstract></node>"
             )
-        lines.append("")
-        lines.append("Opened evidence:")
+        lines.append("  </active_evidence_graph>")
+        lines.append("  <opened_evidence>")
         for node_id in state.opened_node_ids():
             node = state.graph.node(node_id)
             raw_text = state.graph.node_text(node_id)[: self.raw_text_limit]
             lines.append(
-                f"Evidence item: provenance_id={node_id} type={node.get('type')} "
-                f"page={state.graph.node_page_index(node) + 1} bbox={node.get('bbox')}\n{raw_text}"
+                f'    <evidence_item provenance_id="{_esc_xml(node_id)}" type="{_esc_xml(node.get("type", ""))}" '
+                f'page="{state.graph.node_page_index(node) + 1}" bbox="{_esc_xml(node.get("bbox"))}">'
+                f"{_esc_xml(raw_text)}</evidence_item>"
             )
+        lines.append("  </opened_evidence>")
         if state.summaries:
-            lines.append("")
-            lines.append("Online summaries:")
+            lines.append("  <online_summaries>")
             for summary in state.summaries:
                 lines.append(
-                    f"- {summary['summary_id']} sources={','.join(summary.get('source_node_ids') or [])}: "
-                    f"{summary.get('text', '')}"
+                    f'    <summary id="{_esc_xml(summary["summary_id"])}" '
+                    f'sources="{_esc_xml(",".join(summary.get("source_node_ids") or []))}">'
+                    f'{_esc_xml(summary.get("text", ""))}</summary>'
                 )
+            lines.append("  </online_summaries>")
+        lines.append("</reader_prompt>")
         return "\n".join(lines)
 
     def _compact_text_context(self, benchmark_name: str, question: str, state) -> str:
-        if benchmark_name == "mmlongbench":
-            page_numbers = [page_index + 1 for page_index in self._reader_page_indices(state)]
-            lines = [str(question)]
-            if self.mmlongbench_prompt_mode != "plain" and page_numbers:
-                lines.append(f"Retrieved document pages: {', '.join(str(page_number) for page_number in page_numbers)}.")
-            if self.mmlongbench_prompt_mode != "plain":
-                lines.extend([
-                    "",
-                    "Answer using the document images first. Use retrieved text only as OCR hints, and ignore it if it conflicts with visible evidence.",
-                    "If the answer cannot be found, answer exactly: Not answerable.",
-                    "Do not answer with None, null, [], or an empty string.",
-                    "Return only the final answer. For list questions, return a JSON-style list of answer strings.",
-                    "For color questions, use common color names rather than hex codes.",
-                ])
-            elif self._is_color_question(question):
-                lines.extend([
-                    "",
-                    "For color questions, use common color names rather than hex codes.",
-                ])
-            domain_hints = self._mmlongbench_domain_hints(question)
-            if domain_hints:
-                lines.extend(["", *domain_hints])
-            page_snippets = self._mmlongbench_page_text_snippets(state)
-            if page_snippets:
-                lines.extend(["", "Retrieved page text snippets:"])
-                lines.extend(page_snippets)
-        else:
-            lines = [
-                VISION_SYSTEM_PROMPT
-                + "Following is our question: \n"
-                + f"<question>{question}</question>"
-                + "\n"
-            ]
-        candidate_strings = self._candidate_answer_strings(state) if self._is_locating_question(question) else []
-        if candidate_strings:
-            lines.extend(["", "Candidate visible labels from retrieved evidence:"])
-            for value in candidate_strings[:40]:
-                lines.append(f"- {value}")
-            lines.append("Use these labels only when they match the visible document content.")
+        lines = [self._reader_prompt_header(question, state)]
+        page_snippets = self._mmlongbench_page_text_snippets(state) if benchmark_name == "mmlongbench" else []
+        if page_snippets:
+            lines.append("  <retrieved_page_text_snippets>")
+            lines.extend(page_snippets)
+            lines.append("  </retrieved_page_text_snippets>")
         opened_snippets = self._opened_node_text_snippets(state) if self._include_opened_text_for(benchmark_name) else []
         if opened_snippets:
-            lines.extend(["", "Opened evidence text:"])
+            lines.append("  <opened_evidence_text>")
             lines.extend(opened_snippets)
+            lines.append("  </opened_evidence_text>")
+        lines.append("</reader_prompt>")
+        return "\n".join(lines)
+
+    def _reader_prompt_header(self, question: str, state) -> str:
+        page_numbers = [page_index + 1 for page_index in self._reader_page_indices(state)]
+        lines = [
+            "<reader_prompt>",
+            f"  <task>{_esc_xml(VISION_SYSTEM_PROMPT.strip())} Answer the question using only provided document evidence.</task>",
+            f"  <question>{_esc_xml(question)}</question>",
+            f"  <retrieved_pages>{_esc_xml(', '.join(str(page_number) for page_number in page_numbers))}</retrieved_pages>",
+            "  <evidence_policy>",
+            "    Use document images as primary evidence. Use retrieved text and OCR snippets as supporting hints.",
+            "    If visual evidence conflicts with text snippets, trust the visible document content.",
+            "    Do not use outside knowledge or infer facts not supported by provided evidence.",
+            "  </evidence_policy>",
+            "  <answer_policy>",
+            f"    If the answer cannot be found, answer exactly: {self.not_answerable_text}",
+            "    Do not answer with None, null, [], or an empty string.",
+            "    Do not answer with evidence node ids, page ids, block ids, or bracketed provenance labels.",
+            "    Return only the final answer. If the question asks for multiple items, include every item supported by the evidence.",
+            "  </answer_policy>",
+        ]
+        if self.include_self_check_instruction:
+            lines.extend([
+                "  <self_check>",
+                "    Before answering, verify that the answer is directly supported by the provided image or text evidence.",
+                "  </self_check>",
+            ])
         return "\n".join(lines)
 
     def _include_opened_text_for(self, benchmark_name: str) -> bool:
@@ -200,7 +193,7 @@ class ReaderRenderer:
     def _image_label(self, benchmark_name: str, image_index: int, total_images: int, page_index: int) -> str:
         if self.reader_text_mode == "compact":
             if benchmark_name == "mmlongbench":
-                if not self.mmlongbench_include_image_page_labels:
+                if not self.include_image_page_labels:
                     return ""
                 return f"Document page {page_index + 1}:\n"
             return f"Below is the {image_index + 1}-th image (total {total_images} images).\n"
@@ -219,7 +212,9 @@ class ReaderRenderer:
             text = " ".join(str(text).split())
             if not text:
                 continue
-            snippets.append(f"- document page {page_index + 1}: {text[: self.mmlongbench_page_text_char_limit]}")
+            snippets.append(
+                f'    <page_text page="{page_index + 1}">{_esc_xml(text[: self.mmlongbench_page_text_char_limit])}</page_text>'
+            )
         return snippets
 
     def _opened_node_text_snippets(self, state) -> list[str]:
@@ -233,96 +228,10 @@ class ReaderRenderer:
             node_type = str(node.get("type") or "")
             page_number = state.graph.node_page_index(node) + 1
             snippets.append(
-                f"- page {page_number} {node_type}: {text[: self.opened_node_text_char_limit]}"
+                f'    <evidence_text page="{page_number}" type="{_esc_xml(node_type)}">'
+                f'{_esc_xml(text[: self.opened_node_text_char_limit])}</evidence_text>'
             )
         return snippets
-
-    def _is_locating_question(self, question: str) -> bool:
-        text = str(question or "").lower()
-        return any(marker in text for marker in (
-            "select titles",
-            "select table names",
-            "which section",
-            "which title",
-            "what's name of the table",
-            "what is the name of the table",
-            "what's name of the figure",
-            "what is the name of the figure",
-            "list names of the other tables",
-            "list names of the other figures",
-            "which tables provide",
-            "which figures provide",
-            "where can we find",
-            "best matches",
-        ))
-
-    def _is_color_question(self, question: str) -> bool:
-        text = str(question or "").lower()
-        return "color" in text or "colour" in text
-
-    def _mmlongbench_domain_hints(self, question: str) -> list[str]:
-        text = str(question or "").lower()
-        hints = []
-        if re.search(r"\bpages?\s*\d|\bslides?\s*\d|\bpage\s+range\b|\bslide\s+range\b", text):
-            hints.extend([
-                "For questions that name specific pages or slides, answer only from those named pages or slides.",
-                "If the retrieved pages do not include the requested page or slide scope, answer exactly: Not answerable.",
-            ])
-        if re.search(r"\bfig(?:ure)?\.?\s+\w+|\btable\s+\w+", text):
-            hints.extend([
-                "For questions that name a specific figure or table, use that named figure or table as the primary evidence.",
-                "Do not answer from a similarly themed figure or table with a different number.",
-            ])
-        if re.search(r"\bhow many (?:people|respondents|adults|participants|users|students|samples)\b", text):
-            hints.extend([
-                "For people-count questions, do not return a percentage when the question asks how many people.",
-                "If evidence gives a percentage, identify the correct denominator or subgroup base and compute the count.",
-            ])
-        if re.search(r"\b(list|all|enumerate)\b", text) or re.search(r"\bhow many\b", text):
-            hints.extend([
-                "For exhaustive list or count questions, first enumerate the included items from the requested scope, then return the final list or count.",
-                "Exclude nearby or related items that are outside the requested scope.",
-            ])
-        if " and " in text or " or " in text:
-            hints.extend([
-                "For compound questions, solve each requested part separately and combine the subanswers only after every part has supporting evidence.",
-            ])
-        return hints
-
-    def _candidate_answer_strings(self, state) -> list[str]:
-        values = []
-        seen = set()
-        for node_id in state.opened_node_ids() + state.active_node_ids():
-            node = state.graph.node(node_id)
-            node_type = str(node.get("type") or "").lower()
-            if node_type not in {"title", "table", "figure", "chart"}:
-                continue
-            if node_type in {"table", "figure", "chart"}:
-                candidate_values = (
-                    node.get("caption"),
-                    node.get("title"),
-                    node.get("name"),
-                    state.graph.node_text(node_id).splitlines()[0] if state.graph.node_text(node_id) else "",
-                    node.get("abstract"),
-                )
-            else:
-                candidate_values = (
-                    node.get("title"),
-                    node.get("name"),
-                    node.get("caption"),
-                    state.graph.node_text(node_id).splitlines()[0] if state.graph.node_text(node_id) else "",
-                    node.get("abstract"),
-                )
-            for value in candidate_values:
-                value = str(value or "").strip()
-                if not value or value in seen:
-                    continue
-                if ":page:" in value or ":block:" in value:
-                    continue
-                seen.add(value)
-                values.append(value)
-                break
-        return values
 
     def _reader_page_indices(self, state) -> list[int]:
         # 显式题目页优先于检索页；其他页面按激活顺序补充，保持“人类阅读路径”的顺序。
@@ -543,3 +452,7 @@ def _image_mime_type(path: str) -> str:
     if suffix == ".webp":
         return "image/webp"
     return "image/png"
+
+
+def _esc_xml(value) -> str:
+    return html.escape(str(value or ""), quote=True)

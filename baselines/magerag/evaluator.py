@@ -52,6 +52,9 @@ class XMLEvaluator:
         max_candidate_actions: int = 120,
         candidate_preview_char_limit: int = 160,
         max_selected_actions_per_iteration: int = 4,
+        prompt_style: str = "structured",
+        include_few_shot_examples: bool = True,
+        reason_max_words: int = 30,
     ):
         self.model_name = model_name
         self.temperature = float(temperature)
@@ -61,13 +64,16 @@ class XMLEvaluator:
         self.max_candidate_actions = int(max_candidate_actions)
         self.candidate_preview_char_limit = int(candidate_preview_char_limit)
         self.max_selected_actions_per_iteration = max(1, int(max_selected_actions_per_iteration))
+        self.prompt_style = str(prompt_style)
+        self.include_few_shot_examples = bool(include_few_shot_examples)
+        self.reason_max_words = max(1, int(reason_max_words))
 
     def build_context_xml(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> str:
         # XML context 是 evaluator 的“可观测状态”：已激活/打开/剪枝证据、最近 trace、候选动作。
         # 大段原文只给 opened node，active node 只给 abstract，控制上下文噪声。
         allowed_pages = sorted(state.graph.allowed_pages or [])
         parts = ["<agent_step_context>", f"  <question>{_esc(question)}</question>"]
-        parts.append(f'  <allowed_scope graph_escape="{str(state.graph_escape).lower()}">')
+        parts.append("  <allowed_scope>")
         for page_index in allowed_pages:
             parts.append(f'    <page index="{page_index}" number="{page_index + 1}"/>')
         parts.append("  </allowed_scope>")
@@ -136,41 +142,63 @@ class XMLEvaluator:
         return parse_agent_decision_xml(raw), str(raw)
 
     def build_prompt(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> str:
-        domain_guidance = self._domain_guidance(question)
-        if domain_guidance:
-            domain_guidance = "\n" + domain_guidance + "\n"
-        return (
-            "You are the MAGE-RAG online evidence controller. Read the XML context and return only "
-            "an <agent_decision> XML document matching the requested schema. Candidate actions are "
-            "numbered with short integer indexes. To execute a candidate, place only its number under "
-            "<selected_actions> as <action index=\"...\">; do not copy long node_id, edge_id, or "
-            "candidate id strings. Select at most "
-            f"{self.max_selected_actions_per_iteration} high-value actions per round. Prefer stopping "
-            "once the opened evidence is sufficient instead of exploring weakly related actions. "
-            "If <candidate_actions> contains <none/>, do not emit selected_actions; "
-            "either stop if the evidence is sufficient or issue a search_request. Do not emit top-level "
-            "<action> elements.\n"
-            + domain_guidance
-            + self.build_context_xml(question, state, candidates)
-        )
+        parts = [
+            "<evaluator_prompt>",
+            "  <role>You are the MAGE-RAG online evidence controller.</role>",
+            "  <objective>Select evidence actions that most improve the final document-grounded answer.</objective>",
+            "  <decision_policy>",
+            "    Prefer actions that can directly support, refute, or disambiguate the question.",
+            "    Avoid repeated, weakly related, or merely adjacent evidence when it adds no information.",
+            f"    Select at most {self.max_selected_actions_per_iteration} high-value actions per round.",
+            "    If opened evidence is already sufficient, stop instead of exploring low-value actions.",
+            "  </decision_policy>",
+            "  <grounding_policy>",
+            "    Base decisions only on the XML state, opened evidence, summaries, recent trace, and candidate actions.",
+            "    If evidence is insufficient and candidates are useful, select candidate action indexes.",
+            "    If candidates cannot improve the state, issue one focused search_request or stop when no useful search remains.",
+            "  </grounding_policy>",
+            "  <action_policy>",
+            "    Candidate actions are numbered with short integer indexes.",
+            "    To execute a candidate, write only <action index=\"...\"> inside <selected_actions>.",
+            "    Do not copy node_id, edge_id, page_index, or candidate id strings into selected actions.",
+            "    If <candidate_actions> contains <none/>, do not emit selected_actions.",
+            "  </action_policy>",
+            "  <reasoning_policy>",
+            "    Compare the question, opened evidence, and candidate previews internally before deciding.",
+            f"    Keep every visible <reason> concise, no more than {self.reason_max_words} words.",
+            "    Do not output a chain-of-thought transcript.",
+            "  </reasoning_policy>",
+            "  <output_schema>",
+            "    Return only one <agent_decision> XML document.",
+            "    Do not wrap the XML in Markdown or add explanatory prose.",
+            "    Do not emit top-level <action> elements.",
+            "    Valid children are <stop>, <selected_actions>, <search_request>, <prune_requests>, <summarize_requests>, and <reason>.",
+            "  </output_schema>",
+            "  <self_check>",
+            "    Before returning, verify that the XML is parseable, action indexes exist in candidate_actions, and the decision follows the evidence state.",
+            "  </self_check>",
+        ]
+        if self.include_few_shot_examples:
+            parts.append(self._few_shot_examples_xml())
+        parts.extend([
+            "</evaluator_prompt>",
+            self.build_context_xml(question, state, candidates),
+        ])
+        return "\n".join(parts)
 
-    def _domain_guidance(self, question: str) -> str:
-        # 这些提示是针对 benchmark 常见失败模式的局部补强，不改变动作协议本身。
-        text = str(question or "").lower()
-        lines = []
-        if re.search(r"\bpages?\s*\d|\bslides?\s*\d|\bpage\s+range\b|\bslide\s+range\b", text):
-            lines.extend([
-                "For questions naming specific pages or slides, first verify the requested page or slide scope.",
-                "Do not answer from unrelated retrieved pages when the requested scope is missing.",
-                "If candidate actions cannot reach the requested scope, issue a search_request for the page/slide and target evidence.",
-            ])
-        if re.search(r"\b(list|all|enumerate)\b", text) or re.search(r"\bwhich\s+(?:\w+\s+){0,3}(?:items?|sections?|pages?|figures?|examples?)\b", text):
-            lines.extend([
-                "For list or exhaustive questions, keep searching until all requested items and scopes are covered.",
-                "Do not stop after finding only one matching item when the question asks for all items, multiple examples, or a list.",
-                "Avoid adding nearby or related items unless the question explicitly asks for them.",
-            ])
-        return "\n".join(lines)
+    def _few_shot_examples_xml(self) -> str:
+        return "\n".join([
+            "  <few_shot_examples>",
+            "    <example>",
+            "      <situation>Opened evidence directly contains the needed answer support.</situation>",
+            "      <agent_decision><stop>true</stop><reason>Opened evidence is sufficient.</reason></agent_decision>",
+            "    </example>",
+            "    <example>",
+            "      <situation>Opened evidence is incomplete and action 1 previews directly relevant evidence.</situation>",
+            "      <agent_decision><selected_actions><action index=\"1\"><reason>Open the most relevant evidence.</reason></action></selected_actions></agent_decision>",
+            "    </example>",
+            "  </few_shot_examples>",
+        ])
 
     def trace_input(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> dict[str, Any]:
         return {

@@ -1,0 +1,26 @@
+Generate a structured analysis of the visual elements in the provided image (which is a page of a scientific paper) by:
+1. Identifying the most salient keywords (focus on nouns, verbs, and key concepts)
+2. Extracting core themes, concepts and arguments
+3. Creating relevant categorical tags
+Note that you must only analyze the visual elements in the image (eg., tables, charts, figures, etc., including their captions and annotations) and ignore the main text.
+
+Format the response as a JSON object:
+{
+    "keywords": [
+        // several specific, distinct keywords that capture key concepts and terminology
+        // Order from most to least important
+        // At least three keywords, but don't be too redundant.
+    ],
+    "summary": 
+        // A summary of:
+        // - Main topic/domain
+        // - Key arguments/points
+        // - Descriptions of visual elements within the image, such as tables, charts, and figures, and be specific about the index, such as Table 1, Figure 1, etc. 
+        // - Be concise, informative and to the point.
+    ,
+    "tags": [
+        // several broad categories/themes for classification
+        // Include domain, format, and type tags
+        // At least three tags, but don't be too redundant.
+    ]
+}

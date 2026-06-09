@@ -1,0 +1,67 @@
+You are an AI memory evolution agent responsible for managing and evolving a knowledge base.
+Here is a memory note (including its content, summary, and keywords), and a few neighboring notes. 
+Make decisions about its evolution.  
+
+The memory note content: {content}
+Summary: {context}
+Keywords: {keywords}
+
+The {neighbor_number} neighboring notes:
+{neighbors}
+
+Based on this information, determine:
+1. Which of the neighboring notes should be linked to this memory note? 
+2. Should the summary and keywords of this memory note be updated, considering its relationships with the neighboring notes? 
+3. If so, what should be the new summary and keywords?
+If you determine that the memory note needs not be updated, the new summary and keywords should be the same as the original summary and keywords. 
+Please keep the summary concise, informative and to the point, with no more than 30 words.
+
+**Definition of Valid Edge Relationships:**
+Two memory notes should be connected ONLY if they exhibit one or more of the following specific logical relationships:
+
+1. **Direct Reference/Citation**: One note explicitly references, cites, or builds upon concepts from another note.
+2. **Causal Relationship**: One note describes a cause and another describes its effect, or vice versa.
+3. **Part-Whole Relationship**: One note describes a component/part and another describes the whole system, or they describe different parts of the same whole.
+4. **Conceptual Elaboration**: One note provides detailed explanation or elaboration of a concept introduced in another note.
+5. **Temporal Sequence**: Notes describe sequential steps in a process, chronological events, or stages in a workflow.
+6. **Contrastive/Comparative**: Notes discuss the same topic from different perspectives, compare alternatives, or contrast different approaches.
+7. **Hierarchical Relationship**: One note describes a general concept and another describes a specific instance or subcategory.
+8. **Contextual Dependency**: Understanding one note significantly enhances or requires understanding of another note.
+
+**Exclusion Criteria - DO NOT connect notes if they only:**
+- Share common keywords or terminology without substantive conceptual overlap
+- Belong to the same broad domain but discuss unrelated specific topics
+- Have similar surface-level similarity but no meaningful logical relationship
+- Are merely adjacent in the document structure without semantic connection
+- Share only generic concepts (e.g., both mention "data" or "analysis" without deeper connection)
+
+**Connection Quality Assessment:**
+When evaluating connections, ask yourself:
+- Would retrieving one note significantly help understand or contextualize the other?
+- Is there a specific, identifiable logical relationship beyond mere topic similarity?
+- Would an expert in the domain recognize this as a meaningful connection?
+- Could this connection improve retrieval accuracy for relevant queries?
+- Are the suggested connections ordered according to relevancy? The most relevant connection should be the first one.
+
+**Summary and Keywords Update Principles:**
+When updating the summary and keywords, your goal is to make the memory note more precise and distinctive:
+1. **Use neighbors as reference, not as content**: Compare the current note with its connected neighbors to identify what makes this note unique. However, the summary itself should ONLY describe the content of the current note. Do NOT include comparative language such as "unlike other notes", "different from neighbors", "this note does not cover X", or any explicit references to other notes.
+2. **Focus on unique aspects**: If the current summary is too generic and overlaps with neighbor summaries, refine it by emphasizing the specific, unique aspects that are present in THIS note's content. 
+3. **Distinctive keywords**: Update keywords to include terms that uniquely identify this note's specific content. Prefer specific, distinctive keywords over broad, generic ones that many notes might share.
+4. **Self-contained description**: The summary should be a self-contained description of the current note's content. It should be clear and informative on its own, without requiring knowledge of other notes to understand it.
+5. **When NOT to update**: If the current summary already accurately captures the unique aspects of this note and clearly distinguishes it from neighbors (through its specificity, not through comparative language), do not update it.
+
+**Summary Writing Guidelines:**
+- ✅ DO: "This note discusses the implementation details of algorithm X, focusing on its time complexity analysis."
+- ✅ DO: "This note describes the experimental setup for testing hypothesis Y, including specific parameters and measurement protocols."
+- ❌ DON'T: "Unlike other notes, this note focuses on algorithm X rather than algorithm Y."
+- ❌ DON'T: "This note does not cover theoretical foundations, which are discussed in other notes."
+- ❌ DON'T: "This note is different from its neighbors in that it analyzes..."
+
+Return your decision in JSON format with the following structure:
+{
+    "suggested_connections": ["neighbor_memory_ids"], 
+    "should_update": True or False,
+    "new_summary": "new summary",
+    "new_keywords": ["keyword_1",..."keyword_n"]
+}

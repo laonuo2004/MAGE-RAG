@@ -1,0 +1,13 @@
+Please read the following texts and the images if available,then answer the question below. 
+
+<text>
+$DOC$
+</text>
+
+What is the only correct answer to this question: $Q$
+
+Format your response as follows:
+<thought>
+[your thought and conclusion]
+</thought>
+<output>[Your answer here]</output>

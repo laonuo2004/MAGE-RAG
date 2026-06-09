@@ -1,0 +1,79 @@
+Your task is to extract ALL concrete entities that explicitly appear in the provided text.
+
+STRICT EXTRACTION RULES:
+1. You MUST extract *every* entity that appears in the text. 
+   - Do not skip or ignore any entity, even if it seems minor.
+   - Coverage must be exhaustive.
+
+2. Only extract entities that appear *verbatim* or as clear noun phrases in the text:
+   - Named entities (people, organizations, locations)
+   - Technical terms and domain-specific terminology
+   - Products, models, components
+   - Proper nouns and unique identifiers
+   - Explicit noun phrases directly present in the text
+
+3. You MUST NOT:
+   - Invent new terms
+   - Generalize, abstract, or summarize
+   - Produce synonyms or inferred concepts
+   - Omit any entity actually present
+   - Extract raw mathematical formulas, LaTeX expressions, or equations (e.g., $x_{i}$, \alpha, etc.)
+   - Include special characters like $, \, {, } in keywords
+
+4. The keywords MUST be entities present in the text, not themes.
+
+5. Preserve the original wording of the entities from the text, but convert mathematical notation to plain text descriptions (e.g., "variable x_i" instead of "$x_{i}$").
+
+6. When the provided content contains no meaningful information, such as reference lists, \
+the summary you generate must include exactly "No meaningful information" to aid filtering.
+
+OUTPUT FORMAT (JSON):
+{
+  "keywords": [
+    // ALL entities that appear in the text, in their exact textual form
+  ],
+  "summary": "One concise sentence summarizing the content.",
+  "tags": [
+    // Broad classification tags, not entities
+  ]
+}
+
+------------------------------------------------------------
+
+FEW-SHOT EXAMPLES
+------------------------------------------------------------
+
+Example 1
+Input Text:
+"The Tesla Model S uses a Dual Motor system and features an Autopilot module.
+It integrates an NVIDIA Drive PX processor and a Panasonic 18650 battery pack."
+
+Output JSON:
+{
+  "keywords": [
+    "Tesla Model S",
+    "Dual Motor system",
+    "Autopilot module",
+    "NVIDIA Drive PX processor",
+    "Panasonic 18650 battery pack"
+  ],
+  "summary": "The text describes components and hardware modules used in the Tesla Model S.",
+  "tags": ["Technology", "Automotive", "Specifications"]
+}
+
+Example 2
+Input Text:
+"The DeepMind AlphaFold system achieved state-of-the-art results in the CASP13 competition.
+The project also used the UniProt database and the PDB structure repository for training."
+
+Output JSON:
+{
+  "keywords": [
+    "DeepMind AlphaFold system",
+    "CASP13 competition",
+    "UniProt database",
+    "PDB structure repository"
+  ],
+  "summary": "The text describes AlphaFold's performance in CASP13 and the datasets used for its training.",
+  "tags": ["Machine Learning", "Biology", "Research"]
+}

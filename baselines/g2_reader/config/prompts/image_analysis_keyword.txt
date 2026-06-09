@@ -1,0 +1,100 @@
+You must analyze the visual elements of a scientific figure or table.
+
+STRICT RULES FOR KEYWORDS:
+1. Keywords must come from ONLY the following sources:
+   A) Visible text in the image (OCR). You MUST extract ALL visible text without omission:
+      - axis titles
+      - labels
+      - legends
+      - category names
+      - in-figure terminology
+      - numbers, units, abbreviations
+   B) The caption:
+      • You MUST include the caption’s index label (e.g., “Figure 1”, “Fig. 3”, “Table 2”)
+      • You MAY extract additional caption entities ONLY if they are actual entities:
+          - technical terms
+          - dataset names
+          - variable names
+          - experimental conditions
+          - named objects
+        You MUST NOT extract descriptive sentences, adjectives, or interpretive phrases.
+
+2. You MUST preserve exact spelling, capitalization, symbols, and units.
+3. You MUST NOT invent, infer, paraphrase, or generalize terms not seen in the image or caption.
+
+SUMMARY RULES:
+1. Summary must begin with the caption index:
+   “Figure X — …” or “Table Y — …”
+2. The summary must describe only:
+   - what is visually present
+   - what the caption explicitly states
+3. Do NOT include caption text in keywords except index + allowed entity terms.
+
+OUTPUT FORMAT:
+{
+  "keywords": [...],
+  "summary": "...",
+  "tags": [...]
+}
+
+===========================================================
+FEW-SHOT EXEMPLARS
+===========================================================
+
+Example 1 — Map with labeled points
+Provided:
+- Context: Describes site selection background.
+- Caption: "Figure 1. Distribution of information centers and viewpoints across the region."
+- Visible elements: Regional map with markers labeled "Information Center" and "Viewpoint".
+
+Expected JSON:
+{
+  "keywords": [
+    "Figure 1",
+    "Information Center",
+    "information centers",
+    "Viewpoint"
+  ],
+  "summary": "Figure 1 — Distribution of information centers and viewpoints across the region. The figure shows a regional map with labeled markers indicating the positions of information centers and viewpoints.",
+  "tags": ["Geospatial", "Map", "Urban Planning"]
+}
+
+Example 2 — Table ablation study
+Provided:
+- Context: Discusses model variants and component effects.
+- Caption: "Table 2. Ablation study of model components."
+- Visible elements: Table with column headers: “Baseline”, “w/ Attention”, “w/o Regularization”.
+
+Expected JSON:
+{
+  "keywords": [
+    "Table 2",
+    "Ablation Study",
+    "Baseline",
+    "w/ Attention",
+    "w/o Regularization"
+  ],
+  "summary": "Table 2 — Ablation study of model components. The table compares the baseline model with variants that include attention or exclude regularization.",
+  "tags": ["Experiment", "Table", "Machine Learning"]
+}
+
+===========================================================
+USE OF CONTEXT AND CAPTION
+===========================================================
+
+Below is the contextual text (before and after the image) and the caption text.  
+You must use them ONLY in the following ways:
+
+- Context:
+  • MAY help you understand what the figure is about.
+  • MUST NOT introduce new keywords unless the same entities appear in the image or caption.
+  • MUST NOT override what the image visually shows.
+
+- Caption:
+  • ALWAYS extract the index label (e.g., “Figure 3”, “Table 1”)
+  • Extract ONLY entity-type terms from the rest of the caption.
+  • MUST NOT take descriptive text or narrative explanations as keywords.
+
+Here is the context and caption for the image you will analyze:
+Context: {context}
+Caption: {caption}

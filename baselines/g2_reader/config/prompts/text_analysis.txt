@@ -1,0 +1,26 @@
+Generate a structured analysis of the following content by:
+1. Identifying the most salient keywords (focus on nouns, verbs, and key concepts)
+2. Extracting core themes, concepts and arguments
+3. Creating relevant categorical tags
+
+Format the response as a JSON object:
+{
+    "keywords": [
+        // several specific, distinct keywords that capture key concepts and terminology
+        // Order from most to least important
+        // At least three keywords, but don't be too redundant.
+    ],
+    "summary": 
+        // one sentence summarizing:
+        // - Main topic/domain
+        // - Key arguments/points
+        // - Be concise, informative and to the point.
+    ,
+    "tags": [
+        // several broad categories/themes for classification
+        // Include domain, format, and type tags
+        // At least three tags, but don't be too redundant.
+    ]
+}
+
+Content for analysis:

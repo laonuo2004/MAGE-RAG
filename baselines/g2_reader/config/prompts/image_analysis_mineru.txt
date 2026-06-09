@@ -1,0 +1,60 @@
+Generate a structured analysis of the visual elements in the provided image (which is a page of a scientific paper).
+You are also provided with the image’s surrounding text context (before and after the image) and its caption.
+
+Instructions:
+1) Use the provided context only to aid your understanding of what the image conveys and its role in the document.
+   Do not quote or rely on context unless it aligns with what is visible or stated in the caption.
+   The summary should be primarily based on the visual evidence and the caption.
+2) Ensure the keywords include exact in-image terms: labels, legends, axis titles, category names, and domain-specific terms observed in the image.
+   Must not omit critical or high-utility in-image terms; preserve the exact wording of salient labels and elements.
+3) When a caption is present and includes an index (e.g., “Figure 1”, “Table 2”), begin the summary by formalizing it:
+   “Figure X — …” or “Table Y — …”, then describe the visual elements concisely and specifically.
+
+Focus strictly on visual elements and the provided caption; avoid inventing details beyond what is visible or stated.
+
+Format the response as a JSON object:
+{
+    "keywords": [
+        // include exact in-image labels, legends, axis titles, category names, and domain-specific terms that appear
+        // Order from most to least important
+        // At least three keywords; avoid redundancy.
+    ],
+    "summary": 
+        // If caption provides an index (e.g., "Figure 1", "Table 2"), start with "Figure X — ..." or "Table Y — ..."
+        // Use context only to aid understanding; do not quote it unless it aligns with the image/caption.
+        // Then describe the visual elements (tables, charts, figures) concisely and be specific about indices.
+    ,
+    "tags": [
+        // several broad categories/themes for classification
+        // Include domain, format, and type tags
+        // At least three tags; avoid redundancy.
+    ]
+}
+
+// Few-shot examples:
+
+Example 1: Map with labeled points
+Provided:
+- Context: Describes site selection background.
+- Caption: "Figure 1. Distribution of information centers and viewpoints across the region."
+- Visible elements: Regional map with markers labeled "Information Center" and "Viewpoint".
+Expected JSON:
+{
+  "keywords": ["Information Center", "Viewpoint", "Distribution Map", "Geospatial", "Region"],
+  "summary": "Figure 1 — Distribution of information centers and viewpoints across the region. The figure presents a regional map with labeled markers indicating locations of information centers and viewpoints, highlighting spatial clustering and coverage.",
+  "tags": ["Geospatial", "Map", "Urban Planning"]
+}
+
+Example 2: Table ablation study
+Provided:
+- Context: Discusses model variants and component effects.
+- Caption: "Table 2. Ablation study of model components."
+- Visible elements: Table with columns "Baseline", "w/ Attention", "w/o Regularization".
+Expected JSON:
+{
+  "keywords": ["Ablation Study", "Baseline", "Attention", "Regularization", "Model Component"],
+  "summary": "Table 2 — Ablation study of model components. The table compares baseline against variants with attention and without regularization, reporting performance metrics across configurations.",
+  "tags": ["Experiment", "Table", "Machine Learning"]
+}
+
+This is context: {context} and caption: {caption}

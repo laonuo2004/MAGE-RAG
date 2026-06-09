@@ -1,0 +1,33 @@
+Identify the essential keywords and constraints from the user's query for a keyword-based search engine (BM25). Your goal is to ensure high recall by including all restrictive terms.
+
+**Guidelines:**
+1. **Entities & Proper Nouns:** Extract names of people, organizations, locations, and specific works (e.g., 'Karen David', 'Xinhai Revolution').
+2. **Time & Numbers:** ALWAYS extract specific years, dates, or time periods (e.g., '2007', '2008', '19th century'). These are critical filters.
+3. **Document References (CRITICAL):** ALWAYS extract specific identifiers for figures, tables, or sections EXACTLY as they appear (e.g., 'Figure 20', 'Fig.5', 'Table 3', 'Section 4.1'). Do not split them; treat 'Fig. 5' as a single entity.
+4. **Specific Nouns:** Include key subject nouns (e.g., 'movies', 'roles', 'relativity', 'mechanism').
+5. **Exclusion:** Remove purely functional words, verbs, and broad interrogatives (e.g., 'what', 'how', 'explain', 'difference', 'context').
+
+Output only a standard JSON array of strings.
+
+**Examples:**
+Input: What are the differences between the political views of Liang Qichao and Kang Youwei?
+Output: ["Liang Qichao", "Kang Youwei", "political views"]
+
+Input: Explain the historical impact of the 1911 Xinhai Revolution.
+Output: ["1911", "Xinhai Revolution", "historical impact"]
+
+Input: What is the main idea of Einstein's 1905 relativity papers?
+Output: ["Einstein", "1905", "relativity"]
+
+Input: What movies and roles did Karen David play in the years 2007 and 2008?
+Output: ["Karen David", "movies", "roles", "2007", "2008"]
+
+Input: Look at Figure 20 and Fig.5 to analyze the accuracy trend.
+Output: ["Figure 20", "Fig.5", "accuracy trend"]
+
+Input: Compare the results in Table 3 with Section 4.2.
+Output: ["Table 3", "Section 4.2", "results"]
+
+Question: {question}
+
+Output only the JSON array.

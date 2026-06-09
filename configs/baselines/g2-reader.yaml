@@ -1,0 +1,76 @@
+name: g2-reader
+
+params:
+  use_dag: true
+  top_k: 5
+  top_k_text_kw: 3
+  top_k_image_kw: 3
+  keyword_modality: all
+  num_runs: 1
+  n_proc: 1
+  build_evolve_iters: 1
+  build_window_size: 2
+  memory_cache_scope: document
+  memory_chunk_size: 2400
+  memory_chunk_overlap: 240
+  memory_analysis_retries: 2
+  memory_analysis_max_tokens: 32768
+  memory_analysis_split_max_depth: 4
+  memory_analysis_split_min_chars: 400
+  memory_analysis_max_summary_chars: 700
+  memory_analysis_max_keywords: 24
+  memory_compact_analysis_prompts: true
+  memory_build_workers: 4
+  memory_llm_concurrency: 64
+  memory_parallel_analysis: true
+  memory_evolution_neighbor_k: 3
+  memory_evolution_max_memories: 12000
+  show_build_progress: true
+  inference_isolation: process
+
+result_name_params:
+  - params.use_dag
+  - params.top_k
+  - params.top_k_text_kw
+  - params.top_k_image_kw
+  - params.keyword_modality
+  - params.num_runs
+  - params.n_proc
+  - params.build_evolve_iters
+  - params.build_window_size
+  - params.memory_cache_scope
+  - params.memory_chunk_size
+  - params.memory_chunk_overlap
+  - params.memory_analysis_retries
+  - params.memory_analysis_max_tokens
+  - params.memory_analysis_split_max_depth
+  - params.memory_analysis_split_min_chars
+  - params.memory_analysis_max_summary_chars
+  - params.memory_analysis_max_keywords
+  - params.memory_compact_analysis_prompts
+  - params.memory_build_workers
+  - params.memory_llm_concurrency
+  - params.memory_parallel_analysis
+  - params.memory_evolution_neighbor_k
+  - params.memory_evolution_max_memories
+  - params.show_build_progress
+  - params.inference_isolation
+
+models:
+  chat: Qwen3-VL-8B-Instruct
+  embed: /root/autodl-tmp/ylz/models/bge-m3
+
+paths:
+  cache_root: null
+  mineru_compat_dir: null
+  pdf_tmp_dir: /tmp/g2_reader_pdfs
+
+runtime:
+  save_logs: true
+  patch_g2_config: true
+  allow_runtime_memory_build: false
+
+use_fp16: true
+devices: cuda:1,cuda:0,cpu
+batch_size: 8
+max_length: 8192

@@ -1,14 +1,18 @@
 import asyncio
 from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
 import sys
 import types
 
 from baselines.g2reader import (
     G2ReaderPaths,
     G2ReaderRuntime,
+    G2ReaderContextBuilder,
+    LocalBGEM3Embedder,
     build_g2_memory_from_cfg,
     extract_g2_prediction,
     g2_document_memory_id,
+    g2_memory_ready,
     g2_memory_id_for_record,
     g2_processed_record,
     normalize_g2_devices,
@@ -59,6 +63,79 @@ def test_g2reader_registered_from_baseline_entry():
     assert builder.name == "g2-reader"
     assert builder.__class__.__module__ == "baselines.g2reader"
     assert hasattr(builder, "run_sample")
+
+
+def test_context_builder_uses_process_isolation_when_configured(monkeypatch, tmp_path):
+    cfg = {
+        "litellm": {"base_url": "http://localhost:4000/v1", "api_key": "none"},
+        "benchmarks": {"name": "mmlongbench"},
+        "baselines": {
+            "params": {"inference_isolation": "process"},
+            "paths": {"cache_root": str(tmp_path / "cache")},
+        },
+    }
+    sample = {
+        "doc_id": "doc.pdf",
+        "question_id": "q1",
+        "question": "q",
+        "answer": "a",
+    }
+    calls = []
+
+    def fake_process(cfg_arg, benchmark_name, sample_arg):
+        calls.append((cfg_arg, benchmark_name, sample_arg))
+        return {"response": "from child", "metadata": {"mode": "process"}}
+
+    def fail_inprocess(self, benchmark_name, sample, client=None):
+        raise AssertionError("in-process runtime should not be used")
+
+    monkeypatch.setattr(g2reader_module, "run_g2_sample_in_subprocess", fake_process)
+    monkeypatch.setattr(G2ReaderRuntime, "run_sample", fail_inprocess)
+
+    result = G2ReaderContextBuilder(cfg).run_sample("mmlongbench", sample, client=object())
+
+    assert result["response"] == "from child"
+    assert calls == [(cfg, "mmlongbench", sample)]
+
+
+def test_run_sample_child_writes_json_payload(monkeypatch, tmp_path):
+    input_path = tmp_path / "input.json"
+    output_path = tmp_path / "output.json"
+    input_path.write_text(
+        '{"cfg": {"benchmarks": {"name": "mmlongbench"}}, "benchmark_name": "mmlongbench", "sample": {"question_id": "q1"}}',
+        encoding="utf-8",
+    )
+
+    def fake_run_sample(self, benchmark_name, sample, client=None):
+        return {"response": f"{benchmark_name}:{sample['question_id']}"}
+
+    monkeypatch.setattr(G2ReaderRuntime, "run_sample", fake_run_sample)
+
+    g2reader_module._run_g2_sample_child(input_path, output_path)
+
+    assert output_path.exists()
+    assert '"ok": true' in output_path.read_text(encoding="utf-8")
+    assert 'mmlongbench:q1' in output_path.read_text(encoding="utf-8")
+
+
+def test_context_builder_can_still_use_inprocess_mode(monkeypatch, tmp_path):
+    cfg = {
+        "benchmarks": {"name": "mmlongbench"},
+        "baselines": {
+            "params": {"inference_isolation": "inprocess"},
+            "paths": {"cache_root": str(tmp_path / "cache")},
+        },
+    }
+    sample = {"doc_id": "doc.pdf", "question_id": "q1", "question": "q", "answer": "a"}
+
+    def fake_inprocess(self, benchmark_name, sample_arg, client=None):
+        return {"response": f"{benchmark_name}:{sample_arg['question_id']}"}
+
+    monkeypatch.setattr(G2ReaderRuntime, "run_sample", fake_inprocess)
+
+    result = G2ReaderContextBuilder(cfg).run_sample("mmlongbench", sample)
+
+    assert result["response"] == "mmlongbench:q1"
 
 
 def test_extract_g2_prediction_prefers_output_tag():
@@ -208,6 +285,20 @@ def test_g2_document_memory_id_groups_questions_by_pdf():
     assert g2_memory_id_for_record("mmlongbench", record_b, cfg) == "g2_mmlongbench_doc_shared"
 
 
+def test_g2_document_memory_id_preserves_full_arxiv_version_stem():
+    assert g2_document_memory_id("mmlongbench", "2307.09288v2.pdf") == "g2_mmlongbench_doc_2307.09288v2"
+
+
+def test_g2_memory_ready_requires_requested_evolution_iter(tmp_path):
+    sample_dir = tmp_path / "memory_systems" / "g2_mmlongbench_doc_2307.09288v2_iter_0"
+    sample_dir.mkdir(parents=True)
+    (sample_dir / "memories.pkl").write_bytes(b"memory")
+    (sample_dir / "retriever_embeddings.npy").write_bytes(b"embedding")
+
+    assert g2_memory_ready(tmp_path / "memory_systems", "g2_mmlongbench_doc_2307.09288v2", evolve_iters=0)
+    assert not g2_memory_ready(tmp_path / "memory_systems", "g2_mmlongbench_doc_2307.09288v2", evolve_iters=1)
+
+
 def test_build_memory_deduplicates_document_scope(monkeypatch, tmp_path):
     processed = tmp_path / "processed.jsonl"
     processed.write_text(
@@ -293,6 +384,86 @@ def test_build_memory_uses_configured_document_workers(monkeypatch, tmp_path):
     assert result["skipped"] == 0
     assert result["failed"] == 0
 
+
+
+
+def test_build_memory_worker_pool_break_leaves_docs_pending(monkeypatch, tmp_path):
+    processed = tmp_path / "processed.jsonl"
+    processed.write_text(
+        '{"_id": "g2_longdocurl_q1"}\n'
+        '{"_id": "g2_longdocurl_q2"}\n'
+        '{"_id": "g2_longdocurl_q3"}\n',
+        encoding="utf-8",
+    )
+    cfg = {
+        "benchmarks": {"name": "longdocurl", "mineru_dir": str(tmp_path / "mineru")},
+        "baselines": {
+            "params": {"build_evolve_iters": 1, "memory_build_workers": 3},
+            "paths": {"cache_root": str(tmp_path / "cache")},
+        },
+    }
+
+    class BrokenFuture:
+        def result(self):
+            raise BrokenProcessPool("worker died")
+
+        def done(self):
+            return True
+
+    class PendingFuture:
+        def result(self):
+            raise AssertionError("pending future should not be consumed after pool break")
+
+        def done(self):
+            return False
+
+    class BreakingProcessPool:
+        def __init__(self, max_workers):
+            self.count = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, *args, **kwargs):
+            self.count += 1
+            return BrokenFuture() if self.count == 1 else PendingFuture()
+
+    monkeypatch.setattr(g2reader_module, "ProcessPoolExecutor", BreakingProcessPool)
+    monkeypatch.setattr(g2reader_module, "as_completed", lambda futures: list(futures))
+
+    result = build_g2_memory_from_cfg(cfg, processed_jsonl=processed)
+
+    assert result["interrupted"] is True
+    assert result["failed"] == 0
+    assert result["pending"] == 3
+
+
+def test_local_bgem3_embedder_retries_smaller_batch_on_oom(monkeypatch):
+    calls = []
+
+    class FakeModel:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def encode(self, texts, *, batch_size, **kwargs):
+            calls.append(batch_size)
+            if batch_size == 8:
+                raise RuntimeError("CUDA out of memory")
+            return {"dense_vecs": [[0.1, 0.2] for _ in texts]}
+
+    fake_module = types.ModuleType("FlagEmbedding")
+    fake_module.BGEM3FlagModel = FakeModel
+    monkeypatch.setitem(sys.modules, "FlagEmbedding", fake_module)
+
+    embedder = LocalBGEM3Embedder("fake", devices="cuda:0")
+    vectors = embedder.encode(["a", "b"], batch_size=8)
+
+    assert calls == [8, 4]
+    assert len(vectors) == 2
+    assert all(len(vector) == 2 for vector in vectors)
 
 
 def test_runtime_patch_analysis_failure_logging_records_failed_text_chunk(tmp_path):
@@ -500,6 +671,120 @@ def test_runtime_patch_memory_evolve_neighbor_limit(tmp_path):
 
     assert asyncio.run(memory_system.find_related_notes("q", k=5, include_neighbors=False))[0] == 3
     assert asyncio.run(memory_system.find_related_notes("q", k=5, include_neighbors=True))[0] == 5
+
+
+def test_runtime_patch_construct_memory_promotes_oversized_base_iter_without_evolution(tmp_path):
+    events = []
+
+    class AgenticMemorySystem:
+        def __init__(self, model_name, llm_model):
+            self.memories = {i: types.SimpleNamespace(context=f"ctx{i}", keywords=["kw"], links=[]) for i in range(4)}
+            self.retriever = types.SimpleNamespace(add_documents=lambda meta, embeddings: events.append(("add_documents", len(meta))))
+
+        def load_memory_system(self, name):
+            events.append(("load", name))
+
+        async def process_memory_all(self):
+            events.append(("evolve", None))
+            raise AssertionError("oversized memory should not evolve")
+
+        def reset_retriever(self):
+            events.append(("reset", None))
+
+        def save_memory_system(self, name):
+            events.append(("save", name))
+            sample_dir = runtime.paths.memory_systems_dir / name
+            sample_dir.mkdir(parents=True, exist_ok=True)
+            (sample_dir / "memories.pkl").write_bytes(b"memory")
+            (sample_dir / "retriever_embeddings.npy").write_bytes(b"embedding")
+
+    async def original_construct_memory(pdf_path, *, evolve_iters=1, window_size=2):
+        events.append(("original", pdf_path, evolve_iters, window_size))
+        return AgenticMemorySystem("embed", "chat")
+
+    amem_new = types.SimpleNamespace(
+        construct_memory=original_construct_memory,
+        AgenticMemorySystem=AgenticMemorySystem,
+        MODELS={"embed": "embed", "chat": "chat"},
+        embed_many=lambda texts, kind="embedding": [[0.1, 0.2] for _ in texts],
+    )
+    cfg = {
+        "benchmarks": {"name": "longdocurl", "mineru_dir": str(tmp_path / "mineru")},
+        "baselines": {
+            "params": {"memory_cache_scope": "document", "memory_evolution_max_memories": 3},
+            "paths": {"cache_root": str(tmp_path / "cache")},
+        },
+    }
+    runtime = G2ReaderRuntime(cfg)
+    base_dir = runtime.paths.memory_systems_dir / "g2_longdocurl_doc_123_iter_0"
+    base_dir.mkdir(parents=True)
+    (base_dir / "memories.pkl").write_bytes(b"memory")
+    (base_dir / "retriever_embeddings.npy").write_bytes(b"embedding")
+
+    runtime._patch_construct_memory_cache_load(amem_new)
+    asyncio.run(amem_new.construct_memory("g2_longdocurl_doc_123", evolve_iters=1, window_size=2))
+
+    assert ("load", "g2_longdocurl_doc_123_iter_0") in events
+    assert ("evolve", None) not in events
+    assert ("save", "g2_longdocurl_doc_123_iter_1") in events
+    assert (runtime.paths.memory_systems_dir / "g2_longdocurl_doc_123_iter_1" / "memories.pkl").exists()
+
+
+def test_runtime_patch_construct_memory_resumes_from_base_iter(tmp_path):
+    events = []
+
+    class AgenticMemorySystem:
+        def __init__(self, model_name, llm_model):
+            self.memories = {0: types.SimpleNamespace(context="ctx", keywords=["kw"], links=[])}
+            self.retriever = types.SimpleNamespace(
+                add_documents=lambda meta, embeddings: events.append(("add_documents", tuple(meta), tuple(map(tuple, embeddings))))
+            )
+
+        def load_memory_system(self, name):
+            events.append(("load", name))
+
+        async def process_memory_all(self):
+            events.append(("evolve", None))
+
+        def reset_retriever(self):
+            events.append(("reset", None))
+
+        def save_memory_system(self, name):
+            events.append(("save", name))
+
+    async def original_construct_memory(pdf_path, *, evolve_iters=1, window_size=2):
+        events.append(("original", pdf_path, evolve_iters, window_size))
+        return AgenticMemorySystem("embed", "chat")
+
+    async def embed_many(texts, kind="embedding"):
+        events.append(("embed", tuple(texts), kind))
+        return [[0.1, 0.2] for _ in texts]
+
+    amem_new = types.SimpleNamespace(
+        construct_memory=original_construct_memory,
+        AgenticMemorySystem=AgenticMemorySystem,
+        MODELS={"embed": "embed", "chat": "chat"},
+        embed_many=embed_many,
+    )
+    cfg = {
+        "benchmarks": {"name": "mmlongbench", "mineru_dir": str(tmp_path / "mineru")},
+        "baselines": {
+            "params": {"memory_cache_scope": "document"},
+            "paths": {"cache_root": str(tmp_path / "cache")},
+        },
+    }
+    runtime = G2ReaderRuntime(cfg)
+    base_dir = runtime.paths.memory_systems_dir / "g2_mmlongbench_doc_2307.09288v2_iter_0"
+    base_dir.mkdir(parents=True)
+    (base_dir / "memories.pkl").write_bytes(b"memory")
+    (base_dir / "retriever_embeddings.npy").write_bytes(b"embedding")
+
+    runtime._patch_construct_memory_cache_load(amem_new)
+    asyncio.run(amem_new.construct_memory("g2_mmlongbench_doc_2307.09288v2", evolve_iters=1, window_size=2))
+
+    assert ("original", "g2_mmlongbench_doc_2307.09288v2", 1, 2) not in events
+    assert ("load", "g2_mmlongbench_doc_2307.09288v2_iter_0") in events
+    assert ("save", "g2_mmlongbench_doc_2307.09288v2_iter_1") in events
 
 
 def test_write_build_metadata_records_effective_build_params(tmp_path):

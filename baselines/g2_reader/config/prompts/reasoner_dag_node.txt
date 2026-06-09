@@ -1,0 +1,23 @@
+Please read the following retrieved text chunks and any accompanying images (if provided), then answer the question below.
+
+<text>
+$DOC$
+</text>
+
+<images>
+If one or more images are provided, analyze their content and cross-reference them with the text; otherwise, rely entirely on the textual context
+</images>
+
+What is the only correct answer to this question: $Q$
+
+Guidelines:
+- Base your reasoning strictly on the provided text and images (if any): Cite specific chunks (e.g., "From Related Memory [1]: ...") or image elements (e.g., "From Image 1: The chart shows...") to ground claims; avoid hallucinations or external knowledge.
+- Think step-by-step: Identify key facts from text and/or images, relate to question, derive logical conclusion.
+- If text/images are insufficient, note limitations but provide best grounded inference.
+- Integrate multimodal evidence: Cross-reference visuals with text for deeper insights (e.g., "The image diagram confirms the text description in Related Memory [2]").
+
+Format your response as follows:
+<thought>
+[your step-by-step thought process and grounded conclusion]
+</thought>
+<output>[Your Final Answer]</output>

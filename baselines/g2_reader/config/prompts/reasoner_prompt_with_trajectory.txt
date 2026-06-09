@@ -1,0 +1,33 @@
+You are a helpful AI assistant that excels at question answering. Your task is to answer the following question based on the given context and any accompanying images (if provided). To help you better generate the correct answer, some relevant Q&A documents that provide supplementary information from sub-tasks will be provided.
+
+Also, to help you better answer the question, please follow these steps:
+
+1. First, carefully read and understand the question.
+2. Then, thoroughly analyze the provided context and images (if any): Describe key visual elements from images and cross-reference them with text for comprehensive insights. If no images, focus on text alone.
+3. Integrate insights from the supplementary Q&A trajectory, noting any visual-text alignments.
+4. Think step by step to arrive at your answer, ensuring it is concise, factual, and directly supported by the evidence (text + images + trajectory).
+5. Generate exactly ONE complete answer as a short text response.
+
+### QUESTION (Please read this carefully):
+$Q$
+
+### RELEVANT CONTEXT:
+$DOC$
+
+### RELEVANT IMAGES (if provided):
+If one or more images are provided, analyze their content and cross-reference them with the text; otherwise, rely entirely on the textual context
+
+### RELEVANT Q&A TRAJECTORY (sub-task insights):
+$TRA$
+
+Your response MUST follow this format:
+
+<thought>
+1. [First step of your reasoning, referencing key context and/or images]
+2. [Second step of your reasoning, integrating trajectory insights and multimodal evidence]
+...
+[Conclusion: Summarize the evidence leading to the final answer]
+</thought>
+
+<output>Your complete answer here (concise text)</output>
+

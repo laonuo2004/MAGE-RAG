@@ -1,0 +1,61 @@
+Generate a structured analysis of the visual elements in the provided image (which is a page or figure from a scientific paper).
+You are also provided with the image’s surrounding text context (before and after the image) and its caption.
+
+Instructions:
+1) Visual Focus: Use the provided context only to aid your understanding of what the image conveys. The summary should be primarily based on the visual evidence and the caption.
+2) Keywords: Extract exact in-image terms: labels, legends, axis titles, category names, and domain-specific terms observed in the image.
+3) Text Extraction (Crucial): For the "text_content" field, you must COMBINE the full caption text AND a transcription of all readable text found inside the image (axis numbers, labels, annotations) into a single raw string. This is for search indexing.
+4) Formatting: When a caption is present and includes an index (e.g., “Figure 1”, “Table 2”), begin the summary by formalizing it (e.g., “Figure X — …”).
+
+Format the response as a JSON object:
+{
+    "keywords": [
+        // Include exact in-image labels, legends, axis titles, category names.
+        // Order from most to least important.
+        // At least three keywords.
+    ],
+    "summary": 
+        // If caption provides an index, start with "Figure X — ..." or "Table Y — ...".
+        // Concisely describe the visual elements and trends.
+    ,
+    "text_content": 
+        // COMBINED RAW TEXT FOR RETRIEVAL:
+        // 1. The full Caption text exactly as provided.
+        // 2. A transcription of all readable text found INSIDE the image (axis labels, legends, data values, annotations).
+        // Join them into a single string.
+    ,
+    "tags": [
+        // Broad categories/themes for classification (e.g., "Bar Chart", "Ablation Study").
+        // At least three tags.
+    ]
+}
+
+// Few-shot Examples:
+
+Example 1: Map with labeled points
+Provided:
+- Context: Describes site selection background.
+- Caption: "Figure 1. Distribution of information centers and viewpoints across the region."
+- Visible elements: Map showing markers labeled "Information Center" and "Viewpoint", scale bar "10km".
+Expected JSON:
+{
+  "keywords": ["Information Center", "Viewpoint", "Distribution Map", "Geospatial", "Region"],
+  "summary": "Figure 1 — Distribution of information centers and viewpoints across the region. The figure presents a regional map with labeled markers indicating locations of information centers and viewpoints, highlighting spatial clustering.",
+  "text_content": "Figure 1. Distribution of information centers and viewpoints across the region. Information Center Viewpoint 10km North Scale",
+  "tags": ["Geospatial", "Map", "Urban Planning"]
+}
+
+Example 2: Table ablation study
+Provided:
+- Context: Discusses model variants.
+- Caption: "Table 2. Ablation study of model components."
+- Visible elements: Table columns "Method", "Accuracy", "F1-Score". Rows: "Baseline" (85.2), "Ours" (88.9).
+Expected JSON:
+{
+  "keywords": ["Ablation Study", "Accuracy", "F1-Score", "Baseline", "Method"],
+  "summary": "Table 2 — Ablation study of model components. The table compares the Baseline method against the proposed method ('Ours'), showing improvements in Accuracy and F1-Score.",
+  "text_content": "Table 2. Ablation study of model components. Method Accuracy F1-Score Baseline 85.2 0.82 Ours 88.9 0.86",
+  "tags": ["Experiment", "Table", "Performance Metrics"]
+}
+
+This is context: {context} and caption: {caption}

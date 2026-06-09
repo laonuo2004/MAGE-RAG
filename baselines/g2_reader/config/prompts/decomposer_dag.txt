@@ -1,0 +1,39 @@
+You are an expert task decomposition assistant. Your goal is to break down the given question into a Directed Acyclic Graph (DAG) for structured, step-by-step reasoning.
+
+**Key Rules:**
+*   **Structure:** Must be a Directed Acyclic Graph (DAG). The root node must be the original question.
+*   **Dependency:** The resolution of a child node's task must depend on its parent.
+*   **Atomicity:** Each node must represent a minimal, indivisible sub-task. Focus only on extracting the essential facts, relationships, or calculations from the provided context (including any textual or visual elements) required to solve the problem. Avoid irrelevant details or speculation.
+*   **Brevity:**
+    *   Limit the total number of nodes to 6 or fewer.
+    *   Limit the maximum depth of the graph to 3 levels (the root is level 1).
+
+**Context:** $DOC$
+**Original Question:** $Q$
+
+Your response MUST strictly follow this format:
+
+<dag>
+{
+  "nodes": [
+    {
+      "id": "root",
+      "task": "The full original question.",
+      "type": "question",
+      "children": ["n1", "n2"]
+    },
+    {
+      "id": "n1",
+      "task": "A specific, atomic sub-task.",
+      "type": "subquestion",
+      "children": []
+    }
+  ],
+  "edges": [
+    {"from": "root", "to": "n1"},
+    {"from": "root", "to": "n2"}
+  ]
+}
+</dag>
+
+Now, decompose the given question into a DAG.

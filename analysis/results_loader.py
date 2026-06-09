@@ -62,15 +62,19 @@ def parse_run_parameters(
     return params
 
 
-def scan_runs(results_root: Path | str = "results") -> list[RunRecord]:
+def scan_runs(
+    results_root: Path | str = "results",
+    included_subdirs: Iterable[Path | str] | None = None,
+) -> list[RunRecord]:
     root = Path(results_root)
     grouped: dict[tuple[str, str, str], dict[str, Path]] = {}
-    for path in root.glob("*/*/*.jsonl"):
-        key = _run_key(root, path, ".jsonl")
-        grouped.setdefault(key, {})["jsonl"] = path
-    for path in root.glob("*/*/*.metrics.json"):
-        key = _run_key(root, path, ".metrics.json")
-        grouped.setdefault(key, {})["metrics"] = path
+    for search_root in _scan_roots(root, included_subdirs):
+        for path in search_root.glob("*.jsonl"):
+            key = _run_key(root, path, ".jsonl")
+            grouped.setdefault(key, {})["jsonl"] = path
+        for path in search_root.glob("*.metrics.json"):
+            key = _run_key(root, path, ".metrics.json")
+            grouped.setdefault(key, {})["metrics"] = path
 
     records = []
     for (benchmark, baseline, stem), paths in sorted(grouped.items()):
@@ -115,6 +119,17 @@ def scan_runs(results_root: Path | str = "results") -> list[RunRecord]:
             )
         )
     return records
+
+
+def _scan_roots(root: Path, included_subdirs: Iterable[Path | str] | None) -> list[Path]:
+    if included_subdirs is None:
+        return [path for path in root.glob("*/*") if path.is_dir()]
+    roots = []
+    for subdir in included_subdirs:
+        path = root / Path(subdir)
+        if path.is_dir():
+            roots.append(path)
+    return roots
 
 
 def read_jsonl_cached(

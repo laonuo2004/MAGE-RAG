@@ -1,11 +1,11 @@
 name: magerag
 
-params:
-  top_k: 3
-
 result_name_params:
   - params.top_k
   - controller.watchdog_iterations
+
+params:
+  top_k: 3
 
 models:
   evaluator: Qwen3-VL-8B-Instruct
@@ -18,7 +18,7 @@ evaluator:
   raw_text_char_limit: 1200
   include_opened_node_images: false
   max_selected_actions_per_iteration: 3
-  max_total_selected_actions: 24
+  max_total_selected_actions: 100
   candidate_preview_char_limit: 160
 
 controller:

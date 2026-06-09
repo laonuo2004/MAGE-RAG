@@ -8,5 +8,5 @@ CODE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${CODE_ROOT}"
 exec "${PYTHON_BIN}" main.py --multirun baselines=magerag \
     benchmarks=longdocurl,mmlongbench \
-    baselines.params.top_k=1,5,10,15 \
+    baselines.params.top_k=1,3,5 \
     benchmarks.workers=64

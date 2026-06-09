@@ -338,7 +338,6 @@ def parse_agent_decision_xml(raw_xml: str) -> EvaluatorDecision:
     if selected is not None:
         for action in selected.findall("action"):
             decision.selected_actions.append({
-                "candidate_id": str(action.attrib.get("candidate_id") or ""),
                 "candidate_index": _optional_int(action.attrib.get("index") or action.attrib.get("candidate_index")),
                 "utility": str(action.attrib.get("utility") or ""),
             })
@@ -402,7 +401,6 @@ def _selected_action_from_attrs(attrs_text: str) -> dict[str, Any]:
         for key, _quote, value in re.findall(r"([A-Za-z_][\w:-]*)\s*=\s*(['\"])(.*?)\2", attrs_text, flags=re.DOTALL)
     }
     return {
-        "candidate_id": str(attrs.get("candidate_id") or attrs.get("id") or ""),
         "candidate_index": _optional_int(attrs.get("index") or attrs.get("candidate_index")),
         "utility": str(attrs.get("utility") or ""),
     }

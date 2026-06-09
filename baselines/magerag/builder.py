@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import logging
 from pathlib import Path
 
@@ -181,9 +180,6 @@ class MAGERAGContextBuilder(ContextBuilder):
                 if node_id in seen_node_ids:
                     continue
                 activate_result = state.execute(ActivateNode(node_id), iteration="final")
-                if not activate_result.ok and "activate page" in activate_result.message:
-                    state.execute(ActivatePage(page_index=page_index, source="relation_target"), iteration="final")
-                    activate_result = state.execute(ActivateNode(node_id), iteration="final")
                 if not activate_result.ok:
                     continue
                 open_result = state.execute(OpenNode(node_id), iteration="final")
@@ -267,7 +263,6 @@ class MAGERAGContextBuilder(ContextBuilder):
         for iteration in range(1, self.watchdog_iterations + 1):
             # 每轮都重新枚举候选，因为上轮动作可能激活页面、打开节点或引入搜索结果。
             candidates = generator.generate(state)
-            candidate_by_id = {candidate.id: candidate for candidate in candidates}
             indexed_candidates = [candidate for candidate in candidates if candidate.action_type == "ActivateNode"]
             candidate_by_index = {index: candidate for index, candidate in enumerate(indexed_candidates, start=1)}
             made_progress = False
@@ -283,7 +278,7 @@ class MAGERAGContextBuilder(ContextBuilder):
                 "evaluator_input": evaluator_input,
                 "raw_response": raw_response,
                 "decision": decision.__dict__,
-                "candidate_ids": sorted(candidate_by_id),
+                "candidate_ids": sorted(candidate.id for candidate in candidates),
                 "candidate_index_map": {
                     str(index): candidate.id
                     for index, candidate in candidate_by_index.items()
@@ -315,46 +310,21 @@ class MAGERAGContextBuilder(ContextBuilder):
 
             for selected in selected_actions:
                 selected_action_attempts += 1
-                candidate_id = selected.get("candidate_id")
                 candidate_index = selected.get("candidate_index")
                 candidate = _resolve_candidate_index(candidate_index, candidate_by_index)
                 if candidate is None:
-                    candidate = _resolve_candidate(candidate_id, candidate_by_id)
-                if candidate is None:
-                    candidate = _candidate_from_selected_alias(candidate_id, state)
-                if candidate is None:
-                    if candidate_index is not None and not candidate_by_index and not candidate_id:
-                        state.trace.append({
-                            "iteration": iteration,
-                            "action": "IgnoredEmptyCandidateSelection",
-                            "candidate_index": candidate_index,
-                        })
-                        continue
                     state.validation_errors.append({
                         "action_type": "SelectedAction",
-                        "message": f"Invalid candidate selection: index={candidate_index} candidate_id={candidate_id}",
+                        "message": f"Invalid candidate selection index: {candidate_index}",
                     })
                     state.trace.append({
                         "iteration": iteration,
                         "action": "InvalidCandidate",
                         "candidate_index": candidate_index,
-                        "candidate_id": candidate_id,
                     })
                     continue
                 result = state.execute(action_from_candidate(candidate), iteration=iteration)
-                self._annotate_last_action_selection(state, selected, candidate, resolved_by="candidate_index_or_id")
-                if (
-                    not result.ok
-                    and candidate.action_type == "ActivateNode"
-                    and "activate page" in result.message
-                ):
-                    # LLM 可能选择了页面内节点，但父 page 尚未 Active；这里自动补一次 page activation。
-                    node_id = str(candidate.payload["node_id"])
-                    page_index = state.graph.node_page_index(node_id)
-                    page_result = state.execute(ActivatePage(page_index, "relation_target"), iteration=iteration)
-                    if page_result.ok:
-                        result = state.execute(action_from_candidate(candidate), iteration=iteration)
-                        self._annotate_last_action_selection(state, selected, candidate, resolved_by="activate_parent_page_retry")
+                self._annotate_last_action_selection(state, selected, candidate, resolved_by="candidate_index")
                 made_progress = made_progress or result.ok
             if selected_action_attempts >= self.max_total_selected_actions:
                 # 总预算是防 runaway 的硬上限；正常情况应由 stop 或 no-op watchdog 结束。
@@ -450,7 +420,6 @@ class MAGERAGContextBuilder(ContextBuilder):
             return
         state.trace[-1]["selection"] = {
             "candidate_index": selected.get("candidate_index"),
-            "candidate_id": selected.get("candidate_id") or candidate.id,
             "resolved_candidate_id": candidate.id,
             "resolved_by": resolved_by,
             "utility": selected.get("utility") or "",
@@ -569,37 +538,6 @@ def _node_question_relevance(node: dict, node_text: str, question: str) -> int:
     return score
 
 
-def _resolve_candidate(candidate_id, candidate_by_id):
-    # Evaluator 理应返回 action index；这些 alias 兼容用于恢复偶发的 node_id/edge_id 直接引用。
-    candidate_id = str(candidate_id or "")
-    if candidate_id in candidate_by_id:
-        return candidate_by_id[candidate_id]
-    aliases = {candidate_id}
-    if candidate_id.startswith("act:"):
-        without_prefix = candidate_id[len("act:"):]
-        aliases.add(without_prefix)
-        parts = without_prefix.split(":", 1)
-        if len(parts) == 2:
-            aliases.add(parts[1])
-    else:
-        aliases.add(f"act:{candidate_id}")
-    for candidate in candidate_by_id.values():
-        payload = candidate.payload
-        target_values = {
-            str(payload.get("node_id") or ""),
-            str(payload.get("edge_id") or ""),
-            str(payload.get("page_index") or ""),
-        }
-        readable_suffixes = {
-            f'{candidate.action_type}:{value}'
-            for value in target_values
-            if value
-        }
-        if aliases & target_values or aliases & readable_suffixes:
-            return candidate
-    return None
-
-
 def _resolve_candidate_index(candidate_index, candidate_by_index):
     if candidate_index is None:
         return None
@@ -608,90 +546,3 @@ def _resolve_candidate_index(candidate_index, candidate_by_index):
     except (TypeError, ValueError):
         return None
     return candidate_by_index.get(index)
-
-
-def _candidate_from_selected_alias(candidate_id, state: EvidenceAgentState):
-    # 当候选列表被截断或模型引用了旧候选 ID 时，尝试从当前 graph state 重建一个等价候选。
-    candidate_id = str(candidate_id or "")
-    if candidate_id in state.graph.nodes:
-        action_type = "OpenNode" if state.state_of(candidate_id) == "Active" else "ActivateNode"
-        page_index = state.graph.node_page_index(candidate_id)
-        if not state.graph.is_page_allowed(page_index):
-            return None
-        return CandidateAction(
-            id=f"act:{action_type}:{candidate_id}",
-            action_type=action_type,
-            payload={"node_id": candidate_id},
-            preview=state.graph.preview_node(candidate_id),
-        )
-    for action_type in ("ActivateNode", "OpenNode"):
-        prefix = f"act:{action_type}:"
-        if not candidate_id.startswith(prefix):
-            continue
-        node_id = candidate_id[len(prefix):]
-        if node_id not in state.graph.nodes:
-            node_id = _nearest_node_alias(node_id, state)
-        if node_id is None:
-            return None
-        page_index = state.graph.node_page_index(node_id)
-        if not state.graph.is_page_allowed(page_index):
-            return None
-        return CandidateAction(
-            id=candidate_id,
-            action_type=action_type,
-            payload={"node_id": node_id},
-            preview=state.graph.preview_node(node_id),
-        )
-    return None
-
-
-def _nearest_node_alias(node_id: str, state: EvidenceAgentState) -> str | None:
-    # 解析器/模型有时会保留旧 block id；按同页、同类型、相近 block 近似映射到现有节点。
-    parsed = _parse_graph_node_id(node_id)
-    if parsed is None:
-        return None
-    prefix, page_index, block_index, node_type = parsed
-    if not state.graph.is_page_allowed(page_index):
-        return None
-    page_nodes = state.graph.nodes_on_page(page_index)
-    if not page_nodes:
-        return None
-    same_prefix = [node for node in page_nodes if str(node.get("id") or "").startswith(prefix)]
-    if not same_prefix:
-        same_prefix = page_nodes
-    typed = [
-        node for node in same_prefix
-        if str(node.get("type") or "").lower() == node_type.lower()
-        or str(node.get("id") or "").lower().endswith(f":{node_type.lower()}")
-    ]
-    candidates = typed or same_prefix
-
-    def sort_key(node):
-        candidate_id = str(node.get("id") or "")
-        candidate_block = _block_index(candidate_id)
-        distance = abs(candidate_block - block_index) if candidate_block is not None else 10_000
-        state_rank = 0 if state.state_of(candidate_id) == "Active" else 1
-        return (distance, state_rank, candidate_id)
-
-    return str(sorted(candidates, key=sort_key)[0].get("id"))
-
-
-def _parse_graph_node_id(node_id: str) -> tuple[str, int, int, str] | None:
-    import re
-
-    match = re.match(r"^(?P<prefix>.+:page:(?P<page>\d+):)block:(?P<block>\d+):(?P<type>[^:]+)$", str(node_id))
-    if not match:
-        return None
-    return (
-        match.group("prefix"),
-        int(match.group("page")),
-        int(match.group("block")),
-        match.group("type"),
-    )
-
-
-def _block_index(node_id: str) -> int | None:
-    import re
-
-    match = re.search(r":block:(\d+):", str(node_id))
-    return int(match.group(1)) if match else None

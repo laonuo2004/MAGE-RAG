@@ -79,9 +79,11 @@ class MAGERAGPlugin(AnalysisPlugin):
             "node_rows": node_rows,
             "trace_rows": trace_rows,
             "reader_input": _reader_input(metadata),
+            "reader_output": _reader_output(record),
             "reader_image_refs": _reader_image_refs(metadata),
             "evaluator_rows": _evaluator_rows(trace_rows),
             "expansion_rows": _expansion_rows(trace_rows),
+            "graph_snapshots": _graph_snapshots(graph, trace_rows),
             "validation_errors": metadata.get("validation_errors") or [],
             "summary_artifacts": metadata.get("summary_artifacts") or [],
         }
@@ -230,6 +232,14 @@ def _reader_image_refs(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     return [ref for ref in refs if isinstance(ref, dict)] if isinstance(refs, list) else []
 
 
+def _reader_output(record: dict[str, Any]) -> str | None:
+    metadata = record.get("generation_metadata")
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get("response")
+    return str(value) if value is not None else None
+
+
 def _evaluator_rows(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows = []
     for row in trace_rows:
@@ -239,9 +249,11 @@ def _evaluator_rows(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         evaluator_input = evaluator_input if isinstance(evaluator_input, dict) else {}
         candidate_actions = evaluator_input.get("candidate_actions")
         opened_image_refs = evaluator_input.get("opened_image_refs")
+        iteration = row.get("iteration")
         rows.append({
             "step_index": row.get("step_index"),
-            "iteration": row.get("iteration"),
+            "iteration": iteration,
+            "iteration_label": _iteration_label(iteration),
             "prompt_text": evaluator_input.get("prompt_text"),
             "context_xml": evaluator_input.get("context_xml"),
             "candidate_actions": candidate_actions if isinstance(candidate_actions, list) else [],
@@ -252,6 +264,138 @@ def _evaluator_rows(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "state_snapshot_before": row.get("state_snapshot_before"),
         })
     return rows
+
+
+def _graph_snapshots(graph: dict[str, Any], trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not graph.get("available"):
+        return []
+    snapshots = []
+    evaluator_rows = [row for row in trace_rows if row.get("action") == "EvaluatorDecision"]
+    for evaluator_row in evaluator_rows:
+        iteration = evaluator_row.get("iteration")
+        related_rows = [row for row in trace_rows if row.get("iteration") == iteration]
+        node_ids = _snapshot_node_ids(evaluator_row, related_rows)
+        if not node_ids:
+            continue
+        edges = _snapshot_edges(graph, node_ids)
+        edge_node_ids = {edge["source"] for edge in edges} | {edge["target"] for edge in edges}
+        node_ids |= edge_node_ids
+        nodes = [_snapshot_node(graph, node_id, evaluator_row, related_rows) for node_id in sorted(node_ids)]
+        snapshots.append(
+            {
+                "iteration": iteration,
+                "iteration_label": _iteration_label(iteration),
+                "step_index": evaluator_row.get("step_index"),
+                "nodes": [node for node in nodes if node is not None],
+                "edges": edges,
+            }
+        )
+    return snapshots
+
+
+def _snapshot_node_ids(evaluator_row: dict[str, Any], related_rows: list[dict[str, Any]]) -> set[str]:
+    node_ids: set[str] = set()
+    before = evaluator_row.get("state_snapshot_before")
+    if isinstance(before, dict):
+        for key in ("active_node_ids", "opened_node_ids", "pruned_node_ids"):
+            values = before.get(key)
+            if isinstance(values, list):
+                node_ids.update(str(value) for value in values)
+    evaluator_input = evaluator_row.get("evaluator_input")
+    evaluator_input = evaluator_input if isinstance(evaluator_input, dict) else {}
+    for candidate in evaluator_input.get("candidate_actions") or []:
+        if not isinstance(candidate, dict):
+            continue
+        payload = candidate.get("payload") if isinstance(candidate.get("payload"), dict) else {}
+        for key in ("node_id", "source_node_id", "target_id"):
+            if payload.get(key):
+                node_ids.add(str(payload[key]))
+    for row in related_rows:
+        if row.get("node_id"):
+            node_ids.add(str(row["node_id"]))
+        selection = row.get("selection")
+        payload = selection.get("candidate_payload") if isinstance(selection, dict) and isinstance(selection.get("candidate_payload"), dict) else {}
+        for key in ("node_id", "source_node_id", "target_id"):
+            if payload.get(key):
+                node_ids.add(str(payload[key]))
+    return node_ids
+
+
+def _snapshot_edges(graph: dict[str, Any], node_ids: set[str]) -> list[dict[str, Any]]:
+    edges = []
+    for edge_id, edge in sorted(graph.get("edges", {}).items()):
+        source = edge.get("source")
+        target = edge.get("target")
+        if not source or not target:
+            continue
+        if str(source) not in node_ids and str(target) not in node_ids:
+            continue
+        if str(source) not in node_ids or str(target) not in node_ids:
+            continue
+        edges.append(
+            {
+                "edge_id": edge_id,
+                "source": str(source),
+                "target": str(target),
+                "edge_type": str(edge.get("type") or ""),
+                "relation": edge.get("relation"),
+                "weight": _to_float(edge.get("weight")),
+            }
+        )
+    return edges
+
+
+def _snapshot_node(
+    graph: dict[str, Any],
+    node_id: str,
+    evaluator_row: dict[str, Any],
+    related_rows: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    node = graph.get("nodes", {}).get(node_id, {})
+    if not node and not node_id:
+        return None
+    state = _snapshot_node_state(node_id, evaluator_row, related_rows)
+    return {
+        "node_id": node_id,
+        "state": state,
+        "type": node.get("type") if isinstance(node, dict) else None,
+        "is_page": _is_page_node(node) if isinstance(node, dict) else False,
+        "page_index": _node_page_index(node) if isinstance(node, dict) else _page_from_node_id(node_id),
+        "page_number": ((_node_page_index(node) + 1) if isinstance(node, dict) and _node_page_index(node) is not None else None),
+        "preview": _preview(node) if isinstance(node, dict) else "",
+        "image_path": _image_path(node) if isinstance(node, dict) else None,
+        "highlight": any(str(row.get("node_id")) == node_id for row in related_rows if row.get("node_id")),
+    }
+
+
+def _snapshot_node_state(node_id: str, evaluator_row: dict[str, Any], related_rows: list[dict[str, Any]]) -> str:
+    before = evaluator_row.get("state_snapshot_before")
+    if isinstance(before, dict):
+        for key, state in (
+            ("opened_node_ids", "Opened"),
+            ("active_node_ids", "Active"),
+            ("pruned_node_ids", "Pruned"),
+        ):
+            values = before.get(key)
+            if isinstance(values, list) and node_id in {str(value) for value in values}:
+                return state
+    for row in related_rows:
+        after = row.get("state_snapshot_after")
+        if not isinstance(after, dict):
+            continue
+        for key, state in (
+            ("opened_node_ids", "Opened"),
+            ("active_node_ids", "Active"),
+            ("pruned_node_ids", "Pruned"),
+        ):
+            values = after.get(key)
+            if isinstance(values, list) and node_id in {str(value) for value in values}:
+                return state
+    return "Inactive"
+
+
+def _iteration_label(iteration: Any) -> str:
+    return f"Iteration {iteration}" if iteration is not None else "Iteration n/a"
 
 
 def _expansion_rows(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

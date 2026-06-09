@@ -4,8 +4,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
+import networkx as nx
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from analysis.plugins import get_plugin
@@ -14,6 +16,7 @@ from analysis.results_metrics import (
     aggregate_retrieval,
     build_leaderboard,
     case_rows,
+    correction_rows,
     flatten_metrics,
     official_score,
     pairwise_comparison,
@@ -23,6 +26,11 @@ from analysis.results_metrics import (
 
 DEFAULT_RESULTS_ROOT = Path("results")
 DEFAULT_CACHE_ROOT = Path("analysis_cache/result_analysis")
+DEFAULT_RESULT_SUBDIRS = (
+    Path("longdocurl/magerag"),
+    Path("mmlongbench/magerag"),
+    Path("mmlongdoc/magerag"),
+)
 
 
 st.set_page_config(page_title="Results Analysis", layout="wide")
@@ -31,6 +39,11 @@ st.set_page_config(page_title="Results Analysis", layout="wide")
 @st.cache_data(show_spinner=False)
 def load_runs(results_root: str) -> list[RunRecord]:
     return scan_runs(Path(results_root))
+
+
+@st.cache_data(show_spinner=False)
+def load_agent_trace_runs(results_root: str) -> list[RunRecord]:
+    return scan_runs(Path(results_root), included_subdirs=DEFAULT_RESULT_SUBDIRS)
 
 
 @st.cache_data(show_spinner=True)
@@ -47,6 +60,7 @@ def main() -> None:
         refresh = st.button("Refresh inventory")
     if refresh:
         load_runs.clear()
+        load_agent_trace_runs.clear()
         load_records.clear()
 
     runs = load_runs(results_root)
@@ -55,6 +69,8 @@ def main() -> None:
         return
 
     run_lookup = {run.run_id: run for run in runs}
+    agent_trace_runs = load_agent_trace_runs(results_root)
+    agent_trace_run_lookup = {run.run_id: run for run in agent_trace_runs}
     inventory_df = inventory_dataframe(runs, metric)
     tabs = st.tabs(
         [
@@ -64,6 +80,7 @@ def main() -> None:
             "Breakdowns",
             "Retrieval",
             "Case Explorer",
+            "Correction",
             "Agent Trace",
             "Pairwise",
         ]
@@ -87,10 +104,17 @@ def main() -> None:
         records = records_for_run(selected, cache_root)
         render_case_explorer(records)
     with tabs[6]:
-        selected = run_selector(run_lookup, "agent_trace_run", "Agent trace run")
+        selected = run_selector(run_lookup, "correction_run", "Correction run")
         records = records_for_run(selected, cache_root)
-        render_agent_trace(selected, records)
+        render_correction(records)
     with tabs[7]:
+        if not agent_trace_run_lookup:
+            st.info("No MAGE-RAG agent trace result files found.")
+        else:
+            selected = run_selector(agent_trace_run_lookup, "agent_trace_run", "Agent trace run")
+            records = records_for_run(selected, cache_root)
+            render_agent_trace(selected, records)
+    with tabs[8]:
         left, right = st.columns(2)
         with left:
             run_a = run_selector(run_lookup, "pairwise_a", "Run A")
@@ -338,6 +362,82 @@ def render_case_explorer(records: list[dict[str, Any]]) -> None:
                 st.image(str(image_path), caption=image_path.name, use_container_width=True)
 
 
+def render_correction(records: list[dict[str, Any]]) -> None:
+    rows = correction_rows(records)
+    if not rows:
+        st.info("No sample records loaded.")
+        return
+    df = pd.DataFrame(rows)
+    ran_count = int(df["correction_ran"].sum()) if "correction_ran" in df else 0
+    applied_count = int(df["correction_applied"].sum()) if "correction_applied" in df else 0
+    error_count = int(df.get("error", pd.Series(dtype=object)).notna().sum())
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Samples", len(df))
+    col2.metric("Correction ran", ran_count)
+    col3.metric("Applied", applied_count)
+    col4.metric("Errors", error_count)
+    summary_cols = st.columns(2)
+    with summary_cols[0]:
+        outcome_df = df["correction_outcome"].value_counts().reset_index()
+        outcome_df.columns = ["outcome", "count"]
+        st.plotly_chart(px.bar(outcome_df, x="outcome", y="count", title="Correction outcomes"), use_container_width=True)
+    with summary_cols[1]:
+        score_df = df.dropna(subset=["score_delta"]) if "score_delta" in df else pd.DataFrame()
+        if score_df.empty:
+            st.info("No score delta values available.")
+        else:
+            st.plotly_chart(px.histogram(score_df, x="score_delta", nbins=30, title="Score delta"), use_container_width=True)
+    filters = st.columns(3)
+    with filters[0]:
+        outcomes = st.multiselect("Outcome", sorted(df["correction_outcome"].dropna().unique()), key="correction_outcome")
+    with filters[1]:
+        applied = st.multiselect("Applied", [False, True], key="correction_applied")
+    with filters[2]:
+        query = st.text_input("Search", key="correction_search")
+    filtered = df.copy()
+    if outcomes:
+        filtered = filtered[filtered["correction_outcome"].isin(outcomes)]
+    if applied:
+        filtered = filtered[filtered["correction_applied"].isin(applied)]
+    if query:
+        mask = filtered[["question_id", "question", "answer", "initial_pred", "corrected_pred", "final_pred"]].fillna("").astype(str).agg(" ".join, axis=1).str.contains(query, case=False, regex=False)
+        filtered = filtered[mask]
+    visible_cols = [
+        "question_id",
+        "correction_outcome",
+        "correction_applied",
+        "initial_score",
+        "corrected_score",
+        "score_delta",
+        "pred_changed",
+        "error",
+        "question",
+        "answer",
+        "initial_pred",
+        "corrected_pred",
+        "final_pred",
+    ]
+    st.dataframe(filtered[[col for col in visible_cols if col in filtered.columns]], use_container_width=True, hide_index=True)
+    if filtered.empty:
+        return
+    selected_id = st.selectbox("Question", filtered["question_id"].astype(str).tolist(), key="correction_question")
+    row = next(row for row in rows if str(row.get("question_id")) == selected_id)
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Before correction")
+        st.write({"pred": row.get("initial_pred"), "format": row.get("initial_pred_format"), "score": row.get("initial_score")})
+    with right:
+        st.subheader("After correction")
+        st.write({"pred": row.get("corrected_pred"), "format": row.get("corrected_pred_format"), "score": row.get("corrected_score")})
+    st.subheader("Gold / final")
+    st.write({"answer": row.get("answer"), "final_pred": row.get("final_pred"), "final_score": row.get("final_score")})
+    if row.get("corrected_extracted_res"):
+        st.subheader("Correction raw output")
+        render_xml_or_code(str(row["corrected_extracted_res"]), key=f"correction_raw_{selected_id}")
+    with st.expander("Correction input messages"):
+        st.json(row.get("input_messages") or [])
+
+
 def render_agent_trace(run: RunRecord, records: list[dict[str, Any]]) -> None:
     plugin = get_plugin(run.baseline)
     if not plugin.has_case_visualization():
@@ -439,7 +539,7 @@ def render_agent_trace_case(record: dict[str, Any], data: dict[str, Any]) -> Non
     with page_col:
         render_page_board(data.get("page_rows") or [])
 
-    detail_tabs = st.tabs(["Page Details", "Trace Steps", "Evaluator I/O", "Reader Input", "Graph Expansion", "Images", "Artifacts"])
+    detail_tabs = st.tabs(["Page Details", "Trace Steps", "Evaluator I/O", "Reader I/O", "Graph Expansion", "Images", "Artifacts"])
     with detail_tabs[0]:
         render_page_details(data)
     with detail_tabs[1]:
@@ -447,7 +547,7 @@ def render_agent_trace_case(record: dict[str, Any], data: dict[str, Any]) -> Non
     with detail_tabs[2]:
         render_evaluator_io(data)
     with detail_tabs[3]:
-        render_reader_input(data)
+        render_reader_io(data)
     with detail_tabs[4]:
         render_graph_expansion(data)
     with detail_tabs[5]:
@@ -545,8 +645,14 @@ def render_evaluator_io(data: dict[str, Any]) -> None:
     if not evaluator_rows:
         st.info("No evaluator decision trace recorded for this sample.")
         return
-    selected_step = st.selectbox("Evaluator step", [row["step_index"] for row in evaluator_rows], key="agent_evaluator_step")
-    row = next(row for row in evaluator_rows if row["step_index"] == selected_step)
+    selected_index = st.selectbox(
+        "Evaluator iteration",
+        list(range(len(evaluator_rows))),
+        format_func=lambda index: evaluator_rows[int(index)].get("iteration_label") or f"Iteration {evaluator_rows[int(index)].get('iteration')}",
+        key="agent_evaluator_iteration",
+    )
+    row = evaluator_rows[int(selected_index)]
+    selected_step = row.get("step_index")
     evaluator_input = row.get("evaluator_input") or {}
     if not evaluator_input:
         evaluator_input = row
@@ -570,29 +676,97 @@ def render_evaluator_io(data: dict[str, Any]) -> None:
         render_xml_or_code(str(row["raw_response"]), key=f"evaluator_raw_{selected_step}")
 
 
-def render_reader_input(data: dict[str, Any]) -> None:
+def render_reader_io(data: dict[str, Any]) -> None:
     reader_input = data.get("reader_input") or {}
     if not reader_input:
         st.info("No reader input trace recorded for this sample.")
+    else:
+        st.write({
+            "content_part_count": reader_input.get("content_part_count"),
+            "text_parts": len(reader_input.get("text_parts") or []),
+            "image_refs": len(reader_input.get("image_refs") or []),
+        })
+        render_reader_content_parts(reader_input)
+        with st.expander("Sanitized messages"):
+            st.json(reader_input.get("messages") or [])
+    st.subheader("Reader output")
+    output = data.get("reader_output")
+    if output:
+        st.code(str(output), language="text")
+    else:
+        st.info("No reader output recorded for this sample.")
+
+
+def render_reader_content_parts(reader_input: dict[str, Any]) -> None:
+    messages = reader_input.get("messages") or []
+    parts = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            parts.extend(part for part in content if isinstance(part, dict))
+    if not parts:
+        text_parts = reader_input.get("text_parts") or []
+        image_refs = reader_input.get("image_refs") or []
+        for text in text_parts:
+            parts.append({"type": "text", "text": text})
+        for ref in image_refs:
+            parts.append({"type": "image_ref", **ref})
+    if not parts:
         return
-    st.write({
-        "content_part_count": reader_input.get("content_part_count"),
-        "text_parts": len(reader_input.get("text_parts") or []),
-        "image_refs": len(reader_input.get("image_refs") or []),
-    })
-    text_parts = reader_input.get("text_parts") or []
-    if text_parts:
-        selected = st.selectbox("Text part", list(range(len(text_parts))), format_func=lambda index: f"Text part {index + 1}", key="reader_text_part")
-        render_xml_or_code(str(text_parts[int(selected)]), key=f"reader_text_{selected}")
-    image_refs = reader_input.get("image_refs") or []
-    if image_refs:
-        st.subheader("Reader image refs")
-        st.dataframe(pd.DataFrame(image_refs), use_container_width=True, hide_index=True)
-    with st.expander("Sanitized messages"):
-        st.json(reader_input.get("messages") or [])
+    image_refs = iter(reader_input.get("image_refs") or [])
+    for index, part in enumerate(parts, start=1):
+        part_type = part.get("type")
+        if part_type == "text":
+            st.subheader(f"Input part {index}: text")
+            render_xml_or_code(str(part.get("text") or ""), key=f"reader_text_{index}")
+            continue
+        ref = _reader_part_image_ref(part, image_refs)
+        if ref:
+            st.subheader(f"Input part {index}: image")
+            render_image_ref(ref)
+
+
+def _reader_part_image_ref(part: dict[str, Any], image_refs: Any) -> dict[str, Any] | None:
+    if part.get("image_path"):
+        return part
+    if part.get("type") in {"image", "image_url", "image_ref"}:
+        try:
+            ref = next(image_refs)
+        except StopIteration:
+            ref = {}
+        return ref if isinstance(ref, dict) else {}
+    return None
+
+
+def render_image_ref(ref: dict[str, Any]) -> None:
+    image_path = ref.get("image_path")
+    if not image_path:
+        st.json(ref)
+        return
+    path = Path(str(image_path))
+    caption = _image_ref_label(ref)
+    if path.exists():
+        st.image(str(path), caption=caption, use_container_width=True)
+    else:
+        st.info(f"Missing image path: {path}")
+    st.caption(str(path))
 
 
 def render_graph_expansion(data: dict[str, Any]) -> None:
+    snapshots = data.get("graph_snapshots") or []
+    if snapshots:
+        selected_snapshot = st.selectbox(
+            "Graph iteration",
+            list(range(len(snapshots))),
+            format_func=lambda index: snapshots[int(index)].get("iteration_label") or f"Iteration {snapshots[int(index)].get('iteration')}",
+            key="expansion_graph_iteration",
+        )
+        render_graph_snapshot(snapshots[int(selected_snapshot)])
+    else:
+        st.info("No graph snapshot available for this sample.")
+
     rows = data.get("expansion_rows") or []
     if not rows:
         st.info("No graph expansion trace available.")
@@ -621,6 +795,132 @@ def render_graph_expansion(data: dict[str, Any]) -> None:
     selected_step = st.selectbox("Expansion step", df["step_index"].astype(int).tolist(), key="agent_expansion_step")
     row = next(row for row in rows if int(row.get("step_index")) == int(selected_step))
     st.json(row)
+
+
+def render_graph_snapshot(snapshot: dict[str, Any]) -> None:
+    nodes = snapshot.get("nodes") or []
+    edges = snapshot.get("edges") or []
+    if not nodes:
+        st.info("No graph nodes available for this iteration.")
+        return
+    graph = nx.Graph()
+    for node in nodes:
+        graph.add_node(node["node_id"])
+    for edge in edges:
+        if edge.get("source") and edge.get("target"):
+            graph.add_edge(edge["source"], edge["target"])
+    if graph.number_of_nodes() == 1:
+        only_node = next(iter(graph.nodes))
+        positions = {only_node: (0.0, 0.0)}
+    else:
+        positions = nx.spring_layout(graph, seed=7, k=0.8)
+    node_lookup = {node["node_id"]: node for node in nodes}
+    edge_traces = []
+    for edge_type in sorted({edge.get("edge_type") or "edge" for edge in edges}):
+        edge_x = []
+        edge_y = []
+        hover = []
+        for edge in edges:
+            if (edge.get("edge_type") or "edge") != edge_type:
+                continue
+            source = edge.get("source")
+            target = edge.get("target")
+            if source not in positions or target not in positions:
+                continue
+            x0, y0 = positions[source]
+            x1, y1 = positions[target]
+            edge_x.extend([x0, x1, None])
+            edge_y.extend([y0, y1, None])
+            hover.append(f"{source} -> {target}<br>{edge_type} {edge.get('relation') or ''}")
+        edge_traces.append(
+            go.Scatter(
+                x=edge_x,
+                y=edge_y,
+                mode="lines",
+                line={"width": 1.5, "color": _edge_color(edge_type), "dash": _edge_dash(edge_type)},
+                hoverinfo="skip",
+                name=edge_type,
+            )
+        )
+    node_x = []
+    node_y = []
+    colors = []
+    symbols = []
+    sizes = []
+    labels = []
+    hover_text = []
+    for node_id, (x, y) in positions.items():
+        node = node_lookup.get(node_id, {"node_id": node_id})
+        node_x.append(x)
+        node_y.append(y)
+        state = str(node.get("state") or "Inactive")
+        colors.append(_state_color(state))
+        symbols.append("square" if node.get("is_page") else "circle")
+        sizes.append(18 if node.get("highlight") else 12)
+        labels.append(_short_node_label(node_id))
+        hover_text.append(
+            "<br>".join(
+                [
+                    str(node_id),
+                    f"state: {state}",
+                    f"type: {node.get('type') or 'unknown'}",
+                    f"page: {node.get('page_number') or 'n/a'}",
+                    str(node.get("preview") or ""),
+                ]
+            )
+        )
+    node_trace = go.Scatter(
+        x=node_x,
+        y=node_y,
+        mode="markers+text",
+        text=labels,
+        textposition="top center",
+        marker={"color": colors, "symbol": symbols, "size": sizes, "line": {"width": 1, "color": "#111827"}},
+        hovertext=hover_text,
+        hoverinfo="text",
+        name="nodes",
+    )
+    fig = go.Figure(data=[*edge_traces, node_trace])
+    fig.update_layout(
+        title=snapshot.get("iteration_label") or "Graph snapshot",
+        showlegend=True,
+        height=620,
+        margin={"l": 10, "r": 10, "t": 48, "b": 10},
+        xaxis={"visible": False},
+        yaxis={"visible": False},
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def _state_color(state: str) -> str:
+    return {
+        "Opened": "#0891b2",
+        "Active": "#2563eb",
+        "Pruned": "#dc2626",
+        "Inactive": "#94a3b8",
+    }.get(state, "#94a3b8")
+
+
+def _edge_color(edge_type: str) -> str:
+    return {
+        "containment": "#64748b",
+        "reading_order": "#16a34a",
+        "semantic": "#f59e0b",
+    }.get(edge_type, "#9ca3af")
+
+
+def _edge_dash(edge_type: str) -> str:
+    return {"semantic": "dot", "reading_order": "dash"}.get(edge_type, "solid")
+
+
+def _short_node_label(node_id: str) -> str:
+    parts = str(node_id).split(":")
+    if len(parts) >= 4 and "page" in parts:
+        page_index = parts.index("page")
+        page = parts[page_index + 1] if page_index + 1 < len(parts) else "?"
+        tail = parts[-1]
+        return f"p{page}:{tail}"
+    return str(node_id)[-18:]
 
 
 def render_agent_images(data: dict[str, Any]) -> None:
@@ -708,11 +1008,23 @@ def render_xml_node(node: ET.Element, key: str, depth: int = 0) -> None:
 
 def _extract_xml_document(text: str) -> str:
     value = str(text or "").strip()
-    if "<agent_step_context" in value:
-        return value[value.index("<agent_step_context") :]
-    if "<agent_decision" in value:
-        return value[value.index("<agent_decision") :]
+    start = _first_xml_tag_index(value, ["correction_prompt", "evaluator_prompt", "agent_step_context", "think", "agent_decision"])
+    if start is not None:
+        value = value[start:]
+    top_level_tags = [
+        tag
+        for tag in ("correction_prompt", "evaluator_prompt", "agent_step_context", "think", "agent_decision")
+        if f"<{tag}" in value
+    ]
+    if len(top_level_tags) > 1:
+        return f"<analysis_xml>{value}</analysis_xml>"
     return value
+
+
+def _first_xml_tag_index(text: str, tags: list[str]) -> int | None:
+    positions = [text.find(f"<{tag}") for tag in tags]
+    positions = [position for position in positions if position >= 0]
+    return min(positions) if positions else None
 
 
 def _image_ref_label(ref: dict[str, Any]) -> str:

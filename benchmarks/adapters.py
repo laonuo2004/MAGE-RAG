@@ -6,6 +6,7 @@ import re
 from collections import defaultdict
 from math import isclose
 from pathlib import Path
+from textwrap import dedent
 from time import perf_counter
 from typing import Any, Dict, List, Protocol
 
@@ -29,6 +30,9 @@ COMMON_RESULT_FIELDS = (
     "pred",
     "pred_format",
     "score",
+    "corrected_pred",
+    "corrected_format",
+    "corrected_score",
 )
 
 
@@ -59,6 +63,18 @@ def _read_prompt(path: Path, fallback: Path) -> str:
 def _reset_sample_fields(sample: Dict[str, Any], keys) -> None:
     for key in keys:
         sample.pop(key, None)
+
+
+def _finalize_result_fields(sample: Dict[str, Any]) -> Dict[str, Any]:
+    correction_metadata = sample.get("correction_metadata")
+    if isinstance(correction_metadata, dict):
+        sample["corrected_pred"] = correction_metadata.get("corrected_pred")
+        sample["corrected_format"] = correction_metadata.get("corrected_pred_format")
+        sample["corrected_score"] = correction_metadata.get("corrected_score")
+
+    ordered_values = {key: sample.pop(key) for key in COMMON_RESULT_FIELDS if key in sample}
+    sample.update(ordered_values)
+    return sample
 
 
 def _apply_sample_limit(samples: List[Dict[str, Any]], cfg) -> List[Dict[str, Any]]:
@@ -169,39 +185,128 @@ def _format_initial_extraction(extracted_res: Any) -> str:
     return "" if extracted_res is None else str(extracted_res)
 
 
-def _score_function_source(adapter: Any) -> str:
+def _source_for_prompt(obj: Any) -> str | None:
     try:
-        score_source = inspect.getsource(adapter.score)
+        source = dedent(inspect.getsource(obj)).strip()
     except Exception:
-        score_source = "def score(gt: Any, pred: Any, answer_type: str) -> float:\n    ..."
-    helpers = [
-        _levenshtein_distance,
-        _anls_compute,
-        _is_float_equal,
-        _is_exact_match,
-        _is_float_like,
-        _maybe_parse_literal,
-    ]
+        return None
+    return source.replace("@staticmethod\n", "")
+
+
+def _answer_type_family(answer_type: Any) -> str:
+    normalized = str(answer_type or "").strip().lower()
+    if normalized in {"int", "integer"}:
+        return "int"
+    if normalized == "float":
+        return "float"
+    if normalized in {"str", "string", "none"}:
+        return "string"
+    return "list"
+
+
+def _score_source_snippet(adapter: Any, answer_type: Any) -> str:
+    class_name = adapter.__class__.__name__
+    family = _answer_type_family(answer_type)
+    snippets = {
+        "int": (
+            "def score_int(gt: Any, pred: Any) -> float:\n"
+            f"    gt = int(float({class_name}._clean_string(gt)))\n"
+            f"    pred = int(float({class_name}._clean_string(pred)))\n"
+            "    return float(gt == pred)"
+        ),
+        "float": (
+            "def score_float(gt: Any, pred: Any) -> float:\n"
+            f"    gt = float({class_name}._clean_string(gt))\n"
+            f"    pred = float({class_name}._clean_string(pred))\n"
+            "    return float(_is_float_equal(gt, pred, include_percentage=True, is_close=True))"
+        ),
+        "string": (
+            "def score_string(gt: Any, pred: Any) -> float:\n"
+            f"    gt = {class_name}._clean_string(gt)\n"
+            f"    pred = {class_name}._clean_string(pred)\n"
+            "    # Near-match scoring can reward semantic-preserving punctuation, case, and hyphenation differences.\n"
+            "    return float(gt == pred if _is_exact_match(gt) else _anls_compute(gt, pred))"
+        ),
+    }
+    if family != "list":
+        return snippets[family]
+    if class_name == "LongDocURLAdapter":
+        return (
+            "def score_list(gt: Any, pred: Any) -> float:\n"
+            "    gt_list = LongDocURLAdapter._parse_answer_list(gt)\n"
+            "    pred_list = LongDocURLAdapter._parse_answer_list(pred)\n"
+            "    if not pred_list:\n"
+            "        return 0.0\n"
+            "    gt_clean = [LongDocURLAdapter._clean_string(item) for item in gt_list]\n"
+            "    pred_clean = [LongDocURLAdapter._clean_string(item) for item in pred_list]\n"
+            "    if not gt_clean:\n"
+            "        return 0.0\n"
+            "    if _is_float_like(gt_clean[0]) or _is_exact_match(gt_clean[0]):\n"
+            "        return float('-'.join(gt_clean) == '-'.join(pred_clean))\n"
+            "    greedy_scores = [max([_anls_compute(str(gt_v), str(pred_v)) for pred_v in pred_clean]) for gt_v in gt_clean]\n"
+            "    return float(sum(greedy_scores) / len(gt_clean) * min(1, len(gt_clean) / len(pred_clean)) ** 0.5)"
+        )
+    return (
+        "def score_list(gt: Any, pred: Any) -> float:\n"
+        "    gt = _normalize_list_candidate(gt)\n"
+        "    pred = _normalize_list_candidate(pred)\n"
+        "    if len(gt) != len(pred):\n"
+        "        return 0.0\n"
+        "    gt = sorted([_normalize_list_item(item) for item in gt])\n"
+        "    pred = sorted([_normalize_list_item(item) for item in pred])\n"
+        "    if not gt:\n"
+        "        return 0.0\n"
+        "    if _is_float_like(gt[0]) or _is_exact_match(gt[0]):\n"
+        "        return float('-'.join(gt) == '-'.join(pred))\n"
+        "    return float(min([_anls_compute(gt_v, pred_v) for gt_v, pred_v in zip(gt, pred)]))"
+    )
+
+
+def _score_function_source(adapter: Any, answer_type: Any) -> str:
+    family = _answer_type_family(answer_type)
+    helpers_by_family = {
+        "int": [],
+        "float": [_is_float_equal],
+        "string": [_levenshtein_distance, _anls_compute, _is_exact_match],
+        "list": [_levenshtein_distance, _anls_compute, _is_exact_match, _is_float_like],
+    }
+    helpers = helpers_by_family[family]
+    if family == "list":
+        if adapter.__class__.__name__ == "LongDocURLAdapter":
+            helpers = [adapter.__class__._parse_answer_list] + helpers
+        else:
+            helpers = [_maybe_parse_literal, _normalize_list_candidate, _normalize_list_item] + helpers
     helper_sources = []
+    clean_source = _source_for_prompt(adapter.__class__._clean_string)
+    if clean_source is not None:
+        helper_sources.append(clean_source)
     for helper in helpers:
-        try:
-            helper_sources.append(inspect.getsource(helper).strip())
-        except Exception:
-            continue
-    return "\n\n".join(helper_sources + [score_source.strip()])
+        helper_source = _source_for_prompt(helper)
+        if helper_source is not None:
+            helper_sources.append(helper_source)
+    helper_sources.append(_score_source_snippet(adapter, answer_type))
+    return "\n\n".join(helper_sources)
 
 
 def _correction_output_contract(benchmark_name: str) -> str:
     if benchmark_name == "longdocurl":
         return (
-            "Output exactly this format and no other text:\n"
+            "Output sequence:\n"
+            "<think>...</think>\n"
+            "<corrected_extraction>\n"
             "Extracted answer: <concise_answer>[answer]</concise_answer>\n"
-            "Answer format: <answer_format>[answer format]</answer_format>"
+            "Answer format: <answer_format>[answer format]</answer_format>\n"
+            "</corrected_extraction>\n"
+            "No other text outside these two XML blocks."
         )
     return (
-        "Output exactly this format and no other text:\n"
+        "Output sequence:\n"
+        "<think>...</think>\n"
+        "<corrected_extraction>\n"
         "Extracted answer: [answer]\n"
-        "Answer format: [answer format]"
+        "Answer format: [answer format]\n"
+        "</corrected_extraction>\n"
+        "No other text outside these two XML blocks."
     )
 
 
@@ -219,7 +324,7 @@ def _build_correction_messages(
         xml_block("gold_answer_format", sample.get("answer_format"), escape=True),
         xml_block("model_response", response, escape=True),
         xml_block("initial_formatted_extraction", _format_initial_extraction(initial_extracted_res), escape=True),
-        xml_block("scoring_code", _score_function_source(adapter), cdata=True),
+        xml_block("scoring_code", _score_function_source(adapter, sample.get("answer_format")), cdata=True),
         xml_block("initial_score", initial_score, inline=True),
     ])
     prompt = xml_block("correction_prompt", "\n\n".join([
@@ -232,17 +337,21 @@ def _build_correction_messages(
         ),
         xml_block(
             "task",
-            "Fix only false negatives caused by overly strict formatting or parsing.",
+            "Recover the benchmark answer from model_response when the initial extraction or answer format caused a false negative.",
             escape=True,
             inline=True,
             indent=2,
         ),
         xml_block(
-            "conservative_policy",
-            "If the detailed model response does not clearly support the Gold Truth, copy the initial formatted extraction exactly.\n"
-            "Do not use the Gold Truth alone to invent, replace, or improve a substantively wrong answer.\n"
-            "Allowed corrections include units, scale words, punctuation, numeric spelling, list serialization, and answer-format labels when the same answer is already supported by the detailed response.\n"
-            "Think through the evidence internally, but output only the corrected formatted extraction.",
+            "correction_policy",
+            "Use gold_truth as a reference target for what to look for in model_response, not as an independent source of facts.\n"
+            "Actively fix representation errors when model_response contains or directly entails the answer but the initial extraction loses score because of formatting.\n"
+            "Allowed corrections include units, scale words, punctuation, hyphenation, capitalization, numeric spelling, percentage-point wording, list serialization, answer-format labels, aliases, paraphrases, and adding missing list items that are supported by model_response.\n"
+            "Prefer the benchmark-friendly surface form: if model_response says 'less well off' and gold_truth shows the same phrase as 'less well-off', output the hyphenated form; if model_response says 'White households, 10 percentage points' and gold_truth is a two-item list, output the two supported list items.\n"
+            "For list answers, output the supported items at the same granularity and serialization style as gold_truth when model_response clearly mentions them.\n"
+            "Do not copy gold_truth into the answer unless model_response supports it. If model_response is substantively wrong or does not contain enough evidence, copy the initial formatted extraction exactly.\n"
+            "First output one <think>...</think> block where you freely compare model_response, gold_truth, the initial extraction, and scoring_code.\n"
+            "After </think>, output the corrected formatted extraction inside exactly one <corrected_extraction> XML block.",
             escape=True,
             indent=2,
         ),
@@ -250,12 +359,21 @@ def _build_correction_messages(
         xml_block("output_contract", _correction_output_contract(benchmark_name), cdata=True, indent=2),
         xml_block(
             "decision_rule",
-            "Return a changed extraction only when model_response already contains the same semantic answer as gold_truth and the initial score failed because of representation. Otherwise return initial_formatted_extraction unchanged.",
+            "Return a changed extraction when model_response supports gold_truth in a direct, paraphrased, normalized numeric/unit, alias, or list-equivalent form. Otherwise return initial_formatted_extraction unchanged.",
             escape=True,
             indent=2,
         ),
     ]))
     return [{"role": "user", "content": text_content_parts(prompt)}]
+
+
+def _unwrap_corrected_extraction(text: Any) -> str:
+    content = str(text or "").strip()
+    content = re.sub(r"^\s*<think>.*?</think>\s*", "", content, count=1, flags=re.DOTALL)
+    extraction_match = re.search(r"<corrected_extraction>\s*(.*?)\s*</corrected_extraction>", content, flags=re.DOTALL)
+    if extraction_match:
+        return extraction_match.group(1).strip()
+    return content
 
 
 def _apply_correction_if_needed(
@@ -312,7 +430,7 @@ def _apply_correction_if_needed(
         corrected_extracted_res = completion_content(completion)
         metadata.update(_completion_metadata(completion, correction_model_name))
         metadata["corrected_extracted_res"] = corrected_extracted_res
-        corrected_pred, corrected_pred_format = parse_extraction_result(corrected_extracted_res)
+        corrected_pred, corrected_pred_format = parse_extraction_result(_unwrap_corrected_extraction(corrected_extracted_res))
         if corrected_pred is None:
             metadata["error"] = "Failed to parse corrected extraction"
             return
@@ -431,6 +549,7 @@ def _normalize_list_item(value: Any) -> str:
     text = re.sub(r"\bpercent(age)?\b", "%", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"\1%", text)
+    text = re.sub(r"\s+households?\b", "", text).strip()
     return MMLongBenchAdapter._clean_string(text)
 
 
@@ -588,7 +707,7 @@ class MMLongBenchAdapter:
             self.parse_extraction_result,
             "MMLongBench correction",
         )
-        return sample
+        return _finalize_result_fields(sample)
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:
         completed = [sample for sample in samples if self.is_successful_result(sample)]
@@ -849,7 +968,7 @@ class LongDocURLAdapter:
             self.parse_extraction_result,
             "LongDocURL correction",
         )
-        return sample
+        return _finalize_result_fields(sample)
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:
         completed = [sample for sample in samples if self.is_successful_result(sample)]

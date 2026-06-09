@@ -40,6 +40,22 @@ def colpali_question_embeddings_path(benchmark_name: str, question_id: Any) -> p
     return benchmark_cache_root(benchmark_name, "colpali") / "question_embeddings" / f"{question_id}.safetensors"
 
 
+def visrag_pdf_embeddings_path(
+    benchmark_name: str,
+    stem: Any,
+    *,
+    shard: str = LONGDOCURL_DEFAULT_SHARD,
+) -> pathlib.Path:
+    root = benchmark_cache_root(benchmark_name, "visrag") / "pdf_embeddings"
+    if benchmark_name == "longdocurl":
+        root = root / shard
+    return root / f"{stem}.safetensors"
+
+
+def visrag_question_embeddings_path(benchmark_name: str, question_id: Any) -> pathlib.Path:
+    return benchmark_cache_root(benchmark_name, "visrag") / "question_embeddings" / f"{question_id}.safetensors"
+
+
 def bgem3_cache_root(benchmark_name: str, cache_kind: str | None = None) -> pathlib.Path:
     root = benchmark_cache_root(benchmark_name, "bgem3")
     return root / cache_kind if cache_kind else root

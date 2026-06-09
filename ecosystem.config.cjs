@@ -31,7 +31,7 @@ module.exports = {
         DATA_PARALLEL_SIZE: "1"
       },
       autorestart: true,
-      min_uptime: " 60s",
+      min_uptime: "60s",
       restart_delay: 30000,
       exp_backoff_restart_delay: 10000,
       kill_timeout: 60000,

@@ -8,6 +8,7 @@ params:
   keyword_modality: all
   num_runs: 1
   n_proc: 1
+  max_adjust_rounds: 3
   build_evolve_iters: 1
   build_window_size: 2
   memory_cache_scope: document
@@ -36,6 +37,7 @@ result_name_params:
   - params.keyword_modality
   - params.num_runs
   - params.n_proc
+  - params.max_adjust_rounds
   - params.build_evolve_iters
   - params.build_window_size
   - params.memory_cache_scope

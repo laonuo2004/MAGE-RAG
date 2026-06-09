@@ -1225,6 +1225,7 @@ class G2ReaderRuntime:
         install_g2_lightweight_shims()
         from agent_search.pred_kw import DAGPred
 
+        self._patch_dag_adjust_rounds(DAGPred)
         DAGPred(args).main()
         output = self._read_single_output(run_dir, args)
         if output is None:
@@ -1328,6 +1329,24 @@ class G2ReaderRuntime:
                 "docs_col": "documents",
             }
         }
+
+    def _patch_dag_adjust_rounds(self, dag_pred_cls) -> None:
+        max_adjust_rounds = int(get_config_value(self.cfg, "baselines.params.max_adjust_rounds", 3))
+        current = dag_pred_cls._execute_dag
+        original_execute = getattr(current, "_project_original_execute_dag", current)
+        if getattr(current, "_project_adjust_rounds_patched", False) and getattr(
+            current, "_project_max_adjust_rounds", None
+        ) == max_adjust_rounds:
+            return
+
+        def execute_dag_limited(instance, *args, **kwargs):
+            kwargs["max_adjust_rounds"] = max_adjust_rounds
+            return original_execute(instance, *args, **kwargs)
+
+        execute_dag_limited._project_adjust_rounds_patched = True
+        execute_dag_limited._project_original_execute_dag = original_execute
+        execute_dag_limited._project_max_adjust_rounds = max_adjust_rounds
+        dag_pred_cls._execute_dag = execute_dag_limited
 
     def _dag_args(self, data_path: Path, run_dir: Path) -> Namespace:
         params = get_config_value(self.cfg, "baselines.params", {}) or {}

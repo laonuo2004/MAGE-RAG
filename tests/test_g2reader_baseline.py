@@ -144,6 +144,29 @@ def test_extract_g2_prediction_prefers_output_tag():
     assert extract_g2_prediction("") is None
 
 
+def test_runtime_patch_dag_adjust_rounds_uses_configured_limit(tmp_path):
+    calls = []
+
+    class FakeDAGPred:
+        def _execute_dag(self, dag, question, model, tokenizer, client, main_context, link, idx, item, initial_images=None, max_adjust_rounds=3):
+            calls.append(max_adjust_rounds)
+            return "ok"
+
+    cfg = {
+        "benchmarks": {"name": "mmlongbench"},
+        "baselines": {
+            "params": {"max_adjust_rounds": 0},
+            "paths": {"cache_root": str(tmp_path / "cache")},
+        },
+    }
+
+    runtime = G2ReaderRuntime(cfg)
+    runtime._patch_dag_adjust_rounds(FakeDAGPred)
+    FakeDAGPred()._execute_dag({}, "q", "model", None, None, "ctx", "link", 0, {})
+
+    assert calls == [0]
+
+
 def test_runtime_patch_updates_g2_config_without_modifying_vendored_package(monkeypatch, tmp_path):
     config_module = types.SimpleNamespace(
         LLM_BASE_URL="old",

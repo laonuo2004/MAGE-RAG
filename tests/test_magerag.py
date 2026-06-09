@@ -8,11 +8,9 @@ from pathlib import Path
 import torch
 from omegaconf import OmegaConf
 
-from baselines.magerag.actions import CandidateAction
+from baselines.magerag.actions import ActionResult, CandidateAction
 from baselines.magerag.actions import ActivateNode, ActivatePage, OpenNode, PruneNode, SearchEvidence
 from baselines.magerag.builder import MAGERAGContextBuilder
-from baselines.magerag.builder import _candidate_from_selected_alias
-from baselines.magerag.builder import _resolve_candidate
 from baselines.magerag.candidate_generator import CandidateGenerator
 from baselines.magerag.evaluator import EvaluatorDecision, XMLEvaluator, parse_agent_decision_xml
 from baselines.magerag.graph_store import EvidenceGraphStore
@@ -288,19 +286,6 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("ActivateNode", n3_first_id)
         self.assertIn("n3", n3_first_id)
 
-    def test_candidate_resolution_accepts_node_id_aliases(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
-            state.execute(ActivatePage(0, "initial_retrieval"))
-            candidates = CandidateGenerator(state.graph).generate(state)
-            candidate_by_id = {candidate.id: candidate for candidate in candidates}
-
-            plain = _resolve_candidate("n1", candidate_by_id)
-            prefixed = _resolve_candidate("act:n1", candidate_by_id)
-
-        self.assertEqual(plain.payload["node_id"], "n1")
-        self.assertEqual(prefixed.payload["node_id"], "n1")
-
     def test_candidate_generator_does_not_emit_open_node_candidates(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
@@ -309,60 +294,6 @@ class MAGERAGTests(unittest.TestCase):
             candidates = CandidateGenerator(state.graph).generate(state)
 
         self.assertFalse(any(candidate.action_type == "OpenNode" for candidate in candidates))
-
-    def test_selected_alias_can_recover_allowed_node_outside_current_candidate_budget(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
-            state.execute(ActivatePage(0, "initial_retrieval"))
-
-            recovered = _candidate_from_selected_alias("act:ActivateNode:n1", state)
-
-        self.assertIsNotNone(recovered)
-        self.assertEqual(recovered.action_type, "ActivateNode")
-        self.assertEqual(recovered.payload["node_id"], "n1")
-
-    def test_selected_alias_can_recover_bare_node_id(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
-            state.execute(ActivatePage(0, "initial_retrieval"))
-
-            inactive = _candidate_from_selected_alias("n1", state)
-            state.execute(ActivateNode("n1"))
-            active = _candidate_from_selected_alias("n1", state)
-
-        self.assertIsNotNone(inactive)
-        self.assertEqual(inactive.action_type, "ActivateNode")
-        self.assertIsNotNone(active)
-        self.assertEqual(active.action_type, "OpenNode")
-
-    def test_selected_alias_recovers_nearest_same_page_node_for_stale_block_id(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = self._write_graph(tmp_dir)
-            state = EvidenceAgentState(EvidenceGraphStore(graph_dir, allowed_pages=[0]))
-            state.execute(ActivatePage(0, "initial_retrieval"))
-            stale_id = "sample:page:0:block:4:paragraph"
-            state.graph.nodes["sample:page:0:block:3:paragraph"] = {
-                "id": "sample:page:0:block:3:paragraph",
-                "type": "paragraph",
-                "doc_id": "sample",
-                "page_index": 0,
-                "abstract": "near paragraph",
-                "text": "near paragraph",
-            }
-
-            recovered = _candidate_from_selected_alias(f"act:ActivateNode:{stale_id}", state)
-
-        self.assertIsNotNone(recovered)
-        self.assertEqual(recovered.action_type, "ActivateNode")
-        self.assertEqual(recovered.payload["node_id"], "sample:page:0:block:3:paragraph")
-
-    def test_selected_alias_rejects_nodes_outside_allowed_pages(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
-
-            recovered = _candidate_from_selected_alias("act:ActivateNode:n2", state)
-
-        self.assertIsNone(recovered)
 
     def test_search_evidence_records_query_without_lexical_node_results(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -422,7 +353,6 @@ class MAGERAGTests(unittest.TestCase):
         )
 
         self.assertEqual(decision.selected_actions[0]["candidate_index"], 2)
-        self.assertEqual(decision.selected_actions[0]["candidate_id"], "")
         self.assertNotIn("reason", decision.selected_actions[0])
 
     def test_xml_evaluator_parses_prune_reason_only(self):
@@ -563,7 +493,7 @@ class MAGERAGTests(unittest.TestCase):
 
         self.assertEqual(decision.search_query, "page 98 file sizes")
 
-    def test_invalid_candidate_ids_are_rejected_and_traced(self):
+    def test_selected_action_without_candidate_index_is_rejected_and_traced(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
@@ -574,7 +504,7 @@ class MAGERAGTests(unittest.TestCase):
             }))
             builder.max_selected_actions_per_iteration = 2
             builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(selected_actions=[{"candidate_id": "missing"}]),
+                EvaluatorDecision(selected_actions=[{}]),
                 "<agent_decision/>",
             )
 
@@ -596,7 +526,7 @@ class MAGERAGTests(unittest.TestCase):
             def fake_call(client, question, state, candidates):
                 index = next(index for index, candidate in enumerate(candidates, start=1) if candidate.id == "act:ActivateNode:n1")
                 return (
-                    EvaluatorDecision(selected_actions=[{"candidate_index": index, "candidate_id": ""}]),
+                    EvaluatorDecision(selected_actions=[{"candidate_index": index}]),
                     "<agent_decision/>",
                 )
 
@@ -625,16 +555,20 @@ class MAGERAGTests(unittest.TestCase):
                 call_count += 1
                 if call_count > 1:
                     return EvaluatorDecision(stop=True), "<agent_decision><stop>true</stop></agent_decision>"
+                candidate_indexes = [
+                    index
+                    for index, candidate in enumerate(candidates, start=1)
+                    if candidate.id in {
+                        "act:ActivateNode:n1",
+                        "act:ActivateNode:n3",
+                        "act:ActivateNode:n_title",
+                        "act:ActivateNode:n2",
+                    }
+                ]
                 return (
                     EvaluatorDecision(selected_actions=[
-                        {"candidate_id": candidate_id}
-                        for candidate_id in [
-                            "act:ActivateNode:n1",
-                            "act:ActivateNode:n3",
-                            "act:ActivateNode:n_title",
-                            "act:ActivateNode:n2",
-                            "missing",
-                        ]
+                        {"candidate_index": candidate_index}
+                        for candidate_index in candidate_indexes + [999]
                     ]),
                     "<agent_decision/>",
                 )
@@ -648,7 +582,7 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("n3", active_nodes)
         self.assertNotIn("n_title", active_nodes)
         truncation_trace = next(item for item in state.trace if item.get("action") == "TruncatedSelectedActions")
-        self.assertEqual(truncation_trace["original_count"], 5)
+        self.assertEqual(truncation_trace["original_count"], 4)
         self.assertEqual(truncation_trace["executed_count"], 2)
         decision_trace = next(item for item in state.trace if item.get("action") == "EvaluatorDecision")
         self.assertEqual(decision_trace["selected_action_execution_limit"], 2)
@@ -671,7 +605,7 @@ class MAGERAGTests(unittest.TestCase):
                 call_count += 1
                 return (
                     EvaluatorDecision(selected_actions=[
-                        {"candidate_index": index, "candidate_id": ""}
+                        {"candidate_index": index}
                         for index in range(1, 4)
                     ]),
                     "<agent_decision/>",
@@ -687,7 +621,7 @@ class MAGERAGTests(unittest.TestCase):
         self.assertEqual(budget_trace["executed_total"], 4)
         self.assertEqual(budget_trace["limit"], 3)
 
-    def test_empty_candidate_numeric_selection_is_ignored_without_validation_error(self):
+    def test_empty_candidate_numeric_selection_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             builder = MAGERAGContextBuilder(OmegaConf.create({
@@ -696,15 +630,15 @@ class MAGERAGTests(unittest.TestCase):
                 }
             }))
             builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(selected_actions=[{"candidate_index": 1, "candidate_id": ""}]),
+                EvaluatorDecision(selected_actions=[{"candidate_index": 1}]),
                 "<agent_decision/>",
             )
 
             stop_reason = builder._run_agent("mmlongbench", "question", state, client=object())
 
         self.assertEqual(stop_reason, "watchdog_repeated_noop")
-        self.assertEqual(state.validation_errors, [])
-        self.assertEqual(state.trace[-1]["action"], "IgnoredEmptyCandidateSelection")
+        self.assertEqual(state.validation_errors[-1]["action_type"], "SelectedAction")
+        self.assertEqual(state.trace[-1]["action"], "InvalidCandidate")
 
     def test_evaluator_decision_trace_records_input_without_base64_images(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -831,9 +765,10 @@ class MAGERAGTests(unittest.TestCase):
                         EvaluatorDecision(stop=True),
                         "<agent_decision><stop>true</stop></agent_decision>",
                     )
+                index = next(index for index, candidate in enumerate(candidates, start=1) if candidate.id == "act:ActivateNode:n1")
                 return (
-                    EvaluatorDecision(selected_actions=[{"candidate_id": "act:ActivateNode:n1"}]),
-                    "<agent_decision><selected_actions><action candidate_id=\"act:ActivateNode:n1\"/></selected_actions></agent_decision>",
+                    EvaluatorDecision(selected_actions=[{"candidate_index": index}]),
+                    f"<agent_decision><selected_actions><action index=\"{index}\"/></selected_actions></agent_decision>",
                 )
 
             builder.evaluator.call = fake_call
@@ -1436,7 +1371,7 @@ class MAGERAGTests(unittest.TestCase):
                 }
             }))
             builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(selected_actions=[{"candidate_index": 1, "candidate_id": ""}]),
+                EvaluatorDecision(selected_actions=[{"candidate_index": 1}]),
                 "<think>Select the first useful node.</think><agent_decision><selected_actions><action index=\"1\"/></selected_actions></agent_decision>",
             )
 
@@ -1451,6 +1386,56 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("reason", executed["selection"])
         self.assertIn("state_snapshot_after", executed)
         self.assertIn("n1", executed["state_snapshot_after"]["active_node_ids"])
+
+    def test_run_agent_leaves_parent_page_activation_to_activate_node(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
+            original_execute = state.execute
+
+            def execute_without_node_activation_retry(action, iteration=None):
+                if isinstance(action, ActivateNode) and action.node_id == "n2":
+                    result = ActionResult(False, "ActivateNode", "activate page first")
+                    state._record_result(result, action, iteration)
+                    return result
+                return original_execute(action, iteration)
+
+            state.execute = execute_without_node_activation_retry
+            builder = MAGERAGContextBuilder(OmegaConf.create({
+                "baselines": {
+                    "name": "magerag",
+                    "controller": {"watchdog_iterations": 1},
+                }
+            }))
+
+            def fake_call(client, question, state, candidates):
+                target_index = next(
+                    index
+                    for index, candidate in enumerate(
+                        [candidate for candidate in candidates if candidate.action_type == "ActivateNode"],
+                        start=1,
+                    )
+                    if candidate.payload.get("node_id") == "n2"
+                )
+                return (
+                    EvaluatorDecision(selected_actions=[{"candidate_index": target_index}]),
+                    "<agent_decision><selected_actions>"
+                    f"<action index=\"{target_index}\"/>"
+                    "</selected_actions></agent_decision>",
+                )
+
+            builder.evaluator.call = fake_call
+
+            builder._run_agent("mmlongbench", "question", state, client=object())
+
+        self.assertNotIn("page:1", state.active_node_ids())
+        self.assertFalse(any(
+            item.get("action") == "ActivatePage"
+            and item.get("payload", {}).get("page_index") == 1
+            and item.get("payload", {}).get("source") == "relation_target"
+            for item in state.trace
+        ))
 
     def test_initial_retrieval_activates_multiple_top_pages(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1554,12 +1539,19 @@ class MAGERAGTests(unittest.TestCase):
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
+                    selected_indexes = [
+                        index
+                        for index, candidate in enumerate(candidates, start=1)
+                        if candidate.id in {"act:ActivateNode:n_title", "act:ActivateNode:n1"}
+                    ]
                     return (
                         EvaluatorDecision(selected_actions=[
-                            {"candidate_id": "act:ActivateNode:n_title"},
-                            {"candidate_id": "act:ActivateNode:n1"},
+                            {"candidate_index": index}
+                            for index in selected_indexes
                         ]),
-                        "<agent_decision><selected_actions><action candidate_id=\"act:ActivateNode:n_title\"/><action candidate_id=\"act:ActivateNode:n1\"/></selected_actions></agent_decision>",
+                        "<agent_decision><selected_actions>"
+                        + "".join(f"<action index=\"{index}\"/>" for index in selected_indexes)
+                        + "</selected_actions></agent_decision>",
                     )
                 return (
                     EvaluatorDecision(stop=True),
@@ -1609,12 +1601,19 @@ class MAGERAGTests(unittest.TestCase):
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
+                    selected_indexes = [
+                        index
+                        for index, candidate in enumerate(candidates, start=1)
+                        if candidate.id in {"act:ActivateNode:n_title", "act:ActivateNode:n1"}
+                    ]
                     return (
                         EvaluatorDecision(selected_actions=[
-                            {"candidate_id": "act:ActivateNode:n_title"},
-                            {"candidate_id": "act:ActivateNode:n1"},
+                            {"candidate_index": index}
+                            for index in selected_indexes
                         ]),
-                        "<agent_decision><selected_actions><action candidate_id=\"act:ActivateNode:n_title\"/><action candidate_id=\"act:ActivateNode:n1\"/></selected_actions></agent_decision>",
+                        "<agent_decision><selected_actions>"
+                        + "".join(f"<action index=\"{index}\"/>" for index in selected_indexes)
+                        + "</selected_actions></agent_decision>",
                     )
                 return (
                     EvaluatorDecision(stop=True),

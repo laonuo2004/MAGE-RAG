@@ -3,9 +3,11 @@ from pathlib import Path
 
 from analysis.plugins import AnalysisPlugin, ParameterSpec, get_plugin, registered_plugins
 from analysis.plugins.magerag import MAGERAGPlugin
+from analysis.dashboard_app import DEFAULT_RESULT_SUBDIRS, load_agent_trace_runs, load_runs
 from analysis.results_loader import parse_run_parameters, read_jsonl_cached, scan_runs
 from analysis.results_metrics import (
     build_leaderboard,
+    correction_rows,
     flatten_metrics,
     pairwise_comparison,
     parameter_curve_rows,
@@ -118,6 +120,58 @@ def test_scan_runs_pairs_metrics_and_jsonl_without_reading_records(tmp_path):
     assert runs[0].jsonl_size_bytes > 0
 
 
+def test_scan_runs_can_be_scoped_to_selected_result_subdirectories(tmp_path):
+    results_root = tmp_path / "results"
+    magerag = results_root / "longdocurl" / "magerag" / "res_top_k_1_model"
+    other = results_root / "longdocurl" / "bm25" / "res_top_k_2_model"
+    missing = Path("mmlongdoc/magerag")
+    _write_jsonl(magerag.with_suffix(".jsonl"), [{"question_id": "q1", "score": 1}])
+    _write_jsonl(other.with_suffix(".jsonl"), [{"question_id": "q2", "score": 0}])
+
+    runs = scan_runs(
+        results_root,
+        included_subdirs=(Path("longdocurl/magerag"), missing),
+    )
+
+    assert [run.run_id for run in runs] == ["longdocurl/magerag/res_top_k_1_model"]
+
+
+def test_dashboard_default_subdirs_are_magerag_only():
+    assert Path("longdocurl/magerag") in DEFAULT_RESULT_SUBDIRS
+    assert Path("mmlongbench/magerag") in DEFAULT_RESULT_SUBDIRS
+    assert Path("mmlongdoc/magerag") in DEFAULT_RESULT_SUBDIRS
+    assert all(path.parts[-1] == "magerag" for path in DEFAULT_RESULT_SUBDIRS)
+
+
+def test_dashboard_load_runs_scans_all_result_subdirectories(tmp_path):
+    results_root = tmp_path / "results"
+    magerag = results_root / "longdocurl" / "magerag" / "res_top_k_1_model"
+    bm25 = results_root / "longdocurl" / "bm25" / "res_top_k_2_model"
+    _write_jsonl(magerag.with_suffix(".jsonl"), [{"question_id": "q1", "score": 1}])
+    _write_jsonl(bm25.with_suffix(".jsonl"), [{"question_id": "q2", "score": 0}])
+
+    load_runs.clear()
+    runs = load_runs(str(results_root))
+
+    assert [run.run_id for run in runs] == [
+        "longdocurl/bm25/res_top_k_2_model",
+        "longdocurl/magerag/res_top_k_1_model",
+    ]
+
+
+def test_dashboard_agent_trace_runs_are_scoped_to_magerag_subdirectories(tmp_path):
+    results_root = tmp_path / "results"
+    magerag = results_root / "longdocurl" / "magerag" / "res_top_k_1_model"
+    bm25 = results_root / "longdocurl" / "bm25" / "res_top_k_2_model"
+    _write_jsonl(magerag.with_suffix(".jsonl"), [{"question_id": "q1", "score": 1}])
+    _write_jsonl(bm25.with_suffix(".jsonl"), [{"question_id": "q2", "score": 0}])
+
+    load_agent_trace_runs.clear()
+    runs = load_agent_trace_runs(str(results_root))
+
+    assert [run.run_id for run in runs] == ["longdocurl/magerag/res_top_k_1_model"]
+
+
 def test_scan_runs_prefers_run_metadata_then_legacy_then_sample_then_filename(tmp_path):
     results_root = tmp_path / "results"
     run = results_root / "mmlongbench" / "toy_reranker" / "res_rerank_top_k_5_fusion_weight_0_5_model"
@@ -210,6 +264,81 @@ def test_retrieval_diagnostics_handles_page_index_and_page_number_hits():
     assert rows[0]["total_duration_seconds"] == 6.0
     assert rows[1]["evidence_hit"] is False
     assert rows[1]["first_hit_rank"] is None
+
+
+def test_correction_rows_classify_before_after_score_outcomes():
+    rows = correction_rows(
+        [
+            {
+                "question_id": "q1",
+                "answer": "Table 29. 12-bit DAC operating requirements",
+                "pred": "Table 29. 12-bit DAC operating requirements",
+                "score": 1.0,
+                "correction_metadata": {
+                    "applied": True,
+                    "initial_pred": "Table 29",
+                    "initial_pred_format": "String",
+                    "initial_score": 0.0,
+                    "corrected_pred": "Table 29. 12-bit DAC operating requirements",
+                    "corrected_pred_format": "String",
+                    "corrected_score": 1.0,
+                    "duration_seconds": 2.4,
+                    "corrected_extracted_res": "Extracted answer: Table 29. 12-bit DAC operating requirements",
+                },
+            },
+            {
+                "question_id": "q2",
+                "answer": "A",
+                "pred": "B",
+                "score": 0.0,
+                "correction_metadata": {
+                    "applied": False,
+                    "initial_pred": "B",
+                    "initial_score": 0.0,
+                    "corrected_pred": "B",
+                    "corrected_score": 0.0,
+                },
+            },
+            {
+                "question_id": "q3",
+                "answer": "C",
+                "pred": "C",
+                "score": 1.0,
+            },
+            {
+                "question_id": "q4",
+                "answer": "D",
+                "pred": "D",
+                "score": 1.0,
+                "correction_metadata": {
+                    "applied": False,
+                    "initial_pred": "D",
+                    "initial_score": 1.0,
+                },
+            },
+            {
+                "question_id": "q5",
+                "answer": "E",
+                "pred": "F",
+                "score": 0.0,
+                "correction_metadata": {
+                    "applied": False,
+                    "initial_pred": "F",
+                    "initial_score": 0.0,
+                    "error": "Failed to parse corrected extraction",
+                },
+            },
+        ]
+    )
+
+    by_id = {row["question_id"]: row for row in rows}
+    assert by_id["q1"]["correction_outcome"] == "wrong_to_correct"
+    assert by_id["q1"]["score_delta"] == 1.0
+    assert by_id["q1"]["pred_changed"] is True
+    assert by_id["q2"]["correction_outcome"] == "wrong_to_wrong"
+    assert by_id["q3"]["correction_outcome"] == "not_run"
+    assert by_id["q4"]["correction_outcome"] == "skipped_initial_correct"
+    assert by_id["q5"]["correction_outcome"] == "correction_error"
 
 
 def test_leaderboard_and_pairwise_comparison():
@@ -370,10 +499,22 @@ def test_magerag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
             {"id": "doc:page:0:block:0:title", "type": "title", "page_index": 0, "abstract": "Title"},
         ],
     )
-    _write_jsonl(graph_dir / "edges.jsonl", [])
+    _write_jsonl(
+        graph_dir / "edges.jsonl",
+        [
+            {
+                "id": "edge:containment:doc:page:0:title",
+                "source": "doc:page:0",
+                "target": "doc:page:0:block:0:title",
+                "type": "containment",
+                "relation": "contains",
+            }
+        ],
+    )
     record = {
         "question_id": "q1",
         "score": 1.0,
+        "generation_metadata": {"response": "Reader raw answer"},
         "prepare_metadata": {
             "graph_dir": str(graph_dir),
             "allowed_pages": [0],
@@ -417,12 +558,17 @@ def test_magerag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
     data = MAGERAGPlugin().case_visualization(record)
 
     assert data["reader_input"]["text_parts"] == ["Reader prompt"]
+    assert data["reader_output"] == "Reader raw answer"
     assert data["reader_image_refs"][0]["page_index"] == 0
     assert data["evaluator_rows"][0]["prompt_text"] == "controller prompt"
+    assert data["evaluator_rows"][0]["iteration_label"] == "Iteration 1"
     assert data["evaluator_rows"][0]["candidate_action_count"] == 1
     assert data["expansion_rows"][1]["action"] == "OpenNode"
     assert data["expansion_rows"][1]["selected_candidate_index"] == 1
     assert data["expansion_rows"][1]["opened_nodes"] == 1
+    assert data["graph_snapshots"][0]["iteration"] == 1
+    assert data["graph_snapshots"][0]["nodes"][0]["state"] == "Active"
+    assert data["graph_snapshots"][0]["edges"][0]["edge_type"] == "containment"
 
 
 def test_magerag_plugin_handles_missing_graph_dir_without_crashing():

@@ -127,8 +127,83 @@ class BenchmarkAdapterTests(unittest.TestCase):
 
         self.assertEqual(score, 1.0)
 
+    def test_mmlongbench_list_score_allows_household_category_suffix(self):
+        score = MMLongBenchAdapter.score(
+            "['White', '10%']",
+            "White households, 10 percentage points",
+            "List",
+        )
+
+        self.assertEqual(score, 1.0)
+
     def test_mmlongbench_int_score_handles_percent_suffix(self):
         self.assertEqual(MMLongBenchAdapter.score("21%", "21", "Int"), 1.0)
+
+    def test_correction_prompt_includes_only_string_scoring_code_for_string_answers(self):
+        prompt = adapters._build_correction_messages(
+            MMLongBenchAdapter(),
+            "mmlongbench",
+            {
+                "question": "Which group is identified?",
+                "answer": "less well-off",
+                "answer_format": "String",
+            },
+            "The group is less well off.",
+            "less well off",
+            0.9,
+        )[0]["content"][0]["text"]
+
+        self.assertIn("def score_string", prompt)
+        self.assertIn("_anls_compute", prompt)
+        self.assertIn("hyphenation", prompt)
+        self.assertIn("<think>...</think>", prompt)
+        self.assertIn("After &lt;/think&gt;, output the corrected formatted extraction", prompt)
+        self.assertIn("<corrected_extraction>", prompt)
+        self.assertIn("Output sequence:", prompt)
+        self.assertNotIn("def score_int", prompt)
+        self.assertNotIn("def score_float", prompt)
+        self.assertNotIn("def score_list", prompt)
+
+    def test_correction_prompt_selects_float_scoring_code_for_float_answers(self):
+        prompt = adapters._build_correction_messages(
+            MMLongBenchAdapter(),
+            "mmlongbench",
+            {
+                "question": "What percentage changed?",
+                "answer": "10%",
+                "answer_format": "Float",
+            },
+            "The change was 10 percentage points.",
+            "10 percentage points",
+            0.0,
+        )[0]["content"][0]["text"]
+
+        self.assertIn("def score_float", prompt)
+        self.assertIn("_is_float_equal", prompt)
+        self.assertNotIn("def score_int", prompt)
+        self.assertNotIn("def score_string", prompt)
+        self.assertNotIn("def score_list", prompt)
+
+    def test_correction_prompt_selects_list_scoring_code_for_list_answers(self):
+        prompt = adapters._build_correction_messages(
+            MMLongBenchAdapter(),
+            "mmlongbench",
+            {
+                "question": "Which category and percentage?",
+                "answer": "['white','10%']",
+                "answer_format": "List",
+            },
+            "White households, 10 percentage points.",
+            "White households, 10 percentage points",
+            0.0,
+        )[0]["content"][0]["text"]
+
+        self.assertIn("def score_list", prompt)
+        self.assertIn("_normalize_list_item", prompt)
+        self.assertIn("list-equivalent", prompt)
+        self.assertNotIn("def score_int", prompt)
+        self.assertNotIn("def score_float", prompt)
+        self.assertNotIn("def score_string", prompt)
 
     def test_mmlongbench_metrics_include_fine_grained_json_breakdowns(self):
         samples = [
@@ -294,12 +369,103 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertIn("<input_data>", correction_prompt)
         self.assertIn("<scoring_code>\n<![CDATA[", correction_prompt)
         self.assertIn("<initial_score>0.0</initial_score>", correction_prompt)
+        self.assertIn("Use gold_truth as a reference target", correction_prompt)
+        self.assertIn("Actively fix representation errors", correction_prompt)
+        self.assertIn("benchmark-friendly surface form", correction_prompt)
+        self.assertIn("Do not copy gold_truth into the answer unless model_response supports it", correction_prompt)
         self.assertEqual(result["pred"], "22 million")
         self.assertEqual(result["pred_format"], "String")
         self.assertEqual(result["score"], 1.0)
         self.assertEqual(result["correction_metadata"]["initial_pred"], "22000000")
         self.assertEqual(result["correction_metadata"]["corrected_pred"], "22 million")
         self.assertTrue(result["correction_metadata"]["applied"])
+
+    def test_correction_strips_think_block_before_parsing_corrected_extraction(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion("The answer is $22 million.", model="qa-served")
+                if len(calls) == 2:
+                    return completion("Extracted answer: 22000000\nAnswer format: Integer", model="extractor-served")
+                return completion(
+                    "<think>The model response gives the same amount with a scale word, so normalize it.</think>\n"
+                    "<corrected_extraction>\n"
+                    "Extracted answer: 22 million\n"
+                    "Answer format: String\n"
+                    "</corrected_extraction>",
+                    model="correction-served",
+                )
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                    "correction_enabled": True,
+                    "correction_model_name": "correction-model",
+                }
+            })
+            sample = {"doc_id": "d1", "question": "q", "answer": "22 million", "answer_format": "String"}
+
+            result = MMLongBenchAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        self.assertEqual(result["pred"], "22 million")
+        self.assertEqual(result["pred_format"], "String")
+        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["correction_metadata"]["corrected_pred"], "22 million")
+        self.assertIn("<think>", result["correction_metadata"]["corrected_extracted_res"])
+
+    def test_correction_result_fields_are_flattened_and_ordered_for_comparison(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion("The answer is $22 million.", model="qa-served")
+                if len(calls) == 2:
+                    return completion("Extracted answer: 22000000\nAnswer format: Integer", model="extractor-served")
+                return completion("Extracted answer: 22 million\nAnswer format: String", model="correction-served")
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                    "correction_enabled": True,
+                    "correction_model_name": "correction-model",
+                }
+            })
+            sample = {"doc_id": "d1", "question": "q", "answer": "22 million", "answer_format": "String"}
+
+            result = MMLongBenchAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        self.assertEqual(result["corrected_pred"], "22 million")
+        self.assertEqual(result["corrected_format"], "String")
+        self.assertEqual(result["corrected_score"], 1.0)
+        keys = list(result)
+        self.assertEqual(
+            keys[keys.index("prepare_metadata"):keys.index("score") + 4],
+            [
+                "prepare_metadata",
+                "generation_metadata",
+                "extraction_metadata",
+                "correction_metadata",
+                "pred",
+                "pred_format",
+                "score",
+                "corrected_pred",
+                "corrected_format",
+                "corrected_score",
+            ],
+        )
 
     def test_longdocurl_correction_reparses_xml_and_preserves_original_extraction_metadata(self):
         calls = []

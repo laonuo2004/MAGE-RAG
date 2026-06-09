@@ -5,14 +5,13 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import torch
 from omegaconf import OmegaConf
 
 from baselines.magerag.actions import CandidateAction
-from baselines.magerag.actions import ActivateNode, ActivatePage, FollowRelation, OpenNode, PruneNode, SearchEvidence
+from baselines.magerag.actions import ActivateNode, ActivatePage, OpenNode, PruneNode, SearchEvidence
 from baselines.magerag.builder import MAGERAGContextBuilder
 from baselines.magerag.builder import _candidate_from_selected_alias
-from baselines.magerag.builder import _question_named_scope_specs
-from baselines.magerag.builder import _question_page_indices
 from baselines.magerag.builder import _resolve_candidate
 from baselines.magerag.candidate_generator import CandidateGenerator
 from baselines.magerag.evaluator import EvaluatorDecision, XMLEvaluator, parse_agent_decision_xml
@@ -65,28 +64,29 @@ class MAGERAGTests(unittest.TestCase):
 
         retriever = ColPaliTop1Retriever(OmegaConf.create({"baselines": cfg}))
 
-        self.assertEqual(retriever.top_k_for("longdocurl"), 5)
-        self.assertEqual(retriever.top_k_for("mmlongbench"), 5)
+        self.assertEqual(retriever.top_k_for("longdocurl"), 3)
+        self.assertEqual(retriever.top_k_for("mmlongbench"), 3)
 
     def test_default_mage_config_is_compact_and_uses_new_schema(self):
         cfg = OmegaConf.load("configs/baselines/magerag.yaml")
 
         self.assertEqual(str(cfg.name), "magerag")
-        self.assertEqual(int(cfg.params.top_k), 5)
+        self.assertEqual(int(cfg.params.top_k), 3)
         self.assertNotIn("graph_escape", cfg.params)
         self.assertNotIn("online_agent", cfg.params)
         self.assertEqual(set(cfg.params.keys()), {"top_k"})
+        self.assertEqual(list(cfg.result_name_params), ["params.top_k", "controller.watchdog_iterations"])
         self.assertEqual(str(cfg.models.evaluator), "Qwen3-VL-8B-Instruct")
         self.assertEqual(str(cfg.evaluator.prompt_style), "structured")
         self.assertTrue(bool(cfg.evaluator.include_few_shot_examples))
-        self.assertEqual(int(cfg.evaluator.reason_max_words), 30)
+        self.assertNotIn("reason_max_words", cfg.evaluator)
         self.assertEqual(int(cfg.evaluator.raw_text_char_limit), 1200)
-        self.assertEqual(int(cfg.evaluator.max_candidate_actions), 120)
-        self.assertEqual(int(cfg.evaluator.max_selected_actions_per_iteration), 4)
+        self.assertNotIn("max_candidate_actions", cfg.evaluator)
+        self.assertEqual(int(cfg.evaluator.max_selected_actions_per_iteration), 3)
         self.assertEqual(int(cfg.evaluator.max_total_selected_actions), 24)
         self.assertEqual(int(cfg.controller.watchdog_iterations), 6)
         self.assertEqual(int(cfg.controller.watchdog_repeated_noop_rounds), 2)
-        self.assertEqual(int(cfg.controller.auto_open_max_nodes_per_page), 24)
+        self.assertNotIn("auto_open_max_nodes_per_page", cfg.controller)
         self.assertEqual(int(cfg.controller.final_open_active_node_limit), 16)
         self.assertEqual(str(cfg.reader.mode), "compact")
         self.assertEqual(str(cfg.reader.prompt_style), "structured")
@@ -98,15 +98,6 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("agent", cfg)
         self.assertIn("evaluator", cfg)
         self.assertNotIn("safety", cfg)
-
-    def test_graph_store_loads_synthetic_artifacts(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_dir = Path(self._write_graph(tmp_dir))
-            graph = EvidenceGraphStore(graph_dir, allowed_pages=[0])
-
-        self.assertIn("n1", graph.nodes)
-        self.assertIn("e1", graph.edges)
-        self.assertEqual(graph.parent_page_node_id("n1"), "page:0")
 
     def test_activation_outside_allowed_pages_is_blocked(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -126,14 +117,15 @@ class MAGERAGTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(state.state_of("page:0"), ACTIVE)
 
-    def test_activate_node_requires_parent_page_active(self):
+    def test_activate_node_auto_activates_parent_page(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
 
             result = state.execute(ActivateNode("n1"))
 
-        self.assertFalse(result.ok)
-        self.assertIn("activate page", result.message)
+        self.assertTrue(result.ok)
+        self.assertEqual(state.state_of("page:0"), ACTIVE)
+        self.assertEqual(state.state_of("n1"), ACTIVE)
 
     def test_activate_node_blocks_node_outside_allowed_pages(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -186,48 +178,93 @@ class MAGERAGTests(unittest.TestCase):
         self.assertTrue(result.payload["reactivated_from_pruned"])
         self.assertEqual(state.state_of("n1"), ACTIVE)
 
-    def test_follow_relation_exposes_target_preview_without_opening_target(self):
+    def test_pruning_page_hides_page_and_descendants_from_candidates(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
-            state.execute(ActivatePage(0, "initial_retrieval"))
-            state.execute(ActivateNode("n1"))
 
-            result = state.execute(FollowRelation("e1"))
+            result = state.execute(PruneNode("page:0", "Page is unrelated to the answer."))
+            candidates = CandidateGenerator(state.graph).generate(state)
+            context_xml = XMLEvaluator("model").build_context_xml("question", state, candidates)
 
         self.assertTrue(result.ok)
-        self.assertEqual(result.payload["target_id"], "n2")
-        self.assertIn("needle target", result.payload["target_preview"])
-        self.assertNotEqual(state.state_of("n2"), OPENED)
+        self.assertEqual(state.state_of("page:0"), PRUNED)
+        self.assertFalse(any(candidate.payload.get("node_id") in {"n1", "n3", "n_title"} for candidate in candidates))
+        self.assertNotIn('id="page:0"', context_xml)
+        self.assertNotIn('id="n1"', context_xml)
 
-    def test_follow_relation_generates_target_activation_candidate_next_round(self):
+    def test_relation_edges_emit_activate_node_candidates_directly(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
             state.execute(ActivatePage(0, "initial_retrieval"))
             state.execute(ActivateNode("n1"))
-            state.execute(FollowRelation("e1"))
 
             candidates = CandidateGenerator(state.graph).generate(state)
 
         relation_candidates = [
             candidate for candidate in candidates
-            if candidate.action_type == "ActivatePage" and candidate.payload["page_index"] == 1
+            if candidate.action_type == "ActivateNode" and candidate.payload.get("node_id") == "n2"
         ]
-        self.assertEqual(relation_candidates[0].payload["source"], "relation_target")
+        self.assertEqual(len(relation_candidates), 1)
+        self.assertEqual(relation_candidates[0].payload["source_node_id"], "n1")
+        self.assertEqual(relation_candidates[0].payload["edge_type"], "semantic")
+        self.assertEqual(relation_candidates[0].payload["relation"], "related")
 
-    def test_candidate_generator_does_not_repeat_followed_relation(self):
+    def test_relation_activate_node_candidate_auto_activates_target_page(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
             state.execute(ActivatePage(0, "initial_retrieval"))
             state.execute(ActivateNode("n1"))
-            state.execute(FollowRelation("e1"))
+            candidates = CandidateGenerator(state.graph).generate(state)
+            relation_candidate = next(
+                candidate for candidate in candidates
+                if candidate.action_type == "ActivateNode" and candidate.payload.get("node_id") == "n2"
+            )
+
+            result = state.execute(ActivateNode(relation_candidate.payload["node_id"]))
+
+        self.assertTrue(result.ok)
+        self.assertIn("page:1", state.active_node_ids())
+        self.assertIn("n2", state.active_node_ids())
+
+    def test_candidate_generator_includes_reverse_logically_undirected_edges(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(self._write_graph(tmp_dir))
+            with open(graph_dir / "edges.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"id": "read_prev", "source": "n3", "target": "n1", "type": "reading_order", "relation": "next"}) + "\n")
+                handle.write(json.dumps({"id": "layout_left", "source": "n3", "target": "n1", "type": "layout", "relation": "left_of"}) + "\n")
+                handle.write(json.dumps({"id": "section_parent", "source": "n_title", "target": "n1", "type": "section_hierarchy", "relation": "contains_block"}) + "\n")
+                handle.write(json.dumps({"id": "contains_page", "source": "page:0", "target": "n1", "type": "containment", "relation": "contains"}) + "\n")
+            state = EvidenceAgentState(EvidenceGraphStore(graph_dir, allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
 
             candidates = CandidateGenerator(state.graph).generate(state)
 
-        followed_edges = [
-            candidate for candidate in candidates
-            if candidate.action_type == "FollowRelation" and candidate.payload["edge_id"] == "e1"
-        ]
-        self.assertEqual(followed_edges, [])
+        relation_edge_ids = {
+            candidate.payload["edge_id"]
+            for candidate in candidates
+            if candidate.action_type == "ActivateNode" and "edge_id" in candidate.payload
+        }
+        self.assertIn("read_prev", relation_edge_ids)
+        self.assertIn("layout_left", relation_edge_ids)
+        self.assertIn("section_parent", relation_edge_ids)
+        self.assertNotIn("contains_page", relation_edge_ids)
+
+    def test_reverse_relation_candidate_targets_source_endpoint(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(self._write_graph(tmp_dir))
+            with open(graph_dir / "edges.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"id": "read_prev", "source": "n3", "target": "n1", "type": "reading_order", "relation": "next"}) + "\n")
+            state = EvidenceAgentState(EvidenceGraphStore(graph_dir, allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
+
+            candidates = CandidateGenerator(state.graph).generate(state)
+
+        self.assertTrue(any(
+            candidate.action_type == "ActivateNode" and candidate.payload["node_id"] == "n3"
+            for candidate in candidates
+        ))
 
     def test_candidate_ids_are_stable_when_candidate_list_changes(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -264,19 +301,14 @@ class MAGERAGTests(unittest.TestCase):
         self.assertEqual(plain.payload["node_id"], "n1")
         self.assertEqual(prefixed.payload["node_id"], "n1")
 
-    def test_candidate_resolution_accepts_stale_action_type_for_same_node(self):
+    def test_candidate_generator_does_not_emit_open_node_candidates(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
             state.execute(ActivateNode("n1"))
             candidates = CandidateGenerator(state.graph).generate(state)
-            candidate_by_id = {candidate.id: candidate for candidate in candidates}
 
-            resolved = _resolve_candidate("act:ActivateNode:n1", candidate_by_id)
-
-        self.assertIsNotNone(resolved)
-        self.assertEqual(resolved.action_type, "OpenNode")
-        self.assertEqual(resolved.payload["node_id"], "n1")
+        self.assertFalse(any(candidate.action_type == "OpenNode" for candidate in candidates))
 
     def test_selected_alias_can_recover_allowed_node_outside_current_candidate_budget(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -332,36 +364,53 @@ class MAGERAGTests(unittest.TestCase):
 
         self.assertIsNone(recovered)
 
-    def test_search_evidence_returns_only_allowed_page_results(self):
+    def test_search_evidence_records_query_without_lexical_node_results(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
 
             result = state.execute(SearchEvidence("needle"))
 
-        result_ids = [item["node_id"] for item in result.payload["results"]]
-        self.assertIn("n1", result_ids)
-        self.assertNotIn("n2", result_ids)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.payload["query"], "needle")
+        self.assertNotIn("results", result.payload)
 
     def test_xml_evaluator_output_parses_into_internal_requests(self):
         decision = parse_agent_decision_xml(
             """
+            <think>Evaluate the evidence before selecting actions.</think>
             <agent_decision>
               <stop>false</stop>
-              <selected_actions><action candidate_id="act:1" utility="0.9"><reason>open it</reason></action></selected_actions>
+              <selected_actions><action index="1"/></selected_actions>
+              <open_requests><node id="n1"/></open_requests>
               <search_request><query>more evidence</query></search_request>
-              <prune_requests><node id="n1"><reason>bad</reason></node></prune_requests>
-              <summarize_requests><summary source_node_ids="n1,n2"><goal>combine</goal></summary></summarize_requests>
-              <reason>continue</reason>
+              <prune_requests><node id="n2"><reason>bad</reason></node></prune_requests>
             </agent_decision>
             """
         )
 
         self.assertFalse(decision.stop)
-        self.assertEqual(decision.selected_actions[0]["candidate_id"], "act:1")
-        self.assertIsNone(decision.selected_actions[0]["candidate_index"])
+        self.assertEqual(decision.selected_actions[0]["candidate_index"], 1)
+        self.assertEqual(decision.open_requests[0]["node_id"], "n1")
         self.assertEqual(decision.search_query, "more evidence")
-        self.assertEqual(decision.prune_requests[0]["node_id"], "n1")
-        self.assertEqual(decision.summarize_requests[0]["source_node_ids"], ["n1", "n2"])
+        self.assertEqual(decision.prune_requests[0]["node_id"], "n2")
+        self.assertEqual(decision.prune_requests[0]["reason"], "bad")
+
+    def test_xml_evaluator_parses_page_prune_requests(self):
+        decision = parse_agent_decision_xml(
+            """
+            <think>Page 4 is unrelated noise and should be removed from context.</think>
+            <agent_decision>
+              <prune_requests>
+                <page id="doc:page:4"><reason>Unrelated appendix page consumes context.</reason></page>
+              </prune_requests>
+            </agent_decision>
+            """
+        )
+
+        self.assertEqual(decision.prune_requests, [{
+            "node_id": "doc:page:4",
+            "reason": "Unrelated appendix page consumes context.",
+        }])
 
     def test_xml_evaluator_accepts_numeric_action_indexes(self):
         decision = parse_agent_decision_xml(
@@ -374,6 +423,23 @@ class MAGERAGTests(unittest.TestCase):
 
         self.assertEqual(decision.selected_actions[0]["candidate_index"], 2)
         self.assertEqual(decision.selected_actions[0]["candidate_id"], "")
+        self.assertNotIn("reason", decision.selected_actions[0])
+
+    def test_xml_evaluator_parses_prune_reason_only(self):
+        decision = parse_agent_decision_xml(
+            """
+            <agent_decision>
+              <prune_requests>
+                <node id="n1"><reason>Not relevant to the requested adult dose.</reason></node>
+              </prune_requests>
+            </agent_decision>
+            """
+        )
+
+        self.assertEqual(decision.prune_requests, [{
+            "node_id": "n1",
+            "reason": "Not relevant to the requested adult dose.",
+        }])
 
     def test_xml_evaluator_prompt_uses_structured_generic_policy(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -391,8 +457,42 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("<self_check>", prompt)
         self.assertIn("<few_shot_examples>", prompt)
         self.assertIn("<agent_step_context>", prompt)
+        self.assertIn("Select at most 4 numbered ActivateNode actions per round.", prompt)
+        self.assertIn("The ActivateNode limit does not constrain OpenNode, SearchEvidenceRequest, or PruneNodeRequest.", prompt)
+        self.assertIn("Before deciding, output one &lt;think&gt;...&lt;/think&gt; block with detailed deliberation.", prompt)
+        self.assertIn("After &lt;think&gt;, return exactly one &lt;agent_decision&gt; XML document.", prompt)
+        self.assertNotIn("<thinking>", prompt)
+        self.assertIn("<problem>", prompt)
+        self.assertIn("<example_output>", prompt)
+        self.assertIn('&lt;prune_requests&gt;&lt;page id="visible page id"&gt;', prompt)
+        self.assertIn('&lt;prune_requests&gt;&lt;node id="visible element node id"&gt;', prompt)
+        self.assertNotIn("<allowed_scope>", prompt)
+        self.assertNotIn("summarize_requests", prompt)
         self.assertNotIn("For questions naming specific pages or slides", prompt)
         self.assertNotIn("For list or exhaustive questions", prompt)
+
+    def test_xml_evaluator_prompt_escapes_xml_sensitive_context_with_xml_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.graph.nodes["n1"]["abstract"] = "Revenue < cost & rising"
+            state.graph.nodes["n1"]["text"] = "Detailed value is A < B & C."
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
+            state.execute(OpenNode("n1"))
+
+            prompt = XMLEvaluator("model").build_prompt(
+                "Which value uses < and & symbols?",
+                state,
+                [CandidateAction("act:OpenNode:n1", "OpenNode", {"node_id": "n1"}, "Open < node & inspect")],
+            )
+
+        root = ET.fromstring(f"<root>{prompt}</root>")
+        self.assertEqual(root.find(".//agent_step_context/question").text, "Which value uses < and & symbols?")
+        self.assertIn("Detailed value is A < B & C.", root.find(".//agent_step_context/evidence_state/page/node/content").text)
+        self.assertEqual(root.find(".//candidate_actions/OpenNode/template").text, '<open_requests><node id="active non-page node id"/></open_requests>')
+        prune_template = root.find(".//agent_step_context/candidate_actions/PruneNodeRequest/template").text
+        self.assertIn('<prune_requests><page id="visible page id">', prune_template)
+        self.assertIn('<prune_requests><node id="visible element node id">', prune_template)
 
     def test_xml_evaluator_prompt_does_not_add_question_keyword_hints(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -409,24 +509,32 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("For color questions", prompt)
         self.assertNotIn("page/slide and target evidence", prompt)
 
-    def test_xml_evaluator_accepts_direct_action_candidate_output(self):
-        decision = parse_agent_decision_xml(
-            """
-            <agent_decision>
-              <action index="3" type="ActivateNode" node_id="n1"/>
-            </agent_decision>
-            """
-        )
+    def test_evaluator_context_groups_activate_node_candidates_and_hides_internal_ids(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
+            candidates = CandidateGenerator(state.graph).generate(state)
 
-        self.assertEqual(decision.selected_actions[0]["candidate_index"], 3)
+            xml = XMLEvaluator("model").build_context_xml("question", state, candidates)
+
+        root = ET.fromstring(xml)
+        activate_actions = root.findall(".//candidate_actions/ActivateNode/action")
+        self.assertTrue(activate_actions)
+        relation_action = next(action for action in activate_actions if action.attrib.get("edge_type") == "semantic")
+        self.assertEqual(relation_action.attrib["source"], "n1")
+        self.assertEqual(relation_action.attrib["relation"], "related")
+        self.assertNotIn("node_id", relation_action.attrib)
+        self.assertNotIn("edge_id", relation_action.attrib)
+        self.assertNotIn("page_index", relation_action.attrib)
+        self.assertNotIn("candidate_id", relation_action.attrib)
 
     def test_xml_evaluator_extracts_decision_from_code_fence(self):
         decision = parse_agent_decision_xml(
-            "Here is the XML:\n```xml\n<agent_decision><stop>true</stop><reason>done</reason></agent_decision>\n```"
+            "Here is the XML:\n```xml\n<think>Enough evidence.</think><agent_decision><stop>true</stop></agent_decision>\n```"
         )
 
         self.assertTrue(decision.stop)
-        self.assertEqual(decision.reason, "done")
 
     def test_xml_evaluator_recovers_numeric_actions_from_malformed_xml(self):
         decision = parse_agent_decision_xml(
@@ -470,7 +578,7 @@ class MAGERAGTests(unittest.TestCase):
                 "<agent_decision/>",
             )
 
-            stop_reason = builder._run_agent("question", state, client=object())
+            stop_reason = builder._run_agent("mmlongbench", "question", state, client=object())
 
         self.assertEqual(stop_reason, "watchdog_repeated_noop")
         self.assertEqual(state.validation_errors[-1]["action_type"], "SelectedAction")
@@ -494,7 +602,7 @@ class MAGERAGTests(unittest.TestCase):
 
             builder.evaluator.call = fake_call
 
-            builder._run_agent("question", state, client=object())
+            builder._run_agent("mmlongbench", "question", state, client=object())
 
         self.assertIn("n1", state.active_node_ids())
         decision_trace = next(item for item in state.trace if item.get("action") == "EvaluatorDecision")
@@ -516,7 +624,7 @@ class MAGERAGTests(unittest.TestCase):
                 nonlocal call_count
                 call_count += 1
                 if call_count > 1:
-                    return EvaluatorDecision(stop=True, reason="done"), "<agent_decision><stop>true</stop></agent_decision>"
+                    return EvaluatorDecision(stop=True), "<agent_decision><stop>true</stop></agent_decision>"
                 return (
                     EvaluatorDecision(selected_actions=[
                         {"candidate_id": candidate_id}
@@ -533,7 +641,7 @@ class MAGERAGTests(unittest.TestCase):
 
             builder.evaluator.call = fake_call
 
-            builder._run_agent("question", state, client=object())
+            builder._run_agent("mmlongbench", "question", state, client=object())
 
         active_nodes = state.active_node_ids()
         self.assertIn("n1", active_nodes)
@@ -571,7 +679,7 @@ class MAGERAGTests(unittest.TestCase):
 
             builder.evaluator.call = fake_call
 
-            stop_reason = builder._run_agent("question", state, client=object())
+            stop_reason = builder._run_agent("mmlongbench", "question", state, client=object())
 
         self.assertEqual(stop_reason, "watchdog_total_selected_actions")
         self.assertEqual(call_count, 2)
@@ -592,7 +700,7 @@ class MAGERAGTests(unittest.TestCase):
                 "<agent_decision/>",
             )
 
-            stop_reason = builder._run_agent("question", state, client=object())
+            stop_reason = builder._run_agent("mmlongbench", "question", state, client=object())
 
         self.assertEqual(stop_reason, "watchdog_repeated_noop")
         self.assertEqual(state.validation_errors, [])
@@ -605,10 +713,15 @@ class MAGERAGTests(unittest.TestCase):
             with open(image_path, "wb") as handle:
                 handle.write(b"fake image")
             lines = (graph_dir / "nodes.jsonl").read_text(encoding="utf-8").splitlines()
-            node = json.loads(lines[0])
+            rows = [json.loads(line) for line in lines]
+            row_index = next(index for index, row in enumerate(rows) if row["id"] == "n1")
+            node = rows[row_index]
             node["image_path"] = image_path
-            lines[0] = json.dumps(node)
-            (graph_dir / "nodes.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            rows[row_index] = node
+            (graph_dir / "nodes.jsonl").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows),
+                encoding="utf-8",
+            )
             state = EvidenceAgentState(EvidenceGraphStore(graph_dir, allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
             state.execute(ActivateNode("n1"))
@@ -619,11 +732,11 @@ class MAGERAGTests(unittest.TestCase):
                 }
             }))
             builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(stop=True, reason="done"),
-                "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                EvaluatorDecision(stop=True),
+                "<agent_decision><stop>true</stop></agent_decision>",
             )
 
-            builder._run_agent("question", state, client=object())
+            builder._run_agent("mmlongbench", "question", state, client=object())
 
         decision_trace = next(item for item in state.trace if item.get("action") == "EvaluatorDecision")
         evaluator_input = decision_trace["evaluator_input"]
@@ -645,7 +758,7 @@ class MAGERAGTests(unittest.TestCase):
             xml = XMLEvaluator("model", raw_text_char_limit=8192).build_context_xml("question", state, [])
 
         self.assertIn('<content truncated="true">', xml)
-        content = ET.fromstring(xml).find(".//opened_nodes/node/content")
+        content = ET.fromstring(xml).find(".//evidence_state/page/node/content")
         self.assertEqual(len(content.text), 8192)
 
     def test_online_mode_does_not_auto_open_initial_page_nodes_before_evaluator(self):
@@ -671,8 +784,8 @@ class MAGERAGTests(unittest.TestCase):
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
             )
             builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(stop=True, reason="done"),
-                "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                EvaluatorDecision(stop=True),
+                "<agent_decision><stop>true</stop></agent_decision>",
             )
 
             messages = builder.build(
@@ -684,7 +797,7 @@ class MAGERAGTests(unittest.TestCase):
         decision_trace = next(item for item in messages.metadata["iteration_trace"] if item.get("action") == "EvaluatorDecision")
         self.assertEqual(messages.metadata["opened_node_ids"], [])
         self.assertEqual(decision_trace["evaluator_input"]["opened_image_refs"], [])
-        self.assertNotIn("<opened_nodes>\n      <node", decision_trace["evaluator_input"]["context_xml"])
+        self.assertNotIn('state="opened"', decision_trace["evaluator_input"]["context_xml"])
 
     def test_online_build_final_opens_active_nodes_after_evaluator(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -715,8 +828,8 @@ class MAGERAGTests(unittest.TestCase):
                 call_count += 1
                 if call_count > 1:
                     return (
-                        EvaluatorDecision(stop=True, reason="done"),
-                        "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                        EvaluatorDecision(stop=True),
+                        "<agent_decision><stop>true</stop></agent_decision>",
                     )
                 return (
                     EvaluatorDecision(selected_actions=[{"candidate_id": "act:ActivateNode:n1"}]),
@@ -736,19 +849,10 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("n1", messages.metadata["opened_node_ids"])
         self.assertTrue(any(item.get("action") == "FinalOpenActiveNode" for item in messages.metadata["iteration_trace"]))
 
-    def test_online_search_decision_opens_top_search_result(self):
+    def test_online_search_decision_activates_colpali_pages_without_opening_nodes(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             graph_root = os.path.join(tmp_dir, "graphs")
             graph_dir = Path(self._write_graph(os.path.join(graph_root, "sample")))
-            with open(graph_dir / "nodes.jsonl", "a", encoding="utf-8") as handle:
-                handle.write(json.dumps({
-                    "id": "searched_answer",
-                    "type": "table",
-                    "doc_id": "sample",
-                    "page_index": 1,
-                    "abstract": "wheelchair accessible ESCAPE BRYGGEN answer table",
-                    "text": "ESCAPE BRYGGEN is not suitable for wheelchairs.",
-                }) + "\n")
             cfg = OmegaConf.create({
                 "baselines": {
                     "name": "magerag",
@@ -767,10 +871,33 @@ class MAGERAGTests(unittest.TestCase):
                 [{"page_index": 0, "page_number": 1, "score": 2.0}],
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
             )
-            builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(search_query="ESCAPE BRYGGEN wheelchair"),
-                "<agent_decision><search_request><query>ESCAPE BRYGGEN wheelchair</query></search_request></agent_decision>",
-            )
+            search_calls = []
+
+            def fake_retrieve_from_query(benchmark_name, sample, query, allowed_pages, excluded_pages=None):
+                search_calls.append((benchmark_name, query, tuple(allowed_pages), tuple(sorted(excluded_pages or []))))
+                return (
+                    [{"page_index": 1, "page_number": 2, "score": 9.0}],
+                    {"online_colpali": {"vllm_url": "http://localhost:8020"}, "retrieved_pages": [{"page_index": 1}]},
+                )
+
+            builder.retriever.retrieve_from_query = fake_retrieve_from_query
+            call_count = 0
+
+            def fake_call(client, question, state, candidates):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return (
+                        EvaluatorDecision(search_query="ESCAPE BRYGGEN wheelchair"),
+                        "<agent_decision><search_request><query>ESCAPE BRYGGEN wheelchair</query></search_request></agent_decision>",
+                    )
+                return (
+                    EvaluatorDecision(stop=True),
+                    "<agent_decision><stop>true</stop></agent_decision>",
+                )
+
+            builder.evaluator.call = fake_call
+            builder.final_open_active_nodes = False
 
             messages = builder.build(
                 "mmlongbench",
@@ -778,10 +905,12 @@ class MAGERAGTests(unittest.TestCase):
                 client=object(),
             )
 
-        self.assertIn("searched_answer", messages.metadata["opened_node_ids"])
+        self.assertEqual(search_calls, [("mmlongbench", "ESCAPE BRYGGEN wheelchair", (0, 1), (0,))])
+        self.assertIn("page:1", messages.metadata["active_node_ids"])
+        self.assertEqual(messages.metadata["opened_node_ids"], [])
         self.assertTrue(any(
-            item.get("action") == "AutoOpenSearchResult"
-            and item.get("node_id") == "searched_answer"
+            item.get("action") == "SearchEvidenceRetrieval"
+            and item.get("activated_pages") == [1]
             for item in messages.metadata["iteration_trace"]
         ))
 
@@ -823,10 +952,10 @@ class MAGERAGTests(unittest.TestCase):
 
             xml = XMLEvaluator("model").build_context_xml("question", state, [])
 
-        content = ET.fromstring(xml).find(".//opened_nodes/node/content")
+        content = ET.fromstring(xml).find(".//evidence_state/page/node/content")
         self.assertEqual(len(content.text), 1200)
 
-    def test_evaluator_context_limits_candidate_actions_and_preview_chars(self):
+    def test_evaluator_context_includes_all_candidate_actions_and_limits_preview_chars(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             candidates = [
@@ -841,18 +970,17 @@ class MAGERAGTests(unittest.TestCase):
 
             xml = XMLEvaluator(
                 "model",
-                max_candidate_actions=10,
                 candidate_preview_char_limit=40,
             ).build_context_xml("question", state, candidates)
 
         root = ET.fromstring(xml)
-        actions = root.findall(".//candidate_actions/action")
-        self.assertEqual(len(actions), 10)
+        actions = root.findall(".//candidate_actions/ActivateNode/action")
+        self.assertEqual(len(actions), 25)
         self.assertEqual(actions[0].attrib["index"], "1")
         self.assertNotIn("id", actions[0].attrib)
         self.assertTrue(all(len(action.findtext("preview")) <= 43 for action in actions))
 
-    def test_agent_keeps_question_relevant_candidates_when_capping_evaluator_actions(self):
+    def test_agent_passes_all_candidates_to_evaluator_without_heuristic_capping(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
@@ -879,21 +1007,20 @@ class MAGERAGTests(unittest.TestCase):
                     "name": "magerag",
                 }
             }))
-            builder.max_evaluator_candidate_actions = 5
             seen_candidate_ids = []
 
             def fake_call(client, question, state, candidates):
                 seen_candidate_ids.extend(candidate.id for candidate in candidates)
                 return (
-                    EvaluatorDecision(stop=True, reason="done"),
-                    "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                    EvaluatorDecision(stop=True),
+                    "<agent_decision><stop>true</stop></agent_decision>",
                 )
 
             builder.evaluator.call = fake_call
 
-            builder._run_agent("What is the needle answer revenue?", state, client=object())
+            builder._run_agent("mmlongbench", "What is the needle answer revenue?", state, client=object())
 
-        self.assertLessEqual(len(seen_candidate_ids), 5)
+        self.assertGreater(len(seen_candidate_ids), 5)
         self.assertIn("act:ActivateNode:answer_node", seen_candidate_ids)
 
     def test_evaluator_recent_trace_excludes_prior_full_evaluator_inputs(self):
@@ -914,16 +1041,21 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("evaluator_input", xml)
         self.assertNotIn("context_xml", xml)
         self.assertNotIn("raw_response", xml)
-        self.assertLess(len(xml), 3000)
 
-    def test_reader_renderer_excludes_pruned_nodes_and_includes_summaries(self):
+    def test_evaluator_decision_has_no_summary_request_surface(self):
+        decision = parse_agent_decision_xml(
+            "<agent_decision><stop>true</stop></agent_decision>"
+        )
+
+        self.assertFalse(hasattr(decision, "summarize_requests"))
+
+    def test_reader_renderer_excludes_pruned_nodes_without_online_summaries(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
             state.execute(ActivateNode("n1"))
             state.execute(OpenNode("n1"))
             state.execute(PruneNode("n1", "irrelevant"))
-            state.summaries.append({"summary_id": "summary:iter1:0", "source_node_ids": ["n1"], "text": "summary text"})
 
             content = ReaderRenderer(
                 OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "full"}}}),
@@ -936,7 +1068,7 @@ class MAGERAGTests(unittest.TestCase):
 
         prompt = content[0]["text"]
         self.assertNotIn("[n1] type=", prompt)
-        self.assertIn("summary text", prompt)
+        self.assertNotIn("<online_summaries>", prompt)
 
     def test_reader_renderer_full_mode_uses_general_evidence_id_warning(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -990,6 +1122,28 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("Active evidence graph:", prompt)
         self.assertNotIn("provenance_id=n_title", prompt)
         self.assertNotIn("needle source", prompt)
+
+    def test_reader_renderer_prompt_uses_parseable_xml_blocks_for_sensitive_text(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.graph.nodes["n1"]["text"] = "Visible answer is A < B & C."
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
+            state.execute(OpenNode("n1"))
+
+            content = ReaderRenderer(
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "compact"}}}),
+                include_page_images=False,
+            ).render(
+                "longdocurl",
+                {"question": "Which answer contains < and &?"},
+                state,
+            )
+
+        prompt = content[0]["text"]
+        root = ET.fromstring(prompt)
+        self.assertEqual(root.find("question").text, "Which answer contains < and &?")
+        self.assertIn("Visible answer is A < B & C.", root.find(".//opened_evidence_text/evidence_text").text)
 
     def test_reader_renderer_compact_mode_limits_candidate_labels_to_locating_questions(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1282,8 +1436,8 @@ class MAGERAGTests(unittest.TestCase):
                 }
             }))
             builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(selected_actions=[{"candidate_index": 1, "candidate_id": "", "reason": "inspect"}]),
-                "<agent_decision><selected_actions><action index=\"1\"><reason>inspect</reason></action></selected_actions></agent_decision>",
+                EvaluatorDecision(selected_actions=[{"candidate_index": 1, "candidate_id": ""}]),
+                "<think>Select the first useful node.</think><agent_decision><selected_actions><action index=\"1\"/></selected_actions></agent_decision>",
             )
 
             builder._run_agent("mmlongbench", "question", state, client=object())
@@ -1294,7 +1448,7 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("state_snapshot_before", decision_trace)
         executed = next(item for item in state.trace if item.get("action") == "ActivateNode")
         self.assertEqual(executed["selection"]["candidate_index"], 1)
-        self.assertEqual(executed["selection"]["reason"], "inspect")
+        self.assertNotIn("reason", executed["selection"])
         self.assertIn("state_snapshot_after", executed)
         self.assertIn("n1", executed["state_snapshot_after"]["active_node_ids"])
 
@@ -1356,8 +1510,8 @@ class MAGERAGTests(unittest.TestCase):
                 {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
             )
             builder.evaluator.call = lambda client, question, state, candidates: (
-                EvaluatorDecision(stop=True, reason="done"),
-                "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                EvaluatorDecision(stop=True),
+                "<agent_decision><stop>true</stop></agent_decision>",
             )
 
             messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "Q?"}, client=object())
@@ -1408,8 +1562,8 @@ class MAGERAGTests(unittest.TestCase):
                         "<agent_decision><selected_actions><action candidate_id=\"act:ActivateNode:n_title\"/><action candidate_id=\"act:ActivateNode:n1\"/></selected_actions></agent_decision>",
                     )
                 return (
-                    EvaluatorDecision(stop=True, reason="done"),
-                    "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                    EvaluatorDecision(stop=True),
+                    "<agent_decision><stop>true</stop></agent_decision>",
                 )
 
             builder.evaluator.call = fake_call
@@ -1463,8 +1617,8 @@ class MAGERAGTests(unittest.TestCase):
                         "<agent_decision><selected_actions><action candidate_id=\"act:ActivateNode:n_title\"/><action candidate_id=\"act:ActivateNode:n1\"/></selected_actions></agent_decision>",
                     )
                 return (
-                    EvaluatorDecision(stop=True, reason="done"),
-                    "<agent_decision><stop>true</stop><reason>done</reason></agent_decision>",
+                    EvaluatorDecision(stop=True),
+                    "<agent_decision><stop>true</stop></agent_decision>",
                 )
 
             builder.evaluator.call = fake_call
@@ -1477,466 +1631,6 @@ class MAGERAGTests(unittest.TestCase):
 
         self.assertIn("n_title", messages.metadata["opened_node_ids"])
         self.assertIn("n1", messages.metadata["opened_node_ids"])
-
-    def test_mmlongbench_opens_nodes_on_explicit_question_page(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_root = os.path.join(tmp_dir, "graphs")
-            graph_dir = os.path.join(graph_root, "sample")
-            os.makedirs(graph_dir, exist_ok=True)
-            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
-                json.dump({"doc_id": "sample"}, f)
-            nodes = [
-                {
-                    "id": "page1_text",
-                    "type": "paragraph",
-                    "doc_id": "sample",
-                    "page_index": 0,
-                    "abstract": "irrelevant retrieved page",
-                    "text": "irrelevant retrieved page",
-                },
-                {
-                    "id": "page98_table",
-                    "type": "table",
-                    "doc_id": "sample",
-                    "page_index": 97,
-                    "abstract": "file size table on page 98",
-                    "text": "<table><tr><td>file</td><td>size</td></tr></table>",
-                },
-            ]
-            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
-                for node in nodes:
-                    f.write(json.dumps(node) + "\n")
-            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
-            cfg = OmegaConf.create({
-                "baselines": {
-                    "name": "magerag",
-                    "params": {},
-                },
-                "benchmarks": {
-                    "name": "mmlongbench",
-                    "evidence_graph_dir": graph_root,
-                    "max_pages": 100,
-                    "resolution": 144,
-                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
-                },
-            })
-            builder = MAGERAGContextBuilder(cfg)
-            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 100
-            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
-                [{"page_index": 0, "page_number": 1, "score": 2.0}],
-                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
-            )
-
-            messages = builder.build(
-                "mmlongbench",
-                {
-                    "doc_id": "sample.pdf",
-                    "question_id": "q1",
-                    "question": "What is the sum of the two smallest file sizes in the table on page 98?",
-                },
-            )
-
-        self.assertIn(97, messages.metadata["activated_pages"])
-        self.assertIn("page98_table", messages.metadata["opened_node_ids"])
-        self.assertTrue(any(
-            item.get("action") == "AutoOpenQuestionPage"
-            and item.get("page_index") == 97
-            and item.get("opened_node_ids") == ["page98_table"]
-            for item in messages.metadata["iteration_trace"]
-        ))
-
-    def test_question_page_indices_handles_conjoined_page_numbers(self):
-        indices = _question_page_indices("What are the overlapped apps between page 21 and 62?")
-
-        self.assertEqual(indices, [20, 61])
-
-    def test_named_scope_specs_ignore_figure_preposition_as_label(self):
-        specs = _question_named_scope_specs(
-            "List the number of people in the figure in page 6 and legends in Figure A."
-        )
-
-        self.assertNotIn({"kind": "figure", "label": "in"}, specs)
-        self.assertIn({"kind": "figure", "label": "A"}, specs)
-
-    def test_named_scope_specs_detect_case_insensitive_section(self):
-        section_specs = _question_named_scope_specs(
-            "How many website URLs are included in the Section Internet Industry in the slides?"
-        )
-
-        self.assertIn({"kind": "section", "label": "Internet Industry"}, section_specs)
-
-    def test_named_scope_specs_detect_numeric_section_and_appendix(self):
-        section_specs = _question_named_scope_specs("How many papers are not mentioned in Section 3.4?")
-        appendix_specs = _question_named_scope_specs("Among the tables in Appendix, how many columns?")
-
-        self.assertIn({"kind": "section", "label": "3.4"}, section_specs)
-        self.assertIn({"kind": "section", "label": "Appendix"}, appendix_specs)
-
-    def test_mmlongbench_opens_nodes_on_conjoined_explicit_question_pages(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_root = os.path.join(tmp_dir, "graphs")
-            graph_dir = os.path.join(graph_root, "sample")
-            os.makedirs(graph_dir, exist_ok=True)
-            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
-                json.dump({"doc_id": "sample"}, f)
-            nodes = [
-                {
-                    "id": "page21_apps",
-                    "type": "image",
-                    "doc_id": "sample",
-                    "page_index": 20,
-                    "abstract": "VIDEO, SLIDESHARE, CONTENT, TWITTER, LINKEDIN, PODCAST",
-                },
-                {
-                    "id": "page62_apps",
-                    "type": "image",
-                    "doc_id": "sample",
-                    "page_index": 61,
-                    "abstract": "SLIDESHARE, TWITTER, LINKEDIN, PODCAST",
-                },
-            ]
-            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
-                for node in nodes:
-                    f.write(json.dumps(node) + "\n")
-            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
-            cfg = OmegaConf.create({
-                "baselines": {
-                    "name": "magerag",
-                    "params": {},
-                },
-                "benchmarks": {
-                    "name": "mmlongbench",
-                    "evidence_graph_dir": graph_root,
-                    "max_pages": 80,
-                    "resolution": 144,
-                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
-                },
-            })
-            builder = MAGERAGContextBuilder(cfg)
-            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 80
-            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
-                [{"page_index": 0, "page_number": 1, "score": 2.0}],
-                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
-            )
-
-            messages = builder.build(
-                "mmlongbench",
-                {
-                    "doc_id": "sample.pdf",
-                    "question_id": "q1",
-                    "question": "What are the overlapped apps between page 21 and 62?",
-                },
-            )
-
-        self.assertIn(20, messages.metadata["activated_pages"])
-        self.assertIn(61, messages.metadata["activated_pages"])
-        self.assertIn("page21_apps", messages.metadata["opened_node_ids"])
-        self.assertIn("page62_apps", messages.metadata["opened_node_ids"])
-
-    def test_mmlongbench_opens_named_figure_scope_even_when_initial_retrieval_misses_it(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_root = os.path.join(tmp_dir, "graphs")
-            graph_dir = os.path.join(graph_root, "sample")
-            os.makedirs(graph_dir, exist_ok=True)
-            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
-                json.dump({"doc_id": "sample"}, f)
-            nodes = [
-                {
-                    "id": "page1_text",
-                    "type": "paragraph",
-                    "doc_id": "sample",
-                    "page_index": 0,
-                    "abstract": "irrelevant retrieved page",
-                    "text": "irrelevant retrieved page",
-                },
-                {
-                    "id": "figure5",
-                    "type": "figure",
-                    "doc_id": "sample",
-                    "page_index": 4,
-                    "abstract": "Figure 5. Clustering colors with red and blue lines.",
-                    "text": "Figure 5. Clustering colors with red and blue lines.",
-                },
-            ]
-            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
-                for node in nodes:
-                    f.write(json.dumps(node) + "\n")
-            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
-            cfg = OmegaConf.create({
-                "baselines": {
-                    "name": "magerag",
-                    "params": {},
-                },
-                "benchmarks": {
-                    "name": "mmlongbench",
-                    "evidence_graph_dir": graph_root,
-                    "max_pages": 8,
-                    "resolution": 144,
-                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
-                },
-            })
-            builder = MAGERAGContextBuilder(cfg)
-            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 8
-            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
-                [{"page_index": 0, "page_number": 1, "score": 2.0}],
-                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
-            )
-
-            messages = builder.build(
-                "mmlongbench",
-                {
-                    "doc_id": "sample.pdf",
-                    "question_id": "q1",
-                    "question": "Which line color in Figure 5 has no intersection?",
-                },
-            )
-
-        self.assertIn(4, messages.metadata["activated_pages"])
-        self.assertIn("figure5", messages.metadata["opened_node_ids"])
-        self.assertTrue(any(
-            item.get("action") == "AutoOpenNamedQuestionScope"
-            and item.get("kind") == "figure"
-            and item.get("label") == "5"
-            and item.get("page_index") == 4
-            for item in messages.metadata["iteration_trace"]
-        ))
-
-    def test_mmlongbench_opens_quoted_section_scope_and_following_page(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_root = os.path.join(tmp_dir, "graphs")
-            graph_dir = os.path.join(graph_root, "sample")
-            os.makedirs(graph_dir, exist_ok=True)
-            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
-                json.dump({"doc_id": "sample"}, f)
-            nodes = [
-                {
-                    "id": "page1_text",
-                    "type": "paragraph",
-                    "doc_id": "sample",
-                    "page_index": 0,
-                    "abstract": "irrelevant retrieved page",
-                    "text": "irrelevant retrieved page",
-                },
-                {
-                    "id": "internet_title",
-                    "type": "title",
-                    "doc_id": "sample",
-                    "page_index": 17,
-                    "abstract": "Internet Industry",
-                    "text": "Internet Industry",
-                },
-                {
-                    "id": "internet_urls",
-                    "type": "table",
-                    "doc_id": "sample",
-                    "page_index": 18,
-                    "abstract": "Website URLs listed for Internet Industry",
-                    "text": "example.com other.example",
-                },
-            ]
-            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
-                for node in nodes:
-                    f.write(json.dumps(node) + "\n")
-            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
-            cfg = OmegaConf.create({
-                "baselines": {
-                    "name": "magerag",
-                    "params": {},
-                },
-                "benchmarks": {
-                    "name": "mmlongbench",
-                    "evidence_graph_dir": graph_root,
-                    "max_pages": 24,
-                    "resolution": 144,
-                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
-                },
-            })
-            builder = MAGERAGContextBuilder(cfg)
-            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 24
-            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
-                [{"page_index": 0, "page_number": 1, "score": 2.0}],
-                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
-            )
-
-            messages = builder.build(
-                "mmlongbench",
-                {
-                    "doc_id": "sample.pdf",
-                    "question_id": "q1",
-                    "question": 'How many website URLs are in the section "Internet Industry"?',
-                },
-            )
-
-        self.assertIn(17, messages.metadata["activated_pages"])
-        self.assertIn("internet_title", messages.metadata["opened_node_ids"])
-        self.assertIn("internet_urls", messages.metadata["opened_node_ids"])
-
-    def test_mmlongbench_opens_faq_scope_and_following_question_pages(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_root = os.path.join(tmp_dir, "graphs")
-            graph_dir = os.path.join(graph_root, "sample")
-            os.makedirs(graph_dir, exist_ok=True)
-            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
-                json.dump({"doc_id": "sample"}, f)
-            nodes = [
-                {
-                    "id": "page1_text",
-                    "type": "paragraph",
-                    "doc_id": "sample",
-                    "page_index": 0,
-                    "abstract": "irrelevant retrieved page",
-                    "text": "irrelevant retrieved page",
-                },
-                {
-                    "id": "faq_heading",
-                    "type": "title",
-                    "doc_id": "sample",
-                    "page_index": 23,
-                    "abstract": "Frequently Asked Questions section heading.",
-                    "text": "Frequently Asked Questions",
-                },
-                {
-                    "id": "first_faq",
-                    "type": "title",
-                    "doc_id": "sample",
-                    "page_index": 24,
-                    "abstract": "What happens to my certification?",
-                    "text": "What happens to my certification?",
-                },
-                {
-                    "id": "second_faq",
-                    "type": "title",
-                    "doc_id": "sample",
-                    "page_index": 25,
-                    "abstract": "Next-Gen Recruiter seems to eliminate Boolean Search.",
-                    "text": "Next-Gen Recruiter seems to eliminate Boolean Search.",
-                },
-            ]
-            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
-                for node in nodes:
-                    f.write(json.dumps(node) + "\n")
-            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
-            cfg = OmegaConf.create({
-                "baselines": {
-                    "name": "magerag",
-                    "params": {},
-                },
-                "benchmarks": {
-                    "name": "mmlongbench",
-                    "evidence_graph_dir": graph_root,
-                    "max_pages": 30,
-                    "resolution": 144,
-                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
-                },
-            })
-            builder = MAGERAGContextBuilder(cfg)
-            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 30
-            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
-                [{"page_index": 0, "page_number": 1, "score": 2.0}],
-                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
-            )
-
-            messages = builder.build(
-                "mmlongbench",
-                {
-                    "doc_id": "sample.pdf",
-                    "question_id": "q1",
-                    "question": "What is the second FAQ shown in this slides?",
-                },
-            )
-
-        self.assertIn("faq_heading", messages.metadata["opened_node_ids"])
-        self.assertIn("first_faq", messages.metadata["opened_node_ids"])
-        self.assertIn("second_faq", messages.metadata["opened_node_ids"])
-        self.assertTrue(any(
-            item.get("action") == "AutoOpenNamedQuestionScope"
-            and item.get("kind") == "faq"
-            and item.get("scope_page_indices") == [23, 24, 25, 26]
-            for item in messages.metadata["iteration_trace"]
-        ))
-
-    def test_mmlongbench_limits_quoted_scope_to_explicit_question_page(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            graph_root = os.path.join(tmp_dir, "graphs")
-            graph_dir = os.path.join(graph_root, "sample")
-            os.makedirs(graph_dir, exist_ok=True)
-            with open(os.path.join(graph_dir, "graph.json"), "w", encoding="utf-8") as f:
-                json.dump({"doc_id": "sample"}, f)
-            nodes = [
-                {
-                    "id": "page1_text",
-                    "type": "paragraph",
-                    "doc_id": "sample",
-                    "page_index": 0,
-                    "abstract": "irrelevant retrieved page",
-                    "text": "irrelevant retrieved page",
-                },
-                {
-                    "id": "target_scope",
-                    "type": "title",
-                    "doc_id": "sample",
-                    "page_index": 8,
-                    "abstract": "Self-Correction section heading.",
-                    "text": "Self-Correction",
-                },
-                {
-                    "id": "later_scope",
-                    "type": "title",
-                    "doc_id": "sample",
-                    "page_index": 11,
-                    "abstract": "Self-Correction mentioned again.",
-                    "text": "Self-Correction",
-                },
-                {
-                    "id": "later_noise",
-                    "type": "paragraph",
-                    "doc_id": "sample",
-                    "page_index": 12,
-                    "abstract": "unrelated later content",
-                    "text": "unrelated later content",
-                },
-            ]
-            with open(os.path.join(graph_dir, "nodes.jsonl"), "w", encoding="utf-8") as f:
-                for node in nodes:
-                    f.write(json.dumps(node) + "\n")
-            Path(os.path.join(graph_dir, "edges.jsonl")).write_text("", encoding="utf-8")
-            cfg = OmegaConf.create({
-                "baselines": {
-                    "name": "magerag",
-                    "params": {},
-                },
-                "benchmarks": {
-                    "name": "mmlongbench",
-                    "evidence_graph_dir": graph_root,
-                    "max_pages": 16,
-                    "resolution": 144,
-                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
-                },
-            })
-            builder = MAGERAGContextBuilder(cfg)
-            builder.retriever.embedding_page_count = lambda benchmark_name, sample: 16
-            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
-                [{"page_index": 0, "page_number": 1, "score": 2.0}],
-                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
-            )
-
-            messages = builder.build(
-                "mmlongbench",
-                {
-                    "doc_id": "sample.pdf",
-                    "question_id": "q1",
-                    "question": 'How many papers are not mentioned in the "Self-Correction" section of page 9?',
-                },
-            )
-
-        self.assertIn("target_scope", messages.metadata["opened_node_ids"])
-        self.assertNotIn("later_noise", messages.metadata["opened_node_ids"])
-        self.assertTrue(any(
-            item.get("action") == "AutoOpenNamedQuestionScope"
-            and item.get("kind") == "quoted_scope"
-            and item.get("scope_page_indices") == [8]
-            for item in messages.metadata["iteration_trace"]
-        ))
 
     def test_renderer_can_disable_opened_node_text_for_mmlongbench_only(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -2011,6 +1705,8 @@ class MAGERAGTests(unittest.TestCase):
             json.dump({"doc_id": "sample"}, f)
         text = ("x" * 9000) if long_text else "needle source evidence"
         nodes = [
+            {"id": "page:0", "type": "page", "doc_id": "sample", "page_index": 0, "abstract": "Document page 1", "text": "Page one evidence"},
+            {"id": "page:1", "type": "page", "doc_id": "sample", "page_index": 1, "abstract": "Document page 2", "text": "Page two evidence"},
             {"id": "n1", "type": "paragraph", "doc_id": "sample", "page_index": 0, "abstract": "needle source", "text": text},
             {"id": "n3", "type": "paragraph", "doc_id": "sample", "page_index": 0, "abstract": "needle sibling", "text": "sibling evidence"},
             {"id": "n_title", "type": "title", "doc_id": "sample", "page_index": 0, "abstract": "Important Section Title", "text": "Important Section Title"},

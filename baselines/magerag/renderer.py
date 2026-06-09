@@ -7,6 +7,7 @@ from baselines.image import VISION_SYSTEM_PROMPT
 from benchmarks.utils.document_preprocess import encode_image_file_to_base64, encode_pil_image_to_base64
 from benchmarks.utils.data_utils import mmlongbench_png_page_path
 from utils.config_utils import get_config_value, require_config_value
+from utils.llm_utils import xml_block
 
 
 class ReaderRenderer:
@@ -116,28 +117,27 @@ class ReaderRenderer:
             lines.append(
                 f'    <node provenance_id="{_esc_xml(node_id)}" type="{_esc_xml(node.get("type", ""))}" '
                 f'page="{state.graph.node_page_index(node) + 1}">'
-                f"<abstract>{_esc_xml(node.get('abstract', ''))}</abstract></node>"
+                f'{xml_block("abstract", node.get("abstract", ""), escape=True, inline=True)}</node>'
             )
         lines.append("  </active_evidence_graph>")
         lines.append("  <opened_evidence>")
         for node_id in state.opened_node_ids():
             node = state.graph.node(node_id)
             raw_text = state.graph.node_text(node_id)[: self.raw_text_limit]
-            lines.append(
-                f'    <evidence_item provenance_id="{_esc_xml(node_id)}" type="{_esc_xml(node.get("type", ""))}" '
-                f'page="{state.graph.node_page_index(node) + 1}" bbox="{_esc_xml(node.get("bbox"))}">'
-                f"{_esc_xml(raw_text)}</evidence_item>"
-            )
+            lines.append(xml_block(
+                "evidence_item",
+                raw_text,
+                attributes={
+                    "provenance_id": node_id,
+                    "type": node.get("type", ""),
+                    "page": state.graph.node_page_index(node) + 1,
+                    "bbox": node.get("bbox"),
+                },
+                escape=True,
+                inline=True,
+                indent=4,
+            ))
         lines.append("  </opened_evidence>")
-        if state.summaries:
-            lines.append("  <online_summaries>")
-            for summary in state.summaries:
-                lines.append(
-                    f'    <summary id="{_esc_xml(summary["summary_id"])}" '
-                    f'sources="{_esc_xml(",".join(summary.get("source_node_ids") or []))}">'
-                    f'{_esc_xml(summary.get("text", ""))}</summary>'
-                )
-            lines.append("  </online_summaries>")
         lines.append("</reader_prompt>")
         return "\n".join(lines)
 
@@ -160,27 +160,40 @@ class ReaderRenderer:
         page_numbers = [page_index + 1 for page_index in self._reader_page_indices(state)]
         lines = [
             "<reader_prompt>",
-            f"  <task>{_esc_xml(VISION_SYSTEM_PROMPT.strip())} Answer the question using only provided document evidence.</task>",
-            f"  <question>{_esc_xml(question)}</question>",
-            f"  <retrieved_pages>{_esc_xml(', '.join(str(page_number) for page_number in page_numbers))}</retrieved_pages>",
-            "  <evidence_policy>",
-            "    Use document images as primary evidence. Use retrieved text and OCR snippets as supporting hints.",
-            "    If visual evidence conflicts with text snippets, trust the visible document content.",
-            "    Do not use outside knowledge or infer facts not supported by provided evidence.",
-            "  </evidence_policy>",
-            "  <answer_policy>",
-            f"    If the answer cannot be found, answer exactly: {self.not_answerable_text}",
-            "    Do not answer with None, null, [], or an empty string.",
-            "    Do not answer with evidence node ids, page ids, block ids, or bracketed provenance labels.",
-            "    Return only the final answer. If the question asks for multiple items, include every item supported by the evidence.",
-            "  </answer_policy>",
+            xml_block(
+                "task",
+                f"{VISION_SYSTEM_PROMPT.strip()} Answer the question using only provided document evidence.",
+                escape=True,
+                inline=True,
+                indent=2,
+            ),
+            xml_block("question", question, escape=True, inline=True, indent=2),
+            xml_block("retrieved_pages", ", ".join(str(page_number) for page_number in page_numbers), escape=True, inline=True, indent=2),
+            xml_block(
+                "evidence_policy",
+                "Use document images as primary evidence. Use retrieved text and OCR snippets as supporting hints.\n"
+                "If visual evidence conflicts with text snippets, trust the visible document content.\n"
+                "Do not use outside knowledge or infer facts not supported by provided evidence.",
+                escape=True,
+                indent=2,
+            ),
+            xml_block(
+                "answer_policy",
+                f"If the answer cannot be found, answer exactly: {self.not_answerable_text}\n"
+                "Do not answer with None, null, [], or an empty string.\n"
+                "Do not answer with evidence node ids, page ids, block ids, or bracketed provenance labels.\n"
+                "Return only the final answer. If the question asks for multiple items, include every item supported by the evidence.",
+                escape=True,
+                indent=2,
+            ),
         ]
         if self.include_self_check_instruction:
-            lines.extend([
-                "  <self_check>",
-                "    Before answering, verify that the answer is directly supported by the provided image or text evidence.",
-                "  </self_check>",
-            ])
+            lines.append(xml_block(
+                "self_check",
+                "Before answering, verify that the answer is directly supported by the provided image or text evidence.",
+                escape=True,
+                indent=2,
+            ))
         return "\n".join(lines)
 
     def _include_opened_text_for(self, benchmark_name: str) -> bool:
@@ -212,9 +225,14 @@ class ReaderRenderer:
             text = " ".join(str(text).split())
             if not text:
                 continue
-            snippets.append(
-                f'    <page_text page="{page_index + 1}">{_esc_xml(text[: self.mmlongbench_page_text_char_limit])}</page_text>'
-            )
+            snippets.append(xml_block(
+                "page_text",
+                text[: self.mmlongbench_page_text_char_limit],
+                attributes={"page": page_index + 1},
+                escape=True,
+                inline=True,
+                indent=4,
+            ))
         return snippets
 
     def _opened_node_text_snippets(self, state) -> list[str]:
@@ -227,10 +245,14 @@ class ReaderRenderer:
                 continue
             node_type = str(node.get("type") or "")
             page_number = state.graph.node_page_index(node) + 1
-            snippets.append(
-                f'    <evidence_text page="{page_number}" type="{_esc_xml(node_type)}">'
-                f'{_esc_xml(text[: self.opened_node_text_char_limit])}</evidence_text>'
-            )
+            snippets.append(xml_block(
+                "evidence_text",
+                text[: self.opened_node_text_char_limit],
+                attributes={"page": page_number, "type": node_type},
+                escape=True,
+                inline=True,
+                indent=4,
+            ))
         return snippets
 
     def _reader_page_indices(self, state) -> list[int]:

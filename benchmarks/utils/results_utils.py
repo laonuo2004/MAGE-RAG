@@ -4,12 +4,15 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from omegaconf import ListConfig
+
 from utils.config_utils import get_config_value, require_config_value
 
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_ROOT = REPO_ROOT / "results"
+_MISSING = object()
 
 
 def sanitize_name(value: Any) -> str:
@@ -20,10 +23,26 @@ def sanitize_name(value: Any) -> str:
 
 
 def result_param_parts(cfg) -> List[Tuple[str, Any]]:
+    result_name_params = get_config_value(cfg, "baselines.result_name_params")
+    if result_name_params is not None:
+        return [_result_name_param_part(cfg, str(path)) for path in list(result_name_params)]
     params = get_config_value(cfg, "baselines.params")
     if params is None:
         return []
     return list(params.items())
+
+
+def _result_name_param_part(cfg, path: str) -> Tuple[str, Any]:
+    path = path.strip()
+    if not path:
+        raise ValueError("Empty result_name_params entry")
+    key = path.split(".")[-1]
+    value = get_config_value(cfg, f"baselines.{path}", _MISSING)
+    if value is _MISSING:
+        raise ValueError(f"Missing result_name_params config value: baselines.{path}")
+    if isinstance(value, (dict, list, ListConfig)):
+        raise ValueError(f"result_name_params must reference scalar values: baselines.{path}")
+    return key, value
 
 
 def build_results_file(cfg) -> Path:

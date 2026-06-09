@@ -8,6 +8,7 @@ from baselines.m3docrag_iterate import M3DocRAGIterateContextBuilder
 from baselines.m3docrag_iterate_query import M3DocRAGIterateQueryContextBuilder
 from baselines.magerag import MAGERAGContextBuilder
 from baselines.g2reader import G2ReaderContextBuilder
+from baselines.evisrag import EVisRAGContextBuilder
 from utils.config_utils import require_config_value
 
 _CONTEXT_BUILDERS = {
@@ -21,6 +22,7 @@ _CONTEXT_BUILDERS = {
     'm3docrag-iterate-query': M3DocRAGIterateQueryContextBuilder,
     'magerag': MAGERAGContextBuilder,
     'g2-reader': G2ReaderContextBuilder,
+    'evisrag': EVisRAGContextBuilder,
 }
 
 

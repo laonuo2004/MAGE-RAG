@@ -7,6 +7,8 @@ from benchmarks.evidence_graph.writer import load_graph_artifacts
 
 
 PAGE_NODE_TYPE = "page"
+BIDIRECTIONAL_EDGE_TYPES = {"reading_order", "section_hierarchy"}
+BIDIRECTIONAL_LAYOUT_RELATIONS = {"left_of", "right_of"}
 
 
 class EvidenceGraphStore:
@@ -34,27 +36,6 @@ class EvidenceGraphStore:
             page_index = self.node_page_index(node)
             if self.is_page_node(node):
                 self.page_nodes[page_index] = node_id
-        self._ensure_page_nodes()
-
-    def _ensure_page_nodes(self):
-        # 有些解析产物只包含页面内元素，没有显式 page 节点。
-        # Online 阶段必须先激活 page 再激活元素，所以这里补 synthetic page node。
-        page_indices = {self.node_page_index(node) for node in self.nodes.values()}
-        if self.allowed_pages is not None:
-            page_indices |= self.allowed_pages
-        for page_index in sorted(page_indices):
-            if page_index in self.page_nodes:
-                continue
-            node_id = f"page:{page_index}"
-            self.nodes[node_id] = {
-                "id": node_id,
-                "type": PAGE_NODE_TYPE,
-                "doc_id": str(self.metadata.get("doc_id") or self.metadata.get("doc_key") or ""),
-                "page_index": page_index,
-                "abstract": f"Document page {page_index + 1}",
-                "metadata": {"synthetic": True},
-            }
-            self.page_nodes[page_index] = node_id
 
     def is_page_allowed(self, page_index: int) -> bool:
         return bool(self.allowed_pages is None or int(page_index) in self.allowed_pages)
@@ -76,6 +57,13 @@ class EvidenceGraphStore:
             return self.edges[str(edge_id)]
         except KeyError as exc:
             raise KeyError(f"Unknown evidence edge: {edge_id}") from exc
+
+    def is_logically_bidirectional_edge(self, edge: dict[str, Any]) -> bool:
+        edge_type = str(edge.get("type") or "").lower()
+        relation = str(edge.get("relation") or "").lower()
+        if edge_type in BIDIRECTIONAL_EDGE_TYPES:
+            return True
+        return edge_type == "layout" and relation in BIDIRECTIONAL_LAYOUT_RELATIONS
 
     def node_page_index(self, node: dict[str, Any] | str) -> int:
         if isinstance(node, str):

@@ -114,7 +114,7 @@ class m3docragContextBuilder(ContextBuilder):
 
     def _retrieve_pages(self, doc_embeddings, query_embedding, allowed_pages):
         if not allowed_pages:
-            raise ValueError('M3DocRAG retrieval has no allowed pages after applying benchmark page mask.')
+            raise ValueError('Retrieval has no allowed pages.')
         candidate_page_embs = doc_embeddings[allowed_pages]
         sim = torch.einsum('qd,ptd->qpt', query_embedding, candidate_page_embs)
         scores = sim.max(dim=2).values.sum(dim=0)

@@ -18,3 +18,4 @@ correction_model_name: Qwen3-VL-8B-Instruct
 max_pages: 120
 resolution: 144
 results_file: null
+limit: null

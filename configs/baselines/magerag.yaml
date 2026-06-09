@@ -1,7 +1,11 @@
 name: magerag
 
 params:
-  top_k: 5
+  top_k: 3
+
+result_name_params:
+  - params.top_k
+  - controller.watchdog_iterations
 
 models:
   evaluator: Qwen3-VL-8B-Instruct
@@ -11,21 +15,16 @@ evaluator:
   retries: 2
   prompt_style: structured
   include_few_shot_examples: true
-  reason_max_words: 30
   raw_text_char_limit: 1200
   include_opened_node_images: false
-  max_candidate_actions: 120
-  max_selected_actions_per_iteration: 4
+  max_selected_actions_per_iteration: 3
   max_total_selected_actions: 24
   candidate_preview_char_limit: 160
 
 controller:
   watchdog_iterations: 6
   watchdog_repeated_noop_rounds: 2
-  auto_open_max_nodes_per_page: 24
   final_open_active_node_limit: 16
-  final_open_active_node_limit_longdocurl: 24
-  final_open_active_node_limit_mmlongbench: 8
 
 reader:
   mode: compact

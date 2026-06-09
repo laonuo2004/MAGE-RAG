@@ -57,6 +57,12 @@ class WriteFailureAdapter(DummyAdapter):
 
 
 class RunnerResultsTests(unittest.TestCase):
+    def test_all_baseline_configs_declare_result_name_params(self):
+        for path in sorted(Path("configs/baselines").glob("*.yaml")):
+            with self.subTest(path=str(path)):
+                cfg = OmegaConf.load(path)
+                self.assertIn("result_name_params", cfg)
+
     def test_stable_result_paths_partition_by_baseline_dir(self):
         cfg = OmegaConf.create({
             "benchmarks": {"name": "mmlongbench", "qa_model_name": "Qwen3-VL-8B-Instruct"},
@@ -88,6 +94,67 @@ class RunnerResultsTests(unittest.TestCase):
         })
 
         self.assertNotEqual(build_results_file(cfg_a), build_results_file(cfg_b))
+
+    def test_result_name_params_select_nested_config_values(self):
+        cfg = OmegaConf.create({
+            "benchmarks": {"name": "mmlongbench", "qa_model_name": "model"},
+            "baselines": {
+                "name": "magerag",
+                "params": {"top_k": 3},
+                "controller": {"watchdog_iterations": 6},
+                "result_name_params": [
+                    "params.top_k",
+                    "controller.watchdog_iterations",
+                ],
+            },
+        })
+
+        self.assertEqual(
+            str(build_results_file(cfg)),
+            str(RESULTS_ROOT / "mmlongbench/magerag/res_top_k_3_watchdog_iterations_6_model.jsonl"),
+        )
+
+    def test_empty_result_name_params_uses_model_only_filename(self):
+        cfg = OmegaConf.create({
+            "benchmarks": {"name": "mmlongbench", "qa_model_name": "model"},
+            "baselines": {
+                "name": "image",
+                "result_name_params": [],
+            },
+        })
+
+        self.assertEqual(
+            str(build_results_file(cfg)),
+            str(RESULTS_ROOT / "mmlongbench/image/res_model.jsonl"),
+        )
+
+    def test_missing_result_name_param_path_raises(self):
+        cfg = OmegaConf.create({
+            "benchmarks": {"name": "mmlongbench", "qa_model_name": "model"},
+            "baselines": {
+                "name": "magerag",
+                "params": {"top_k": 3},
+                "result_name_params": ["controller.watchdog_iterations"],
+            },
+        })
+
+        with self.assertRaisesRegex(ValueError, "Missing result_name_params config value"):
+            build_results_file(cfg)
+
+    def test_result_name_params_preserve_null_values(self):
+        cfg = OmegaConf.create({
+            "benchmarks": {"name": "mmlongbench", "qa_model_name": "model"},
+            "baselines": {
+                "name": "bgem3",
+                "params": {"max_cross_pages": None},
+                "result_name_params": ["params.max_cross_pages"],
+            },
+        })
+
+        self.assertEqual(
+            str(build_results_file(cfg)),
+            str(RESULTS_ROOT / "mmlongbench/bgem3/res_max_cross_pages_None_model.jsonl"),
+        )
 
     def test_no_params_baseline_uses_model_only_filename(self):
         cfg = OmegaConf.create({

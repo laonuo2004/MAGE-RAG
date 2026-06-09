@@ -216,6 +216,10 @@ configs/litellm_config.yaml
 # PM2
 logs/
 
+# Local PostgreSQL data
+postgresql/
+*.prisma
+
 # Superpowers
 .superpowers/
 

@@ -2,3 +2,6 @@ name: m3docrag-iterate
 params:
   max_iterations: 5
   evaluator_model_name: Qwen3-VL-8B-Instruct
+result_name_params:
+  - params.max_iterations
+  - params.evaluator_model_name

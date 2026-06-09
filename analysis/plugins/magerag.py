@@ -25,6 +25,7 @@ class MAGERAGPlugin(AnalysisPlugin):
     def parameter_specs(self) -> tuple[ParameterSpec, ...]:
         return (
             ParameterSpec("top_k", "top-k pages", "int", numeric=True),
+            ParameterSpec("watchdog_iterations", "watchdog iterations", "int", numeric=True),
             ParameterSpec("evaluator_model_name", "evaluator model", "str"),
         )
 

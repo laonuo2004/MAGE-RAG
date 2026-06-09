@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import json
 import logging
 import os
 import re
@@ -12,7 +11,7 @@ from typing import Any
 from baselines.magerag.actions import CandidateAction
 from baselines.magerag.state import EvidenceAgentState
 from benchmarks.utils.document_preprocess import encode_image_file_to_base64
-from utils.llm_utils import call_llm_messages, completion_content
+from utils.llm_utils import call_llm_messages, completion_content, xml_block
 
 logger = logging.getLogger(__name__)
 
@@ -22,16 +21,15 @@ class EvaluatorDecision:
     """
     LLM evaluator 的结构化决策结果。
 
-    selected_actions 执行已有候选；search_query 是 Jump；prune/summarize 是对工作记忆的压缩。
+    selected_actions 执行已有 ActivateNode 候选；open/search/prune 是开放式请求。
     stop=True 只有在没有任何增益动作时才会结束 online expansion。
     """
 
     stop: bool = False
     selected_actions: list[dict[str, Any]] = field(default_factory=list)
+    open_requests: list[dict[str, str]] = field(default_factory=list)
     search_query: str | None = None
     prune_requests: list[dict[str, str]] = field(default_factory=list)
-    summarize_requests: list[dict[str, Any]] = field(default_factory=list)
-    reason: str = ""
 
 
 class XMLEvaluator:
@@ -49,76 +47,64 @@ class XMLEvaluator:
         retries: int = 1,
         raw_text_char_limit: int = 1200,
         include_images_for_opened_nodes: bool = False,
-        max_candidate_actions: int = 120,
         candidate_preview_char_limit: int = 160,
         max_selected_actions_per_iteration: int = 4,
         prompt_style: str = "structured",
         include_few_shot_examples: bool = True,
-        reason_max_words: int = 30,
     ):
         self.model_name = model_name
         self.temperature = float(temperature)
         self.retries = int(retries)
         self.raw_text_char_limit = int(raw_text_char_limit)
         self.include_images_for_opened_nodes = bool(include_images_for_opened_nodes)
-        self.max_candidate_actions = int(max_candidate_actions)
         self.candidate_preview_char_limit = int(candidate_preview_char_limit)
         self.max_selected_actions_per_iteration = max(1, int(max_selected_actions_per_iteration))
         self.prompt_style = str(prompt_style)
         self.include_few_shot_examples = bool(include_few_shot_examples)
-        self.reason_max_words = max(1, int(reason_max_words))
 
     def build_context_xml(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> str:
-        # XML context 是 evaluator 的“可观测状态”：已激活/打开/剪枝证据、最近 trace、候选动作。
-        # 大段原文只给 opened node，active node 只给 abstract，控制上下文噪声。
-        allowed_pages = sorted(state.graph.allowed_pages or [])
-        parts = ["<agent_step_context>", f"  <question>{_esc(question)}</question>"]
-        parts.append("  <allowed_scope>")
-        for page_index in allowed_pages:
-            parts.append(f'    <page index="{page_index}" number="{page_index + 1}"/>')
-        parts.append("  </allowed_scope>")
+        # XML context 是 evaluator 的“可观测状态”：按页面组织证据和候选动作。
+        parts = ["<agent_step_context>", xml_block("question", question, escape=True, inline=True, indent=2)]
         parts.append("  <evidence_state>")
-        parts.append("    <active_nodes>")
-        for node_id in state.active_node_ids():
-            parts.append(self._node_xml(state, node_id, detail=False))
-        parts.append("    </active_nodes>")
-        parts.append("    <opened_nodes>")
-        for node_id in state.opened_node_ids():
-            parts.append(self._node_xml(state, node_id, detail=True))
-        parts.append("    </opened_nodes>")
-        parts.append("    <pruned_nodes>")
-        for node_id in state.pruned_node_ids():
-            node = state.graph.node(node_id)
-            parts.append(
-                f'      <node id="{_esc(node_id)}" type="{_esc(node.get("type", ""))}">'
-                f"<reason>{_esc(state.prune_reasons.get(node_id, ''))}</reason></node>"
-            )
-        parts.append("    </pruned_nodes>")
-        parts.append("    <summaries>")
-        for summary in state.summaries:
-            source_ids = ",".join(summary.get("source_node_ids") or [])
-            parts.append(
-                f'      <summary id="{_esc(summary["summary_id"])}" source_node_ids="{_esc(source_ids)}">'
-                f'{_esc(summary.get("text", ""))}</summary>'
-            )
-        parts.append("    </summaries>")
+        for page_id in self._context_page_ids(state):
+            if state.state_of(page_id) == "Pruned":
+                continue
+            page = state.graph.node(page_id)
+            page_index = state.graph.node_page_index(page)
+            parts.append(f'    <page id="{_esc(page_id)}" index="{page_index}">')
+            parts.append("      " + xml_block("abstract", page.get("abstract", ""), escape=True, inline=True))
+            for node in state.graph.nodes_on_page(page_index):
+                node_id = str(node["id"])
+                node_state = state.state_of(node_id)
+                if node_state not in {"Active", "Opened", "Pruned"}:
+                    continue
+                parts.append(self._node_xml(state, node_id, node_state))
+            parts.append("    </page>")
         parts.append("  </evidence_state>")
-        parts.append(f"  <recent_trace>{_esc(json.dumps(_compact_recent_trace(state.trace[-5:]), ensure_ascii=False))}</recent_trace>")
+        parts.append(_recent_trace_xml(state.trace[-5:]))
         parts.append("  <candidate_actions>")
-        for index, candidate in enumerate(candidates[: self.max_candidate_actions], start=1):
-            attrs = " ".join(
-                f'{_esc(str(key))}="{_esc(str(value))}"'
-                for key, value in candidate.payload.items()
-                if key in {"node_id", "page_index", "edge_id"}
-            )
+        activate_candidates = [candidate for candidate in candidates if candidate.action_type == "ActivateNode"]
+        parts.append("    <ActivateNode>")
+        for index, candidate in enumerate(activate_candidates, start=1):
+            attrs_dict = _activate_candidate_xml_attrs(candidate)
+            attrs = " ".join(f'{_esc(str(key))}="{_esc(str(value))}"' for key, value in attrs_dict.items())
             if attrs:
                 attrs = " " + attrs
             parts.append(
-                f'    <action index="{index}" type="{_esc(candidate.action_type)}"{attrs}>'
-                f"<preview>{_esc(_truncate(candidate.preview, self.candidate_preview_char_limit))}</preview></action>"
+                f'      <action index="{index}"{attrs}>'
+                f'{xml_block("preview", _truncate(candidate.preview, self.candidate_preview_char_limit), escape=True, inline=True)}</action>'
             )
-        if not candidates:
-            parts.append("    <none/>")
+        if not activate_candidates:
+            parts.append("      <none/>")
+        parts.append("    </ActivateNode>")
+        parts.append('    <OpenNode><template>&lt;open_requests&gt;&lt;node id="active non-page node id"/&gt;&lt;/open_requests&gt;</template></OpenNode>')
+        parts.append('    <SearchEvidenceRequest><template>&lt;search_request&gt;&lt;query&gt;focused evidence query&lt;/query&gt;&lt;/search_request&gt;</template></SearchEvidenceRequest>')
+        parts.append(
+            '    <PruneNodeRequest><template>'
+            '&lt;prune_requests&gt;&lt;page id="visible page id"&gt;&lt;reason&gt;why remove the whole page&lt;/reason&gt;&lt;/page&gt;&lt;/prune_requests&gt;\n'
+            '&lt;prune_requests&gt;&lt;node id="visible element node id"&gt;&lt;reason&gt;why remove the element node&lt;/reason&gt;&lt;/node&gt;&lt;/prune_requests&gt;'
+            '</template></PruneNodeRequest>'
+        )
         parts.append("  </candidate_actions>")
         parts.append("</agent_step_context>")
         return "\n".join(parts)
@@ -144,39 +130,62 @@ class XMLEvaluator:
     def build_prompt(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> str:
         parts = [
             "<evaluator_prompt>",
-            "  <role>You are the MAGE-RAG online evidence controller.</role>",
-            "  <objective>Select evidence actions that most improve the final document-grounded answer.</objective>",
-            "  <decision_policy>",
-            "    Prefer actions that can directly support, refute, or disambiguate the question.",
-            "    Avoid repeated, weakly related, or merely adjacent evidence when it adds no information.",
-            f"    Select at most {self.max_selected_actions_per_iteration} high-value actions per round.",
-            "    If opened evidence is already sufficient, stop instead of exploring low-value actions.",
-            "  </decision_policy>",
-            "  <grounding_policy>",
-            "    Base decisions only on the XML state, opened evidence, summaries, recent trace, and candidate actions.",
-            "    If evidence is insufficient and candidates are useful, select candidate action indexes.",
-            "    If candidates cannot improve the state, issue one focused search_request or stop when no useful search remains.",
-            "  </grounding_policy>",
-            "  <action_policy>",
-            "    Candidate actions are numbered with short integer indexes.",
-            "    To execute a candidate, write only <action index=\"...\"> inside <selected_actions>.",
-            "    Do not copy node_id, edge_id, page_index, or candidate id strings into selected actions.",
-            "    If <candidate_actions> contains <none/>, do not emit selected_actions.",
-            "  </action_policy>",
-            "  <reasoning_policy>",
-            "    Compare the question, opened evidence, and candidate previews internally before deciding.",
-            f"    Keep every visible <reason> concise, no more than {self.reason_max_words} words.",
-            "    Do not output a chain-of-thought transcript.",
-            "  </reasoning_policy>",
-            "  <output_schema>",
-            "    Return only one <agent_decision> XML document.",
-            "    Do not wrap the XML in Markdown or add explanatory prose.",
-            "    Do not emit top-level <action> elements.",
-            "    Valid children are <stop>, <selected_actions>, <search_request>, <prune_requests>, <summarize_requests>, and <reason>.",
-            "  </output_schema>",
-            "  <self_check>",
-            "    Before returning, verify that the XML is parseable, action indexes exist in candidate_actions, and the decision follows the evidence state.",
-            "  </self_check>",
+            xml_block("role", "You are the MAGE-RAG online evidence controller.", escape=True, inline=True, indent=2),
+            xml_block("objective", "Select evidence actions that most improve the final document-grounded answer.", escape=True, inline=True, indent=2),
+            xml_block(
+                "decision_policy",
+                "Prefer actions that directly support, refute, complete, or disambiguate the question.\n"
+                "Continue expanding while any available action can improve final answer evidence.\n"
+                "Stop only when no ActivateNode, OpenNode, SearchEvidenceRequest, or PruneNodeRequest can improve the answer.\n"
+                f"Select at most {self.max_selected_actions_per_iteration} numbered ActivateNode actions per round.\n"
+                "The ActivateNode limit does not constrain OpenNode, SearchEvidenceRequest, or PruneNodeRequest.\n"
+                "Prune active or opened evidence that is distracting, harmful, useless, or consuming context without helping the answer.",
+                escape=True,
+                indent=2,
+            ),
+            xml_block(
+                "grounding_policy",
+                "Base decisions only on the XML state, opened evidence, recent trace, and candidate actions.\n"
+                "If useful numbered ActivateNode candidates exist, select their indexes.\n"
+                "If useful active non-page nodes exist, request OpenNode.\n"
+                "If useful evidence is missing from candidates, issue one focused SearchEvidenceRequest.",
+                escape=True,
+                indent=2,
+            ),
+            xml_block(
+                "action_policy",
+                "Numbered actions are only for ActivateNode candidates.\n"
+                'To execute numbered ActivateNode candidates, write <action index="..."/> inside <selected_actions>.\n'
+                "Use <open_requests> only for active non-page nodes visible in evidence_state.\n"
+                "Page nodes cannot be opened.\n"
+                "Page nodes and element nodes can be pruned.\n"
+                "Pruning a page removes that page and its element nodes from future context and candidate expansion.\n"
+                "Use one focused <search_request> when useful evidence is missing from candidates.\n"
+                "Each pruned node must include a concise <reason> explaining why it should be removed from working evidence.",
+                escape=True,
+                indent=2,
+            ),
+            xml_block(
+                "thinking_policy",
+                "Before deciding, output one <think>...</think> block with detailed deliberation.\n"
+                "Use think to compare the question, evidence_state, recent_trace, and candidate_actions.\n"
+                "Every OpenNode or PruneNodeRequest target must be copied from an existing <page> or <node> element in evidence_state.",
+                escape=True,
+                indent=2,
+            ),
+            xml_block(
+                "output_schema",
+                "After <think>, return exactly one <agent_decision> XML document.\n"
+                "Available children are <stop>, <selected_actions>, <open_requests>, <search_request>, and <prune_requests>.",
+                escape=True,
+                indent=2,
+            ),
+            xml_block(
+                "self_check",
+                "Before returning, verify that XML is parseable, selected indexes exist, open node ids are active non-page nodes, prune node ids exist in evidence_state, and stop is used only when no useful action remains.",
+                escape=True,
+                indent=2,
+            ),
         ]
         if self.include_few_shot_examples:
             parts.append(self._few_shot_examples_xml())
@@ -190,12 +199,29 @@ class XMLEvaluator:
         return "\n".join([
             "  <few_shot_examples>",
             "    <example>",
-            "      <situation>Opened evidence directly contains the needed answer support.</situation>",
-            "      <agent_decision><stop>true</stop><reason>Opened evidence is sufficient.</reason></agent_decision>",
+            "      <problem>When should you open an active element node?</problem>",
+            "      <example_input><question>Which publication is named as helpful?</question><evidence_state><page id=\"doc:page:10\" index=\"10\"><abstract>Helpful publications are introduced.</abstract><node id=\"doc:page:10:block:2:paragraph\" type=\"paragraph\" state=\"active\"><content>Other publications that were helpful include:</content></node></page></evidence_state><candidate_actions><ActivateNode><none/></ActivateNode><OpenNode><template>&lt;open_requests&gt;&lt;node id=\"active non-page node id\"/&gt;&lt;/open_requests&gt;</template></OpenNode></candidate_actions></example_input>",
+            "      <example_output><think>The active paragraph introduces the requested publications, but only its preview is visible. Opening it can expose the publication names.</think><agent_decision><open_requests><node id=\"doc:page:10:block:2:paragraph\"/></open_requests></agent_decision></example_output>",
             "    </example>",
             "    <example>",
-            "      <situation>Opened evidence is incomplete and action 1 previews directly relevant evidence.</situation>",
-            "      <agent_decision><selected_actions><action index=\"1\"><reason>Open the most relevant evidence.</reason></action></selected_actions></agent_decision>",
+            "      <problem>When should you perform a search?</problem>",
+            "      <example_input><question>Which city hosted the follow-up workshop?</question><evidence_state><page id=\"doc:page:2\" index=\"2\"><abstract>Initial workshop agenda.</abstract></page></evidence_state><candidate_actions><ActivateNode><action index=\"1\" source=\"doc:page:2\" relation=\"reading_order\"><preview>Budget notes.</preview></action></ActivateNode></candidate_actions></example_input>",
+            "      <example_output><think>The question asks for a follow-up workshop city. The available candidate is budget noise, so a focused search is more useful.</think><agent_decision><search_request><query>follow-up workshop hosted city</query></search_request></agent_decision></example_output>",
+            "    </example>",
+            "    <example>",
+            "      <problem>How should you prune an existing element node?</problem>",
+            "      <example_input><question>What medication dose is recommended for adults?</question><evidence_state><page id=\"doc:page:8\" index=\"8\"><abstract>Pediatric dosing table.</abstract><node id=\"doc:page:8:block:1:table\" type=\"table\" state=\"opened\"><content>Pediatric dose: 5 mg daily.</content></node></page></evidence_state><candidate_actions><ActivateNode><action index=\"1\" source=\"doc:page:9\" relation=\"reading_order\"><preview>Adult dosing table: recommended dose...</preview></action></ActivateNode></candidate_actions></example_input>",
+            "      <example_output><think>The opened table is pediatric and can mislead the adult-dose answer. Candidate 1 points to adult dosing, and the pediatric table should be removed.</think><agent_decision><selected_actions><action index=\"1\"/></selected_actions><prune_requests><node id=\"doc:page:8:block:1:table\"><reason>Pediatric dosing does not answer the adult-dose question.</reason></node></prune_requests></agent_decision></example_output>",
+            "    </example>",
+            "    <example>",
+            "      <problem>How should you prune an existing page node?</problem>",
+            "      <example_input><question>Which lab reported the final accuracy?</question><evidence_state><page id=\"doc:page:3\" index=\"3\"><abstract>Table of contents and publication credits.</abstract></page><page id=\"doc:page:7\" index=\"7\"><abstract>Experiment results mention the final accuracy table.</abstract></page></evidence_state><candidate_actions><ActivateNode><action index=\"1\" source=\"doc:page:7\" relation=\"containment\"><preview>Final accuracy by lab...</preview></action></ActivateNode><PruneNodeRequest><template>&lt;prune_requests&gt;&lt;page id=\"visible page id\"&gt;&lt;reason&gt;why remove the whole page&lt;/reason&gt;&lt;/page&gt;&lt;/prune_requests&gt;</template></PruneNodeRequest></candidate_actions></example_input>",
+            "      <example_output><think>Page 3 is visible in evidence_state but unrelated to the accuracy question. Candidate 1 can add relevant result evidence.</think><agent_decision><selected_actions><action index=\"1\"/></selected_actions><prune_requests><page id=\"doc:page:3\"><reason>Table of contents and credits do not help answer the accuracy question.</reason></page></prune_requests></agent_decision></example_output>",
+            "    </example>",
+            "    <example>",
+            "      <problem>When should you stop?</problem>",
+            "      <example_input><question>What is the reported total revenue?</question><evidence_state><page id=\"doc:page:12\" index=\"12\"><abstract>Total revenue table.</abstract><node id=\"doc:page:12:block:3:table\" type=\"table\" state=\"opened\"><content>Total revenue: $4.2 million.</content></node></page></evidence_state><candidate_actions><ActivateNode><action index=\"1\" source=\"doc:page:12\" relation=\"layout\"><preview>Page number footer.</preview></action></ActivateNode></candidate_actions></example_input>",
+            "      <example_output><think>The opened table directly contains the requested total revenue. The remaining candidate is a footer and cannot improve the answer.</think><agent_decision><stop>true</stop></agent_decision></example_output>",
             "    </example>",
             "  </few_shot_examples>",
         ])
@@ -212,29 +238,47 @@ class XMLEvaluator:
                     "payload": candidate.payload,
                     "preview": _truncate(candidate.preview, self.candidate_preview_char_limit),
                 }
-                for index, candidate in enumerate(candidates[: self.max_candidate_actions], start=1)
+                for index, candidate in enumerate(candidates, start=1)
             ],
             "opened_image_refs": self._opened_node_image_refs(state),
         }
 
-    def _node_xml(self, state: EvidenceAgentState, node_id: str, detail: bool) -> str:
+    def _context_page_ids(self, state: EvidenceAgentState) -> list[str]:
+        page_ids = set()
+        for node_id in state.active_node_ids() + state.opened_node_ids() + state.pruned_node_ids():
+            if node_id not in state.graph.nodes:
+                continue
+            node = state.graph.node(node_id)
+            page_id = node_id if state.graph.is_page_node(node) else state.graph.parent_page_node_id(node_id)
+            page_ids.add(page_id)
+        return sorted(page_ids, key=lambda page_id: (state.graph.node_page_index(page_id), page_id))
+
+    def _node_xml(self, state: EvidenceAgentState, node_id: str, node_state: str) -> str:
         node = state.graph.node(node_id)
         attrs = (
             f'id="{_esc(node_id)}" type="{_esc(node.get("type", ""))}" '
-            f'page_index="{state.graph.node_page_index(node)}"'
+            f'state="{_esc(node_state.lower())}"'
         )
-        body = [f"<abstract>{_esc(node.get('abstract', ''))}</abstract>"]
-        if detail:
+        if node_state == "Pruned":
+            body = [xml_block("content", state.prune_reasons.get(node_id, ""), escape=True, inline=True)]
+        elif node_state == "Opened":
             text = state.graph.node_text(node_id)
             truncated = len(text) > self.raw_text_char_limit
-            body.append(
-                f'<content truncated="{str(truncated).lower()}">'
-                f"{_esc(text[:self.raw_text_char_limit])}</content>"
-            )
+            body = [
+                xml_block(
+                    "content",
+                    text[:self.raw_text_char_limit],
+                    attributes={"truncated": truncated},
+                    escape=True,
+                    inline=True,
+                )
+            ]
             if node.get("bbox") is not None:
-                body.append(f"<bbox>{_esc(str(node.get('bbox')))}</bbox>")
+                body.append(xml_block("bbox", str(node.get("bbox")), escape=True, inline=True))
             if self._node_image_path(node):
                 body.append('<image ref="image_0"/>')
+        else:
+            body = [xml_block("content", node.get("abstract", ""), escape=True, inline=True)]
         return f"      <node {attrs}>{''.join(body)}</node>"
 
     def _opened_node_image_parts(self, state: EvidenceAgentState) -> list[dict[str, Any]]:
@@ -289,7 +333,7 @@ def parse_agent_decision_xml(raw_xml: str) -> EvaluatorDecision:
         return _parse_agent_decision_xml_loose(xml_text)
     if root.tag != "agent_decision":
         raise ValueError("Evaluator XML root must be <agent_decision>.")
-    decision = EvaluatorDecision(stop=_text_bool(root.findtext("stop")), reason=str(root.findtext("reason") or ""))
+    decision = EvaluatorDecision(stop=_text_bool(root.findtext("stop")))
     selected = root.find("selected_actions")
     if selected is not None:
         for action in selected.findall("action"):
@@ -297,35 +341,22 @@ def parse_agent_decision_xml(raw_xml: str) -> EvaluatorDecision:
                 "candidate_id": str(action.attrib.get("candidate_id") or ""),
                 "candidate_index": _optional_int(action.attrib.get("index") or action.attrib.get("candidate_index")),
                 "utility": str(action.attrib.get("utility") or ""),
-                "reason": str(action.findtext("reason") or ""),
             })
-    for action in root.findall("action"):
-        candidate_id = str(action.attrib.get("candidate_id") or action.attrib.get("id") or "")
-        candidate_index = _optional_int(action.attrib.get("index") or action.attrib.get("candidate_index"))
-        if candidate_id or candidate_index is not None:
-            decision.selected_actions.append({
-                "candidate_id": candidate_id,
-                "candidate_index": candidate_index,
-                "utility": str(action.attrib.get("utility") or ""),
-                "reason": str(action.findtext("reason") or ""),
-            })
+    open_requests = root.find("open_requests")
+    if open_requests is not None:
+        for node in open_requests.findall("node"):
+            decision.open_requests.append({"node_id": str(node.attrib.get("id") or "")})
     search_request = root.find("search_request")
     if search_request is not None and search_request.findtext("query") is not None:
         decision.search_query = str(search_request.findtext("query") or "")
     prune_requests = root.find("prune_requests")
     if prune_requests is not None:
-        for node in prune_requests.findall("node"):
+        for item in list(prune_requests):
+            if item.tag not in {"page", "node"}:
+                continue
             decision.prune_requests.append({
-                "node_id": str(node.attrib.get("id") or ""),
-                "reason": str(node.findtext("reason") or ""),
-            })
-    summarize_requests = root.find("summarize_requests")
-    if summarize_requests is not None:
-        for summary in summarize_requests.findall("summary"):
-            source_ids = [node_id.strip() for node_id in str(summary.attrib.get("source_node_ids") or "").split(",") if node_id.strip()]
-            decision.summarize_requests.append({
-                "source_node_ids": source_ids,
-                "goal": str(summary.findtext("goal") or ""),
+                "node_id": str(item.attrib.get("id") or ""),
+                "reason": str(item.findtext("reason") or ""),
             })
     return decision
 
@@ -334,7 +365,6 @@ def _parse_agent_decision_xml_loose(xml_text: str) -> EvaluatorDecision:
     text = str(xml_text or "")
     decision = EvaluatorDecision(
         stop=_text_bool(_first_tag_text(text, "stop")),
-        reason=_first_tag_text(text, "reason") or "",
     )
     selected_block = _first_tag_block(text, "selected_actions")
     if selected_block:
@@ -349,6 +379,17 @@ def _parse_agent_decision_xml_loose(xml_text: str) -> EvaluatorDecision:
         )
         for attrs in _iter_action_attrs(text_without_candidates):
             decision.selected_actions.append(_selected_action_from_attrs(attrs))
+    open_block = _first_tag_block(text, "open_requests")
+    if open_block:
+        for attrs in _iter_node_attrs(open_block):
+            decision.open_requests.append({"node_id": _attr_value(attrs, "id")})
+    prune_block = _first_tag_block(text, "prune_requests")
+    if prune_block:
+        for match in re.finditer(r"<(node|page)\b([^>]*)>(.*?)</\1>", prune_block, flags=re.DOTALL | re.IGNORECASE):
+            decision.prune_requests.append({
+                "node_id": _attr_value(match.group(2), "id"),
+                "reason": _first_tag_text(match.group(3), "reason"),
+            })
     query = _first_tag_text(text, "query")
     if query:
         decision.search_query = query
@@ -364,13 +405,25 @@ def _selected_action_from_attrs(attrs_text: str) -> dict[str, Any]:
         "candidate_id": str(attrs.get("candidate_id") or attrs.get("id") or ""),
         "candidate_index": _optional_int(attrs.get("index") or attrs.get("candidate_index")),
         "utility": str(attrs.get("utility") or ""),
-        "reason": "",
     }
 
 
 def _iter_action_attrs(text: str):
     for match in re.finditer(r"<action\b([^>]*)/?>", text, flags=re.DOTALL | re.IGNORECASE):
         yield match.group(1)
+
+
+def _iter_node_attrs(text: str):
+    for match in re.finditer(r"<node\b([^>]*)/?>", text, flags=re.DOTALL | re.IGNORECASE):
+        yield match.group(1)
+
+
+def _attr_value(attrs_text: str, name: str) -> str:
+    attrs = {
+        key: value
+        for key, _quote, value in re.findall(r"([A-Za-z_][\w:-]*)\s*=\s*(['\"])(.*?)\2", attrs_text, flags=re.DOTALL)
+    }
+    return str(attrs.get(name) or "")
 
 
 def _first_tag_text(text: str, tag_name: str) -> str:
@@ -417,55 +470,44 @@ def _truncate(value: Any, char_limit: int) -> str:
     return text[:limit] + "..."
 
 
-def _compact_recent_trace(trace_items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    compact = []
+def _recent_trace_xml(trace_items: list[dict[str, Any]]) -> str:
+    lines = ["  <recent_trace>"]
     for item in trace_items:
         action = str(item.get("action") or "")
-        summary: dict[str, Any] = {
+        attrs: dict[str, Any] = {
             "iteration": item.get("iteration"),
             "action": action,
         }
-        if "ok" in item:
-            summary["ok"] = bool(item.get("ok"))
-        if item.get("message"):
-            summary["message"] = _truncate(item.get("message"), 160)
         payload = item.get("payload")
         if isinstance(payload, dict):
-            summary["payload"] = _compact_mapping(payload)
+            target = payload.get("node_id") or payload.get("target_id") or payload.get("page_index") or payload.get("query")
+            if target is not None:
+                attrs["target"] = _truncate(target, 160)
         decision = item.get("decision")
         if action == "EvaluatorDecision" and isinstance(decision, dict):
-            summary["decision"] = {
-                "stop": bool(decision.get("stop")),
-                "selected_action_count": len(decision.get("selected_actions") or []),
-                "has_search_query": bool(decision.get("search_query")),
-                "prune_request_count": len(decision.get("prune_requests") or []),
-                "summarize_request_count": len(decision.get("summarize_requests") or []),
-                "reason": _truncate(decision.get("reason", ""), 160),
-            }
-        if item.get("candidate_id"):
-            summary["candidate_id"] = _truncate(item.get("candidate_id"), 120)
-        compact.append(summary)
-    return compact
+            attrs["selected_actions"] = len(decision.get("selected_actions") or [])
+            attrs["open_requests"] = len(decision.get("open_requests") or [])
+            attrs["prune_requests"] = len(decision.get("prune_requests") or [])
+            if decision.get("search_query"):
+                attrs["query"] = _truncate(decision.get("search_query"), 160)
+        selection = item.get("selection")
+        if isinstance(selection, dict) and selection.get("candidate_index") is not None:
+            attrs["selection"] = selection.get("candidate_index")
+        attr_text = " ".join(f'{_esc(key)}="{_esc(value)}"' for key, value in attrs.items() if value is not None)
+        lines.append(f"    <step {attr_text}/>")
+    lines.append("  </recent_trace>")
+    return "\n".join(lines)
 
 
-def _compact_mapping(payload: dict[str, Any]) -> dict[str, Any]:
-    allowed_keys = {
-        "node_id",
-        "page_index",
-        "source",
-        "previous_state",
-        "reactivated_from_pruned",
-        "edge_id",
-        "target_id",
-        "query",
-        "score",
-    }
-    compact = {}
-    for key, value in payload.items():
-        if key not in allowed_keys:
-            continue
-        compact[str(key)] = _truncate(value, 160) if isinstance(value, str) else value
-    return compact
+def _activate_candidate_xml_attrs(candidate: CandidateAction) -> dict[str, Any]:
+    payload = candidate.payload
+    attrs: dict[str, Any] = {}
+    if payload.get("source_node_id"):
+        attrs["source"] = payload["source_node_id"]
+    for key in ("edge_type", "relation", "traversal_hint"):
+        if payload.get(key):
+            attrs[key] = payload[key]
+    return attrs
 
 
 def _extract_agent_decision_xml(raw_xml: str) -> str:

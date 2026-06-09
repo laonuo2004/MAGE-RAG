@@ -1,12 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Any
 
-
-# MAGE-RAG 的 online 阶段只通过这些小动作修改 evidence graph state。
-# 这里保持动作为纯数据结构，方便 evaluator 输出、trace 记录和状态机执行解耦。
-ALLOWED_ACTIVATE_PAGE_SOURCES = {"initial_retrieval", "adjacent", "relation_target", "search", "question_page_scope"}
-
-
 @dataclass(frozen=True)
 class ActionResult:
     ok: bool
@@ -35,11 +29,6 @@ class ActivatePage:
     page_index: int
     source: str
 
-    def __post_init__(self):
-        if self.source not in ALLOWED_ACTIVATE_PAGE_SOURCES:
-            raise ValueError(f"Invalid ActivatePage source: {self.source}")
-
-
 @dataclass(frozen=True)
 class ActivateNode:
     node_id: str
@@ -48,11 +37,6 @@ class ActivateNode:
 @dataclass(frozen=True)
 class OpenNode:
     node_id: str
-
-
-@dataclass(frozen=True)
-class FollowRelation:
-    edge_id: str
 
 
 @dataclass(frozen=True)
@@ -66,18 +50,11 @@ class PruneNode:
     reason: str
 
 
-@dataclass(frozen=True)
-class SummarizeNodes:
-    node_ids: list[str]
-    goal: str
-
-
 def action_from_candidate(candidate: CandidateAction):
     """
     把 evaluator 选择的候选动作还原成状态机动作。
 
-    SearchEvidence/SummarizeNodes 通常由 evaluator 的专门 XML 字段产生，
-    不走 candidate list，因此这里故意只覆盖 graph expansion 候选。
+    SearchEvidence 通常由 evaluator 的专门 XML 字段产生，不走 candidate list。
     """
 
     payload = candidate.payload
@@ -87,8 +64,6 @@ def action_from_candidate(candidate: CandidateAction):
         return ActivateNode(node_id=str(payload["node_id"]))
     if candidate.action_type == "OpenNode":
         return OpenNode(node_id=str(payload["node_id"]))
-    if candidate.action_type == "FollowRelation":
-        return FollowRelation(edge_id=str(payload["edge_id"]))
     if candidate.action_type == "PruneNode":
         return PruneNode(node_id=str(payload["node_id"]), reason=str(payload.get("reason") or ""))
     raise ValueError(f"Unsupported candidate action type: {candidate.action_type}")

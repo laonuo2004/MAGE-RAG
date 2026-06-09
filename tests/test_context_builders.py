@@ -22,6 +22,8 @@ from benchmarks.utils.data_utils import (
     colbertv2_cache_root,
     colpali_pdf_embeddings_path,
     colpali_question_embeddings_path,
+    visrag_pdf_embeddings_path,
+    visrag_question_embeddings_path,
 )
 
 
@@ -58,6 +60,10 @@ class ContextBuilderTests(unittest.TestCase):
 
         self.assertEqual(iterate_builder.name, 'm3docrag-iterate')
         self.assertEqual(iterate_query_builder.name, 'm3docrag-iterate-query')
+        evisrag_builder = build_context_builder(OmegaConf.create({
+            'baselines': {'name': 'evisrag', 'params': {'top_k': 3}},
+        }))
+        self.assertEqual(evisrag_builder.name, 'evisrag')
 
     def test_longdocurl_image_context_matches_legacy_prompt_shape(self):
         png_bytes = base64.b64decode(
@@ -325,6 +331,84 @@ class ContextBuilderTests(unittest.TestCase):
     def test_m3docrag_requires_explicit_top_k(self):
         with self.assertRaisesRegex(ValueError, 'top_k'):
             build_context_builder(OmegaConf.create({'baselines': {'name': 'm3docrag'}}))
+
+    def test_evisrag_mmlongbench_retrieves_top3_with_evidence_prompt(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self._write_visrag_embeddings(
+                tmp_dir,
+                benchmark_name='mmlongbench',
+                doc_stem='sample',
+                question_id='q1',
+                doc_embeddings=torch.tensor([
+                    [1.0, 0.0],
+                    [0.0, 4.0],
+                    [3.0, 0.0],
+                    [2.0, 0.0],
+                ]),
+                query_embedding=torch.tensor([1.0, 0.0]),
+            )
+            page_dir = os.path.join(tmp_dir, 'pdf_pngs', 'sample')
+            os.makedirs(page_dir)
+            for page_no in (1, 2, 3, 4):
+                Image.new('RGB', (1, 1), color='white').save(
+                    os.path.join(page_dir, f'page_{page_no:04d}_dpi144.png')
+                )
+            builder = build_context_builder(self._evisrag_cfg(tmp_dir, max_pages=4))
+
+            messages = builder.build(
+                'mmlongbench',
+                {'doc_id': 'sample.pdf', 'question_id': 'q1', 'question': 'Question?'},
+            )
+
+        self.assertEqual([page['page_index'] for page in messages.metadata['retrieved_pages']], [2, 3, 0])
+        self.assertEqual(messages.metadata['allowed_pages'], [0, 1, 2, 3])
+        self.assertEqual(messages.metadata['top_k'], 3)
+        self.assertEqual(messages.metadata['generation_prompt'], 'evidence_grpo')
+        self.assertEqual(len(messages[0]['content']), 4)
+        self.assertIn('<evidence></evidence>', messages[0]['content'][0]['text'])
+        self.assertIn('Question: Question?', messages[0]['content'][0]['text'])
+
+    def test_evisrag_longdocurl_uses_image_page_mask(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            self._write_visrag_embeddings(
+                tmp_dir,
+                benchmark_name='longdocurl',
+                doc_stem='123456',
+                question_id='q1',
+                doc_embeddings=torch.tensor([
+                    [9.0, 0.0],
+                    [1.0, 0.0],
+                    [8.0, 0.0],
+                ]),
+                query_embedding=torch.tensor([1.0, 0.0]),
+            )
+            page_dir = os.path.join(tmp_dir, 'longdoc_images', '1234')
+            os.makedirs(page_dir)
+            for page_index in (0, 1, 2):
+                Image.new('RGB', (1, 1), color='white').save(
+                    os.path.join(page_dir, f'123456_{page_index}.png')
+                )
+            builder = build_context_builder(self._evisrag_cfg(tmp_dir))
+
+            messages = builder.build(
+                'longdocurl',
+                {
+                    'doc_no': '123456',
+                    'question_id': 'q1',
+                    'question': 'Question?',
+                    'images': [os.path.join(page_dir, '123456_1.png')],
+                },
+            )
+
+        self.assertEqual(messages.metadata['allowed_pages'], [1])
+        self.assertEqual(messages.metadata['retrieved_pages'][0]['page_index'], 1)
+        self.assertEqual(len(messages[0]['content']), 3)
+        self.assertEqual(messages[0]['content'][1]['type'], 'text')
+        self.assertEqual(messages[0]['content'][2]['type'], 'image_url')
 
     def test_m3docrag_iterate_top1_answerable_returns_one_page(self):
         messages = self._build_m3docrag_iterate_mmlongbench(['{"answerable": true, "reason": "enough", "missing_evidence": ""}'])
@@ -742,6 +826,30 @@ class ContextBuilderTests(unittest.TestCase):
                 'resolution': 144,
             },
         })
+
+    def _evisrag_cfg(self, tmp_dir, max_pages=3):
+        return OmegaConf.create({
+            'baselines': {
+                'name': 'evisrag',
+                'params': {'top_k': 3, 'max_images': 3},
+            },
+            'benchmarks': {
+                'name': 'mmlongbench',
+                'tmp_dir': tmp_dir,
+                'pdf_png_dir': os.path.join(tmp_dir, 'pdf_pngs'),
+                'image_prefix': os.path.join(tmp_dir, 'longdoc_images'),
+                'max_pages': max_pages,
+                'resolution': 144,
+            },
+        })
+
+    def _write_visrag_embeddings(self, tmp_dir, benchmark_name, doc_stem, question_id, doc_embeddings, query_embedding):
+        pdf_path = visrag_pdf_embeddings_path(benchmark_name, doc_stem)
+        question_path = visrag_question_embeddings_path(benchmark_name, question_id)
+        os.makedirs(pdf_path.parent, exist_ok=True)
+        os.makedirs(question_path.parent, exist_ok=True)
+        save_file({'embeddings': doc_embeddings}, pdf_path)
+        save_file({'query_embedding': query_embedding}, question_path)
 
     def _write_embeddings(self, tmp_dir, benchmark_name, doc_stem, question_id, doc_embeddings, query_embedding):
         pdf_path = colpali_pdf_embeddings_path(benchmark_name, doc_stem)

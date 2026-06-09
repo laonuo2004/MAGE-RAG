@@ -56,6 +56,20 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertEqual(samples, [sample])
         self.assertEqual(adapter.sample_key(sample), ("d1", "q", "a", "Str"))
 
+    def test_mmlongbench_load_samples_honors_benchmark_limit(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            input_path = Path(tmp_dir) / "samples.json"
+            samples = [
+                {"doc_id": f"d{idx}", "question": f"q{idx}", "answer": "a", "answer_format": "Str"}
+                for idx in range(3)
+            ]
+            input_path.write_text(json.dumps(samples), encoding="utf-8")
+            cfg = OmegaConf.create({"benchmarks": {"input_path": str(input_path), "limit": 2}})
+
+            loaded = MMLongBenchAdapter().load_samples(cfg)
+
+        self.assertEqual([sample["doc_id"] for sample in loaded], ["d0", "d1"])
+
     def test_longdocurl_loads_jsonl_adds_question_id_and_image_prefix(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             qa_file = Path(tmp_dir) / "qa.jsonl"
@@ -82,10 +96,36 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertEqual(adapter.sample_key(samples[0]), 0)
         self.assertTrue(samples[0]["images"][0].endswith("images/doc/page_1.png"))
 
+    def test_longdocurl_load_samples_honors_benchmark_limit(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            qa_file = Path(tmp_dir) / "qa.jsonl"
+            qa_file.write_text(
+                "\n".join(
+                    json.dumps({"question": f"q{idx}", "answer": "a", "answer_format": "Str"})
+                    for idx in range(3)
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            cfg = OmegaConf.create({"benchmarks": {"qa_file": str(qa_file), "limit": 2}})
+
+            samples = LongDocURLAdapter().load_samples(cfg)
+
+        self.assertEqual([sample["question"] for sample in samples], ["q0", "q1"])
+
     def test_score_success_field_is_unified(self):
         self.assertTrue(MMLongBenchAdapter().is_successful_result({"pred": "ok", "score": 1.0}))
         self.assertTrue(LongDocURLAdapter().is_successful_result({"pred": "ok", "score": 1.0}))
         self.assertFalse(LongDocURLAdapter().is_successful_result({"pred": "ok", "score_v3": 1.0}))
+
+    def test_mmlongbench_list_score_splits_comma_phrase_and_percentage_points(self):
+        score = MMLongBenchAdapter.score(
+            "['White', '10%']",
+            "White, 10 percentage points",
+            "List",
+        )
+
+        self.assertEqual(score, 1.0)
 
     def test_mmlongbench_int_score_handles_percent_suffix(self):
         self.assertEqual(MMLongBenchAdapter.score("21%", "21", "Int"), 1.0)
@@ -250,6 +290,9 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertIn("<model_response>", correction_prompt)
         self.assertIn("<initial_formatted_extraction>", correction_prompt)
         self.assertIn("def score", correction_prompt)
+        self.assertIn("<correction_prompt>", correction_prompt)
+        self.assertIn("<input_data>", correction_prompt)
+        self.assertIn("<scoring_code>\n<![CDATA[", correction_prompt)
         self.assertIn("<initial_score>0.0</initial_score>", correction_prompt)
         self.assertEqual(result["pred"], "22 million")
         self.assertEqual(result["pred_format"], "String")

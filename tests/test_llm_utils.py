@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from utils.llm_utils import call_llm_messages
+from utils.llm_utils import call_llm_messages, xml_block
 
 
 def completion(content):
@@ -41,3 +41,44 @@ def test_call_llm_messages_waits_with_exponential_backoff_between_retries():
     assert result.choices[0].message.content == "ok"
     assert completions.calls == 4
     assert [call.args[0] for call in sleep.call_args_list] == [5, 10, 20]
+
+
+def test_xml_block_keeps_simple_multiline_block_as_default():
+    assert xml_block("question", "What is 1 million?") == "<question>\nWhat is 1 million?\n</question>"
+    assert xml_block("empty", None) == "<empty>\n\n</empty>"
+
+
+def test_xml_block_supports_attributes_and_escaping():
+    block = xml_block(
+        "field",
+        "A < B & C",
+        attributes={"name": "gold_truth", "required": True, "skip": None},
+        escape=True,
+        inline=True,
+    )
+
+    assert block == '<field name="gold_truth" required="true">A &lt; B &amp; C</field>'
+
+
+def test_xml_block_supports_cdata_for_code_like_content():
+    block = xml_block("scoring_code", "if a < b:\n    return 1", cdata=True)
+
+    assert block == "<scoring_code>\n<![CDATA[if a < b:\n    return 1]]>\n</scoring_code>"
+
+
+def test_xml_block_supports_template_positional_and_named_values():
+    block = xml_block(
+        "instruction",
+        "22 million",
+        "0.0",
+        template="Gold: {0}\nInitial score: {1}\nMode: {mode}",
+        template_kwargs={"mode": "conservative"},
+    )
+
+    assert block == "<instruction>\nGold: 22 million\nInitial score: 0.0\nMode: conservative\n</instruction>"
+
+
+def test_xml_block_supports_indentation():
+    block = xml_block("child", "value", indent=2)
+
+    assert block == "  <child>\n  value\n  </child>"

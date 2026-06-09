@@ -30,12 +30,16 @@ class LongDocURLResultsTests(unittest.TestCase):
             str(Path.cwd() / "results/longdocurl/m3docrag/res_top_k_5_Qwen_Qwen2_5_VL_7B_Instruct.jsonl"),
         )
 
-    def test_magerag_results_file_includes_only_sweep_params(self):
+    def test_magerag_results_file_includes_declared_result_name_params(self):
         cfg = OmegaConf.create({
             "baselines": {
                 "name": "magerag",
                 "params": {"top_k": 1},
                 "controller": {"watchdog_iterations": 6},
+                "result_name_params": [
+                    "params.top_k",
+                    "controller.watchdog_iterations",
+                ],
             },
             "benchmarks": {"name": "longdocurl", "qa_model_name": "Qwen/Qwen3-VL-8B-Instruct"},
         })
@@ -44,7 +48,7 @@ class LongDocURLResultsTests(unittest.TestCase):
 
         self.assertEqual(
             str(result_file),
-            str(Path.cwd() / "results/longdocurl/magerag/res_top_k_1_Qwen_Qwen3_VL_8B_Instruct.jsonl"),
+            str(Path.cwd() / "results/longdocurl/magerag/res_top_k_1_watchdog_iterations_6_Qwen_Qwen3_VL_8B_Instruct.jsonl"),
         )
         self.assertLess(len(result_file.name), 120)
 

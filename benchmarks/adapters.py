@@ -1,4 +1,5 @@
 import ast
+import inspect
 import json
 import logging
 import re
@@ -10,7 +11,7 @@ from typing import Any, Dict, List, Protocol
 
 from benchmarks.utils.data_utils import load_longdocurl_samples, load_mmlongbench_samples
 from utils.config_utils import get_config_value, require_config_value
-from utils.llm_utils import call_llm_messages, completion_content, text_content_parts
+from utils.llm_utils import call_llm_messages, completion_content, text_content_parts, xml_block
 from utils.serialization_utils import to_plain_data
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ COMMON_RESULT_FIELDS = (
     "prepare_metadata",
     "generation_metadata",
     "extraction_metadata",
+    "correction_metadata",
     "pred",
     "pred_format",
     "score",
@@ -57,6 +59,13 @@ def _read_prompt(path: Path, fallback: Path) -> str:
 def _reset_sample_fields(sample: Dict[str, Any], keys) -> None:
     for key in keys:
         sample.pop(key, None)
+
+
+def _apply_sample_limit(samples: List[Dict[str, Any]], cfg) -> List[Dict[str, Any]]:
+    limit = get_config_value(cfg, "benchmarks.limit")
+    if limit is None:
+        return samples
+    return samples[: max(0, int(limit))]
 
 
 def _completion_metadata(completion: Any, model_name: str) -> Dict[str, Any]:
@@ -103,11 +112,12 @@ def _process_self_answering_sample(
         "model": metadata.get("model"),
         "response": payload.get("response"),
         "duration_seconds": metadata["duration_seconds"],
+        "mode": "self_answering",
+        "raw_pred": payload.get("pred"),
+        "raw_pred_format": payload.get("pred_format"),
     }
     if payload.get("usage") is not None:
         sample["generation_metadata"]["usage"] = payload.get("usage")
-    sample["pred"] = payload.get("pred")
-    sample["pred_format"] = payload.get("pred_format")
     return sample
 
 
@@ -153,6 +163,174 @@ def _extract_prediction(sample: Dict[str, Any], messages, model_name: str, clien
         "duration_seconds": round(perf_counter() - extraction_start, 3),
     }
     return parse_extraction_result(extracted_res)
+
+
+def _format_initial_extraction(extracted_res: Any) -> str:
+    return "" if extracted_res is None else str(extracted_res)
+
+
+def _score_function_source(adapter: Any) -> str:
+    try:
+        score_source = inspect.getsource(adapter.score)
+    except Exception:
+        score_source = "def score(gt: Any, pred: Any, answer_type: str) -> float:\n    ..."
+    helpers = [
+        _levenshtein_distance,
+        _anls_compute,
+        _is_float_equal,
+        _is_exact_match,
+        _is_float_like,
+        _maybe_parse_literal,
+    ]
+    helper_sources = []
+    for helper in helpers:
+        try:
+            helper_sources.append(inspect.getsource(helper).strip())
+        except Exception:
+            continue
+    return "\n\n".join(helper_sources + [score_source.strip()])
+
+
+def _correction_output_contract(benchmark_name: str) -> str:
+    if benchmark_name == "longdocurl":
+        return (
+            "Output exactly this format and no other text:\n"
+            "Extracted answer: <concise_answer>[answer]</concise_answer>\n"
+            "Answer format: <answer_format>[answer format]</answer_format>"
+        )
+    return (
+        "Output exactly this format and no other text:\n"
+        "Extracted answer: [answer]\n"
+        "Answer format: [answer format]"
+    )
+
+
+def _build_correction_messages(
+    adapter: Any,
+    benchmark_name: str,
+    sample: Dict[str, Any],
+    response: Any,
+    initial_extracted_res: Any,
+    initial_score: float,
+) -> List[Dict[str, Any]]:
+    input_data = "\n\n".join([
+        xml_block("question", sample.get("question"), escape=True),
+        xml_block("gold_truth", sample.get("answer"), escape=True),
+        xml_block("gold_answer_format", sample.get("answer_format"), escape=True),
+        xml_block("model_response", response, escape=True),
+        xml_block("initial_formatted_extraction", _format_initial_extraction(initial_extracted_res), escape=True),
+        xml_block("scoring_code", _score_function_source(adapter), cdata=True),
+        xml_block("initial_score", initial_score, inline=True),
+    ])
+    prompt = xml_block("correction_prompt", "\n\n".join([
+        xml_block(
+            "role",
+            "You are auditing a benchmark answer extraction after code-based scoring.",
+            escape=True,
+            inline=True,
+            indent=2,
+        ),
+        xml_block(
+            "task",
+            "Fix only false negatives caused by overly strict formatting or parsing.",
+            escape=True,
+            inline=True,
+            indent=2,
+        ),
+        xml_block(
+            "conservative_policy",
+            "If the detailed model response does not clearly support the Gold Truth, copy the initial formatted extraction exactly.\n"
+            "Do not use the Gold Truth alone to invent, replace, or improve a substantively wrong answer.\n"
+            "Allowed corrections include units, scale words, punctuation, numeric spelling, list serialization, and answer-format labels when the same answer is already supported by the detailed response.\n"
+            "Think through the evidence internally, but output only the corrected formatted extraction.",
+            escape=True,
+            indent=2,
+        ),
+        xml_block("input_data", input_data),
+        xml_block("output_contract", _correction_output_contract(benchmark_name), cdata=True, indent=2),
+        xml_block(
+            "decision_rule",
+            "Return a changed extraction only when model_response already contains the same semantic answer as gold_truth and the initial score failed because of representation. Otherwise return initial_formatted_extraction unchanged.",
+            escape=True,
+            indent=2,
+        ),
+    ]))
+    return [{"role": "user", "content": text_content_parts(prompt)}]
+
+
+def _apply_correction_if_needed(
+    adapter: Any,
+    benchmark_name: str,
+    sample: Dict[str, Any],
+    cfg,
+    client,
+    response: Any,
+    initial_extracted_res: Any,
+    parse_extraction_result,
+    log_prefix: str,
+) -> None:
+    initial_score = float(sample["score"])
+    if initial_score >= 1.0:
+        return
+    if not bool(get_config_value(cfg, "benchmarks.correction_enabled", True)):
+        return
+
+    correction_model_name = get_config_value(cfg, "benchmarks.correction_model_name")
+    if not correction_model_name:
+        correction_model_name = require_config_value(cfg, "benchmarks.extractor_model_name")
+
+    initial_pred = sample.get("pred")
+    initial_pred_format = sample.get("pred_format")
+    correction_start = perf_counter()
+    messages = _build_correction_messages(
+        adapter,
+        benchmark_name,
+        sample,
+        response,
+        initial_extracted_res,
+        initial_score,
+    )
+    metadata: Dict[str, Any] = {
+        "input_messages": to_plain_data(messages),
+        "initial_pred": to_plain_data(initial_pred),
+        "initial_pred_format": initial_pred_format,
+        "initial_score": initial_score,
+        "applied": False,
+    }
+    try:
+        completion = call_llm_messages(
+            client,
+            correction_model_name,
+            messages,
+            max_tokens=8192,
+            temperature=0.0,
+            retries=3,
+            logger=logger,
+            log_prefix=log_prefix,
+            failure_value=lambda exc: f"Failed: {exc}",
+        )
+        corrected_extracted_res = completion_content(completion)
+        metadata.update(_completion_metadata(completion, correction_model_name))
+        metadata["corrected_extracted_res"] = corrected_extracted_res
+        corrected_pred, corrected_pred_format = parse_extraction_result(corrected_extracted_res)
+        if corrected_pred is None:
+            metadata["error"] = "Failed to parse corrected extraction"
+            return
+        corrected_score = adapter.score(sample["answer"], corrected_pred, sample["answer_format"])
+        metadata["corrected_pred"] = to_plain_data(corrected_pred)
+        metadata["corrected_pred_format"] = corrected_pred_format
+        metadata["corrected_score"] = corrected_score
+        if corrected_score < initial_score:
+            return
+        sample["pred"] = corrected_pred
+        sample["pred_format"] = corrected_pred_format
+        sample["score"] = corrected_score
+        metadata["applied"] = True
+    except Exception as exc:
+        metadata["error"] = str(exc)
+    finally:
+        metadata["duration_seconds"] = round(perf_counter() - correction_start, 3)
+        sample["correction_metadata"] = metadata
 
 
 def _levenshtein_distance(s1: str, s2: str) -> int:
@@ -234,6 +412,28 @@ def _is_float_like(value: Any) -> bool:
         return False
 
 
+def _normalize_list_candidate(value: Any) -> list[Any]:
+    parsed = _maybe_parse_literal(value)
+    if isinstance(parsed, list):
+        return parsed
+    if not isinstance(parsed, str):
+        return [parsed]
+    text = parsed.strip()
+    if not text:
+        return [parsed]
+    parts = [part.strip() for part in re.split(r"\s*,\s*", text) if part.strip()]
+    return parts if len(parts) > 1 else [parsed]
+
+
+def _normalize_list_item(value: Any) -> str:
+    text = str(value).lower().strip()
+    text = re.sub(r"\bpercentage\s+points?\b", "%", text)
+    text = re.sub(r"\bpercent(age)?\b", "%", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"(\d+(?:\.\d+)?)\s*%", r"\1%", text)
+    return MMLongBenchAdapter._clean_string(text)
+
+
 def _maybe_parse_literal(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -286,15 +486,13 @@ class MMLongBenchAdapter:
             pred = MMLongBenchAdapter._clean_string(pred)
             score = gt == pred if _is_exact_match(gt) else _anls_compute(gt, pred)
         else:
-            gt = _maybe_parse_literal(gt)
-            gt = gt if isinstance(gt, list) else [gt]
-            pred = _maybe_parse_literal(pred)
-            pred = pred if isinstance(pred, list) else [pred]
+            gt = _normalize_list_candidate(gt)
+            pred = _normalize_list_candidate(pred)
             if len(gt) != len(pred):
                 score = 0.0
             else:
-                gt = sorted([MMLongBenchAdapter._clean_string(item) for item in gt])
-                pred = sorted([MMLongBenchAdapter._clean_string(item) for item in pred])
+                gt = sorted([_normalize_list_item(item) for item in gt])
+                pred = sorted([_normalize_list_item(item) for item in pred])
                 if not gt:
                     score = 0.0
                 elif _is_float_like(gt[0]) or _is_exact_match(gt[0]):
@@ -322,7 +520,7 @@ class MMLongBenchAdapter:
 
     def load_samples(self, cfg) -> List[Dict[str, Any]]:
         input_path = require_config_value(cfg, "benchmarks.input_path")
-        samples = load_mmlongbench_samples(input_path)
+        samples = _apply_sample_limit(load_mmlongbench_samples(input_path), cfg)
         logger.info("Loaded %s MMLongBench samples from %s", len(samples), input_path)
         return samples
 
@@ -357,19 +555,17 @@ class MMLongBenchAdapter:
         _reset_sample_fields(sample, COMMON_RESULT_FIELDS)
         self_answered = _process_self_answering_sample(sample, context_builder, "mmlongbench", client)
         if self_answered is not None:
-            if self_answered.get("pred") is None:
-                return None
-            self_answered["score"] = self.score(
-                self_answered["answer"],
-                self_answered["pred"],
-                self_answered["answer_format"],
-            )
-            return self_answered
-        messages, qa_model_name, extractor_model_name = _prepare_messages(sample, cfg, context_builder, "mmlongbench", client)
-        response = _generate_response(sample, messages, qa_model_name, client, "MMLongBench generation")
+            response = self_answered["generation_metadata"].get("response")
+            extractor_model_name = require_config_value(cfg, "benchmarks.extractor_model_name")
+        else:
+            messages, qa_model_name, extractor_model_name = _prepare_messages(sample, cfg, context_builder, "mmlongbench", client)
+            response = _generate_response(sample, messages, qa_model_name, client, "MMLongBench generation")
+        if response is None:
+            return None
+        extraction_messages = self.build_extraction_messages(sample, response)
         pred, pred_format = _extract_prediction(
             sample,
-            self.build_extraction_messages(sample, response),
+            extraction_messages,
             extractor_model_name,
             client,
             self.parse_extraction_result,
@@ -381,6 +577,17 @@ class MMLongBenchAdapter:
         sample["pred"] = pred
         sample["pred_format"] = pred_format
         sample["score"] = self.score(sample["answer"], pred, sample["answer_format"])
+        _apply_correction_if_needed(
+            self,
+            "mmlongbench",
+            sample,
+            cfg,
+            client,
+            response,
+            sample["extraction_metadata"]["extracted_res"],
+            self.parse_extraction_result,
+            "MMLongBench correction",
+        )
         return sample
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:
@@ -570,7 +777,7 @@ class LongDocURLAdapter:
     def load_samples(self, cfg) -> List[Dict[str, Any]]:
         qa_file = require_config_value(cfg, "benchmarks.qa_file")
         image_prefix = get_config_value(cfg, "benchmarks.image_prefix")
-        samples = load_longdocurl_samples(qa_file, image_prefix=image_prefix)
+        samples = _apply_sample_limit(load_longdocurl_samples(qa_file, image_prefix=image_prefix), cfg)
         logger.info("Loaded %s LongDocURL samples from %s", len(samples), qa_file)
         return samples
 
@@ -609,21 +816,17 @@ class LongDocURLAdapter:
         _reset_sample_fields(sample, COMMON_RESULT_FIELDS)
         self_answered = _process_self_answering_sample(sample, context_builder, "longdocurl", client)
         if self_answered is not None:
-            if self_answered.get("pred") is None:
-                return None
-            self_answered["score"] = self.score(
-                self_answered["answer"],
-                self_answered["pred"],
-                self_answered["answer_format"],
-            )
-            return self_answered
-        messages, qa_model_name, extractor_model_name = _prepare_messages(sample, cfg, context_builder, "longdocurl", client)
-        response = _generate_response(sample, messages, qa_model_name, client, "LongDocURL generation")
+            response = self_answered["generation_metadata"].get("response")
+            extractor_model_name = require_config_value(cfg, "benchmarks.extractor_model_name")
+        else:
+            messages, qa_model_name, extractor_model_name = _prepare_messages(sample, cfg, context_builder, "longdocurl", client)
+            response = _generate_response(sample, messages, qa_model_name, client, "LongDocURL generation")
         if response is None:
             return None
+        extraction_messages = self.build_extraction_messages(sample, response)
         pred, pred_format = _extract_prediction(
             sample,
-            self.build_extraction_messages(sample, response),
+            extraction_messages,
             extractor_model_name,
             client,
             self.parse_extraction_result,
@@ -635,6 +838,17 @@ class LongDocURLAdapter:
         sample["pred"] = pred
         sample["pred_format"] = pred_format
         sample["score"] = self.score(sample["answer"], pred, sample["answer_format"])
+        _apply_correction_if_needed(
+            self,
+            "longdocurl",
+            sample,
+            cfg,
+            client,
+            response,
+            sample["extraction_metadata"]["extracted_res"],
+            self.parse_extraction_result,
+            "LongDocURL correction",
+        )
         return sample
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:

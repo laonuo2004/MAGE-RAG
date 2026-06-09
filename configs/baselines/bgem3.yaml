@@ -7,6 +7,14 @@ params:
   chunk_overlap: 20
   allow_cross_page: true
   max_cross_pages: null
+result_name_params:
+  - params.mode
+  - params.text_source
+  - params.top_k
+  - params.chunk_size
+  - params.chunk_overlap
+  - params.allow_cross_page
+  - params.max_cross_pages
 checkpoint: /root/autodl-tmp/ylz/models/bge-m3
 tokenizer_name: /root/autodl-tmp/ylz/models/bge-m3
 devices: cuda:0

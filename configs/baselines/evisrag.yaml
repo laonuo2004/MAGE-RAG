@@ -4,11 +4,7 @@ params:
   max_images: 3
   prompt_mode: evidence_grpo
   longdocurl_shard: 4000-4999
-result_name_params:
-  - params.top_k
-  - params.max_images
-  - params.prompt_mode
-  - params.longdocurl_shard
+result_name_params: []
 checkpoint: /root/autodl-tmp/ylz/models/VisRAG-Ret
 batch_size: 4
 use_fp16: true

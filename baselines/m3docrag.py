@@ -3,7 +3,7 @@ import os
 import torch
 from safetensors.torch import load_file
 
-from .base import ContextBuilder, ContextMessages
+from .base import ContextBuilder, ContextMessages, build_context_summary, build_logical_cost, build_retrieval_metadata
 from .image import VISION_SYSTEM_PROMPT
 from benchmarks.utils.document_preprocess import (
     allowed_page_indices,
@@ -138,6 +138,7 @@ class m3docragContextBuilder(ContextBuilder):
         )
 
     def _metadata(self, retrieved_pages, allowed_pages, pdf_embedding_path, question_embedding_path):
+        page_ids = [int(page['page_index']) for page in retrieved_pages]
         return {
             'context_builder': self.name,
             'retrieved_pages': retrieved_pages,
@@ -147,4 +148,30 @@ class m3docragContextBuilder(ContextBuilder):
                 'pdf': str(pdf_embedding_path),
                 'question': str(question_embedding_path),
             },
+            'retrieval': build_retrieval_metadata(
+                retrieved_items=[
+                    {
+                        'rank': rank,
+                        'page_index': int(page['page_index']),
+                        'page_number': int(page['page_number']),
+                        'score': float(page['score']),
+                    }
+                    for rank, page in enumerate(retrieved_pages, start=1)
+                ],
+                initial_retrieved_pages=page_ids,
+                final_context_pages=page_ids,
+            ),
+            'context_summary': build_context_summary(
+                page_ids=page_ids,
+                num_context_pages=len(page_ids),
+                num_image_units=len(page_ids),
+            ),
+            'logical_cost': build_logical_cost(
+                num_retriever_calls=1,
+                num_embedding_calls=0,
+                num_input_images=len(page_ids),
+                num_context_pages=len(page_ids),
+                num_retrieved_pages=len(page_ids),
+                num_final_evidence_units=len(page_ids),
+            ),
         }

@@ -86,8 +86,18 @@ class MAGERAGTests(unittest.TestCase):
         self.assertEqual(int(cfg.evaluator.recent_trace_limit), 25)
         self.assertEqual(int(cfg.controller.watchdog_iterations), 5)
         self.assertEqual(int(cfg.controller.watchdog_repeated_noop_rounds), 2)
+        self.assertEqual(str(cfg.controller.mode), "full")
+        self.assertTrue(bool(cfg.controller.enable_online_controller))
+        self.assertTrue(bool(cfg.controller.enable_search))
+        self.assertTrue(bool(cfg.controller.enable_prune))
         self.assertNotIn("auto_open_max_nodes_per_page", cfg.controller)
         self.assertEqual(int(cfg.controller.final_open_active_node_limit), 100)
+        self.assertEqual(str(cfg.graph.mode), "full_graph")
+        self.assertIsNone(cfg.graph.enabled_edge_types)
+        self.assertEqual(list(cfg.graph.disabled_edge_types), [])
+        self.assertIsNone(cfg.graph.max_edges_per_node)
+        self.assertTrue(bool(cfg.trace.save_candidate_actions))
+        self.assertTrue(bool(cfg.trace.save_action_rationales))
         self.assertEqual(str(cfg.reader.not_answerable_text), "Not answerable.")
         self.assertTrue(bool(cfg.reader.include_self_check_instruction))
         self.assertTrue(bool(cfg.reader.include_page_images))
@@ -1539,6 +1549,16 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("final_node_states", messages.metadata)
         self.assertIn("iteration_trace", messages.metadata)
         self.assertIn("validation_errors", messages.metadata)
+        self.assertIn("retrieval", messages.metadata)
+        self.assertIn("context_summary", messages.metadata)
+        self.assertIn("logical_cost", messages.metadata)
+        self.assertEqual(messages.metadata["retrieval"]["initial_retrieved_pages"], [0])
+        self.assertEqual(messages.metadata["context_summary"]["num_context_pages"], 1)
+        self.assertEqual(messages.metadata["logical_cost"]["num_retriever_calls"], 1)
+        self.assertIn("magerag", messages.metadata)
+        self.assertEqual(messages.metadata["magerag"]["graph_stats"]["num_nodes"], 6)
+        self.assertEqual(messages.metadata["magerag"]["trace_summary"]["stop_reason"], "fallback_no_client")
+        self.assertEqual(messages.metadata["magerag"]["iteration_trace"], messages.metadata["iteration_trace"])
 
     def test_final_context_metadata_records_reader_input_without_base64_images(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1719,6 +1739,23 @@ class MAGERAGTests(unittest.TestCase):
         self.assertEqual(messages.metadata["stop_reason"], "normal_stop")
         self.assertIn("EvaluatorDecision", [item.get("action") for item in messages.metadata["iteration_trace"]])
         self.assertNotIn("run_online_agent", messages.metadata)
+
+    def test_watchdog_iterations_zero_skips_online_evaluator(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            builder = MAGERAGContextBuilder(OmegaConf.create({
+                "baselines": {
+                    "name": "magerag",
+                    "controller": {"watchdog_iterations": 0},
+                }
+            }))
+            builder.evaluator.call = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("evaluator should not be called"))
+
+            stop_reason = builder._run_agent("mmlongbench", "question", state, client=object())
+
+        self.assertEqual(stop_reason, "controller_disabled")
+        self.assertFalse(any(item.get("action") == "EvaluatorDecision" for item in state.trace))
 
     def test_initial_page_nodes_are_opened_and_rendered_without_expanding_top_k(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

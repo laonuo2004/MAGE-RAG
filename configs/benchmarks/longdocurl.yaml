@@ -2,7 +2,7 @@ name: longdocurl
 qa_file: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/raw/LongDocURL.jsonl
 # process_mode: serial
 process_mode: parallel
-workers: 64 # only for parallel processing
+workers: 4 # only for parallel processing
 ocr_json_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdf_jsons/4000-4999
 image_prefix: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdf_pngs/4000-4999
 mineru_dir: /root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999

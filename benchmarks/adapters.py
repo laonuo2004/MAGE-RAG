@@ -10,6 +10,7 @@ from textwrap import dedent
 from time import perf_counter
 from typing import Any, Dict, List, Protocol
 
+from baselines.base import build_context_summary, build_logical_cost, build_retrieval_metadata
 from benchmarks.utils.data_utils import load_longdocurl_samples, load_mmlongbench_samples
 from utils.config_utils import get_config_value, require_config_value
 from utils.llm_utils import call_llm_messages, completion_content, text_content_parts, xml_block
@@ -22,7 +23,13 @@ LONGDOCURL_ROOT = Path(__file__).resolve().parent / "longdocurl"
 MMLONGBENCH_EXTRACTOR_PROMPT = MMLONGBENCH_ROOT / "data" / "metadata" / "prompt_for_answer_extraction.md"
 LONGDOCURL_EXTRACTOR_PROMPT = LONGDOCURL_ROOT / "data" / "metadata" / "prompt_for_answer_extraction.md"
 LONGDOCURL_SCORE_SAMPLE_FILE = LONGDOCURL_ROOT / "data" / "metadata" / "scores_sample_fine_grained.json"
+ENVELOPE_RESULT_FIELDS = (
+    "benchmark",
+    "baseline",
+    "run_config",
+)
 COMMON_RESULT_FIELDS = (
+    *ENVELOPE_RESULT_FIELDS,
     "prepare_metadata",
     "generation_metadata",
     "extraction_metadata",
@@ -65,7 +72,23 @@ def _reset_sample_fields(sample: Dict[str, Any], keys) -> None:
         sample.pop(key, None)
 
 
-def _finalize_result_fields(sample: Dict[str, Any]) -> Dict[str, Any]:
+def _run_config_from_cfg(cfg) -> Dict[str, Any]:
+    return {
+        "benchmark": to_plain_data(get_config_value(cfg, "benchmarks", {})),
+        "baseline": to_plain_data(get_config_value(cfg, "baselines", {})),
+    }
+
+
+def _add_run_envelope(sample: Dict[str, Any], cfg) -> None:
+    if cfg is None:
+        return
+    sample["benchmark"] = get_config_value(cfg, "benchmarks.name")
+    sample["baseline"] = get_config_value(cfg, "baselines.name")
+    sample["run_config"] = _run_config_from_cfg(cfg)
+
+
+def _finalize_result_fields(sample: Dict[str, Any], cfg=None) -> Dict[str, Any]:
+    _add_run_envelope(sample, cfg)
     correction_metadata = sample.get("correction_metadata")
     if isinstance(correction_metadata, dict):
         sample["pred"] = correction_metadata.get("initial_pred", sample.get("pred"))
@@ -186,6 +209,16 @@ def _process_self_answering_sample(
         return None
     metadata = dict(payload.get("metadata") or {})
     metadata["duration_seconds"] = round(perf_counter() - run_start, 3)
+    usage = payload.get("usage") or {}
+    metadata.setdefault("retrieval", build_retrieval_metadata())
+    metadata.setdefault("context_summary", build_context_summary())
+    metadata.setdefault(
+        "logical_cost",
+        build_logical_cost(
+            num_llm_calls=1,
+            estimated_input_tokens=usage.get("prompt_tokens"),
+        ),
+    )
     sample["prepare_metadata"] = metadata
     sample["generation_metadata"] = {
         "model": metadata.get("model"),

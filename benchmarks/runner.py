@@ -129,6 +129,8 @@ def run_pending(
                 adapter.sample_key(samples[idx]),
             )
             return
+        if get_config_value(cfg, "benchmarks.name") is not None and get_config_value(cfg, "baselines.name") is not None:
+            result = _finalize_result_fields(result, cfg=cfg)
         try:
             append_jsonl(result, output_path)
         except Exception:

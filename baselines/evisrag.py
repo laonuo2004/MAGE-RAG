@@ -3,7 +3,7 @@ import os
 import torch
 from safetensors.torch import load_file
 
-from .base import ContextBuilder, ContextMessages
+from .base import ContextBuilder, ContextMessages, build_context_summary, build_logical_cost, build_retrieval_metadata
 from benchmarks.utils.document_preprocess import (
     allowed_page_indices,
     encode_image_file_to_base64,
@@ -171,6 +171,9 @@ class EVisRAGContextBuilder(ContextBuilder):
         )
 
     def _metadata(self, retrieved_pages, allowed_pages, pdf_embedding_path, question_embedding_path):
+        retrieved_page_ids = [int(page['page_index']) for page in retrieved_pages]
+        final_pages = retrieved_pages[:self.max_images]
+        final_page_ids = [int(page['page_index']) for page in final_pages]
         return {
             'context_builder': self.name,
             'retrieval_model': 'VisRAG-Ret',
@@ -183,4 +186,29 @@ class EVisRAGContextBuilder(ContextBuilder):
                 'pdf': str(pdf_embedding_path),
                 'question': str(question_embedding_path),
             },
+            'retrieval': build_retrieval_metadata(
+                retrieved_items=[
+                    {
+                        'rank': rank,
+                        'page_index': int(page['page_index']),
+                        'page_number': int(page['page_number']),
+                        'score': float(page['score']),
+                    }
+                    for rank, page in enumerate(retrieved_pages, start=1)
+                ],
+                initial_retrieved_pages=retrieved_page_ids,
+                final_context_pages=final_page_ids,
+            ),
+            'context_summary': build_context_summary(
+                page_ids=final_page_ids,
+                num_context_pages=len(final_page_ids),
+                num_image_units=len(final_page_ids),
+            ),
+            'logical_cost': build_logical_cost(
+                num_retriever_calls=1,
+                num_input_images=len(final_page_ids),
+                num_context_pages=len(final_page_ids),
+                num_retrieved_pages=len(retrieved_page_ids),
+                num_final_evidence_units=len(final_page_ids),
+            ),
         }

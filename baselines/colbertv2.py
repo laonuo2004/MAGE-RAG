@@ -3,7 +3,7 @@ import os
 import torch
 from safetensors.torch import load_file
 
-from baselines.base import ContextBuilder, ContextMessages
+from baselines.base import ContextBuilder, ContextMessages, build_context_summary, build_logical_cost, build_retrieval_metadata
 from benchmarks.utils.document_preprocess import (
     colbertv2_doc_cache_variant,
     colbertv2_query_cache_variant,
@@ -249,7 +249,15 @@ class ColBERTv2ContextBuilder(ContextBuilder):
     def _metadata(self, retrieval, allowed_pages, doc_key, query_key):
         retrieved_pages = []
         best_by_page = {}
+        text_chars = 0
+        retrieved_items = []
         for item in retrieval:
+            text = str(item.get("text") or "")
+            text_chars += len(text)
+            retrieved_items.append({
+                **item,
+                "text_preview": text[:200],
+            })
             for page_index, page_number in zip(item["covered_page_indices"], item["covered_page_numbers"]):
                 current = best_by_page.get(page_index)
                 if current is None or item["score"] > current["score"]:
@@ -260,6 +268,7 @@ class ColBERTv2ContextBuilder(ContextBuilder):
                     }
         for page_index in sorted(best_by_page):
             retrieved_pages.append(best_by_page[page_index])
+        page_ids = [page["page_index"] for page in retrieved_pages]
         return {
             "context_builder": self.name,
             "retrieved_chunks": retrieval,
@@ -275,6 +284,25 @@ class ColBERTv2ContextBuilder(ContextBuilder):
             "query_cache_variant": self.query_cache_variant,
             "doc_key": doc_key,
             "query_key": query_key,
+            "retrieval": build_retrieval_metadata(
+                retrieved_items=retrieved_items,
+                initial_retrieved_pages=page_ids,
+                final_context_pages=page_ids,
+            ),
+            "context_summary": build_context_summary(
+                page_ids=page_ids,
+                num_context_pages=len(page_ids),
+                num_text_units=len(retrieval),
+                num_text_chars=text_chars,
+            ),
+            "logical_cost": build_logical_cost(
+                num_retriever_calls=1,
+                num_input_text_chars=text_chars,
+                num_context_pages=len(page_ids),
+                num_retrieved_pages=len(page_ids),
+                num_retrieved_chunks=len(retrieval),
+                num_final_evidence_units=len(retrieval),
+            ),
         }
 
     def _resolve_path(self, benchmark_name, cache_kind, variant, stem, suffix):

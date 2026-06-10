@@ -31,6 +31,22 @@ class MAGERAGStubContextBuilder:
         )
 
 
+class SelfAnsweringStubContextBuilder:
+    def run_sample(self, benchmark_name, sample, **kwargs):
+        self.last_kwargs = kwargs
+        return {
+            "response": f"{benchmark_name}:{sample['question']}",
+            "pred": "answer",
+            "pred_format": "String",
+            "usage": {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14},
+            "metadata": {
+                "context_builder": "g2-reader",
+                "model": "g2-model",
+                "sample_key": sample["question_id"],
+            },
+        }
+
+
 def completion(content, *, model="served-model", prompt_tokens=10, completion_tokens=2):
     return SimpleNamespace(
         id="cmpl-test",
@@ -126,6 +142,51 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertTrue(MMLongBenchAdapter().is_successful_result({"pred": "ok", "score": 1.0}))
         self.assertTrue(LongDocURLAdapter().is_successful_result({"pred": "ok", "score": 1.0}))
         self.assertFalse(LongDocURLAdapter().is_successful_result({"pred": "ok", "score_v3": 1.0}))
+
+    def test_finalize_result_fields_adds_run_envelope_and_orders_metadata(self):
+        cfg = OmegaConf.create({
+            "benchmarks": {
+                "name": "longdocurl",
+                "qa_model_name": "qa-model",
+                "extractor_model_name": "extractor-model",
+            },
+            "baselines": {
+                "name": "bm25",
+                "params": {"top_k": 5},
+            },
+        })
+        sample = {
+            "question_id": 7,
+            "question": "q",
+            "answer": "a",
+            "answer_format": "Str",
+            "prepare_metadata": {"context_builder": "bm25"},
+            "pred": "a",
+            "pred_format": "Str",
+            "score": 1.0,
+        }
+
+        finalized = adapters._finalize_result_fields(sample, cfg=cfg)
+
+        self.assertEqual(finalized["benchmark"], "longdocurl")
+        self.assertEqual(finalized["baseline"], "bm25")
+        self.assertEqual(finalized["run_config"]["benchmark"]["name"], "longdocurl")
+        self.assertEqual(finalized["run_config"]["baseline"]["name"], "bm25")
+        self.assertEqual(finalized["run_config"]["baseline"]["params"]["top_k"], 5)
+        self.assertLess(list(finalized).index("run_config"), list(finalized).index("prepare_metadata"))
+
+    def test_self_answering_baseline_metadata_uses_unified_schema(self):
+        sample = {"question_id": "q1", "question": "What is the answer?"}
+        builder = SelfAnsweringStubContextBuilder()
+
+        result = adapters._process_self_answering_sample(sample, builder, "mmlongbench", client=object())
+
+        self.assertEqual(result["prepare_metadata"]["context_builder"], "g2-reader")
+        self.assertEqual(result["prepare_metadata"]["retrieval"]["retrieved_items"], [])
+        self.assertEqual(result["prepare_metadata"]["context_summary"]["num_context_pages"], 0)
+        self.assertEqual(result["prepare_metadata"]["logical_cost"]["num_llm_calls"], 1)
+        self.assertEqual(result["prepare_metadata"]["logical_cost"]["estimated_input_tokens"], 11)
+        self.assertEqual(result["generation_metadata"]["usage"]["total_tokens"], 14)
 
     def test_mmlongbench_list_score_splits_comma_phrase_and_percentage_points(self):
         score = MMLongBenchAdapter.score(

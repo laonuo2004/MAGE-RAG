@@ -1,8 +1,7 @@
 defaults:
   - _self_
   - benchmarks: longdocurl
-  - baselines: ocr
-  - ablations: full
+  - baselines: magerag
 
 litellm:
   base_url: http://localhost:4000/v1

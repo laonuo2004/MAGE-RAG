@@ -6,13 +6,7 @@ params:
   text_source: ocr
   allow_cross_page: true
   max_cross_pages: null
-result_name_params:
-  - params.top_k
-  - params.chunk_size
-  - params.chunk_overlap
-  - params.text_source
-  - params.allow_cross_page
-  - params.max_cross_pages
+result_name_params: []
 checkpoint: /root/autodl-tmp/ylz/models/colbertv2.0
 tokenizer_name: bert-base-uncased
 max_context_chars: null

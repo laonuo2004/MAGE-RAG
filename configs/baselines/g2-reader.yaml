@@ -29,34 +29,7 @@ params:
   show_build_progress: true
   inference_isolation: process
 
-result_name_params:
-  - params.use_dag
-  - params.top_k
-  - params.top_k_text_kw
-  - params.top_k_image_kw
-  - params.keyword_modality
-  - params.num_runs
-  - params.n_proc
-  - params.max_adjust_rounds
-  - params.build_evolve_iters
-  - params.build_window_size
-  - params.memory_cache_scope
-  - params.memory_chunk_size
-  - params.memory_chunk_overlap
-  - params.memory_analysis_retries
-  - params.memory_analysis_max_tokens
-  - params.memory_analysis_split_max_depth
-  - params.memory_analysis_split_min_chars
-  - params.memory_analysis_max_summary_chars
-  - params.memory_analysis_max_keywords
-  - params.memory_compact_analysis_prompts
-  - params.memory_build_workers
-  - params.memory_llm_concurrency
-  - params.memory_parallel_analysis
-  - params.memory_evolution_neighbor_k
-  - params.memory_evolution_max_memories
-  - params.show_build_progress
-  - params.inference_isolation
+result_name_params: []
 
 models:
   chat: Qwen3-VL-8B-Instruct

@@ -11,12 +11,16 @@ import torch
 
 import baselines.m3docrag_iterate as m3docrag_iterate
 import baselines.m3docrag_iterate_query as m3docrag_iterate_query
+from baselines.bm25 import BM25ContextBuilder
+from baselines.colbertv2 import ColBERTv2ContextBuilder
+from baselines.evisrag import EVisRAGContextBuilder
 from benchmarks.utils.document_preprocess import (
     colbertv2_doc_cache_variant,
     colbertv2_query_cache_variant,
     encode_pil_image_to_base64,
 )
 from baselines.wrapper import build_context_builder
+from baselines.base import build_context_summary, build_logical_cost, build_retrieval_metadata
 from benchmarks import wrapper
 from benchmarks.utils.data_utils import (
     colbertv2_cache_root,
@@ -28,6 +32,19 @@ from benchmarks.utils.data_utils import (
 
 
 class ContextBuilderTests(unittest.TestCase):
+    def test_metadata_helpers_build_stable_empty_structures(self):
+        logical_cost = build_logical_cost()
+        retrieval = build_retrieval_metadata()
+        context_summary = build_context_summary()
+
+        self.assertEqual(logical_cost["num_llm_calls"], 0)
+        self.assertEqual(logical_cost["num_retriever_calls"], 0)
+        self.assertEqual(logical_cost["num_input_images"], 0)
+        self.assertEqual(retrieval["retrieved_items"], [])
+        self.assertEqual(retrieval["initial_retrieved_pages"], [])
+        self.assertEqual(context_summary["num_context_pages"], 0)
+        self.assertEqual(context_summary["page_ids"], [])
+
     def test_build_context_builder_selects_image_and_ocr(self):
         image_builder = build_context_builder(OmegaConf.create({'baselines': {'name': 'image'}}))
         ocr_builder = build_context_builder(OmegaConf.create({'baselines': {'name': 'ocr'}}))
@@ -99,7 +116,10 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertEqual(content[1], {'type': 'text', 'text': 'Below is the 1-th image (total 2 images).\n'})
         self.assertEqual(content[2]['type'], 'image_url')
         self.assertTrue(content[2]['image_url']['url'].startswith('data:image/png;base64,'))
-        self.assertEqual(messages.metadata, {'context_builder': 'image'})
+        self.assertEqual(messages.metadata['context_builder'], 'image')
+        self.assertEqual(messages.metadata['retrieval']['final_context_pages'], [0, 1])
+        self.assertEqual(messages.metadata['context_summary']['num_context_pages'], 2)
+        self.assertEqual(messages.metadata['logical_cost']['num_input_images'], 2)
 
     def test_wrapper_routes_longdocurl_ocr_baseline(self):
         captured = []
@@ -221,7 +241,87 @@ class ContextBuilderTests(unittest.TestCase):
         self.assertEqual(messages.metadata['retrieved_pages'][0]['page_index'], 2)
         self.assertEqual(messages.metadata['retrieved_pages'][0]['page_number'], 3)
         self.assertEqual(messages.metadata['allowed_pages'], [0, 1, 2])
+        self.assertEqual(messages.metadata['retrieval']['retrieved_items'][0]['page_index'], 2)
+        self.assertEqual(messages.metadata['retrieval']['initial_retrieved_pages'], [2])
+        self.assertEqual(messages.metadata['context_summary']['num_context_pages'], 1)
+        self.assertEqual(messages.metadata['logical_cost']['num_retriever_calls'], 1)
         self.assertEqual(len(messages[0]['content']), 2)
+
+    def test_bm25_metadata_exposes_unified_retrieval_context_and_cost(self):
+        builder = BM25ContextBuilder(OmegaConf.create({
+            'baselines': {
+                'name': 'bm25',
+                'params': {'top_k': 2, 'chunk_size': 8, 'chunk_overlap': 0},
+                'tokenizer': 'regex',
+            },
+        }))
+
+        metadata = builder._metadata(
+            [
+                {'rank': 1, 'chunk_id': 3, 'chunk_index': 0, 'page_index': 2, 'page_number': 3, 'score': 1.5, 'text': 'alpha'},
+                {'rank': 2, 'chunk_id': 4, 'chunk_index': 1, 'page_index': 2, 'page_number': 3, 'score': 0.5, 'text': 'beta'},
+            ],
+            [0, 1, 2],
+        )
+
+        self.assertEqual(metadata['retrieval']['retrieved_items'][0]['chunk_id'], 3)
+        self.assertEqual(metadata['retrieval']['initial_retrieved_pages'], [2])
+        self.assertEqual(metadata['context_summary']['num_context_pages'], 1)
+        self.assertEqual(metadata['context_summary']['num_text_units'], 2)
+        self.assertEqual(metadata['logical_cost']['num_retriever_calls'], 1)
+        self.assertEqual(metadata['logical_cost']['num_retrieved_chunks'], 2)
+
+    def test_colbertv2_metadata_exposes_unified_retrieval_context_and_cost(self):
+        builder = ColBERTv2ContextBuilder(OmegaConf.create({
+            'baselines': {
+                'name': 'colbertv2',
+                'checkpoint': 'dummy-checkpoint',
+                'params': {'top_k': 2, 'chunk_size': 8, 'chunk_overlap': 0},
+            },
+        }))
+
+        metadata = builder._metadata(
+            [
+                {
+                    'rank': 1,
+                    'chunk_id': 10,
+                    'chunk_index': 0,
+                    'score': 2.0,
+                    'text': 'alpha beta',
+                    'covered_page_indices': [1, 2],
+                    'covered_page_numbers': [2, 3],
+                },
+            ],
+            [1, 2],
+            'doc',
+            'query',
+        )
+
+        self.assertEqual(metadata['retrieval']['retrieved_items'][0]['chunk_id'], 10)
+        self.assertEqual(metadata['retrieval']['initial_retrieved_pages'], [1, 2])
+        self.assertEqual(metadata['context_summary']['page_ids'], [1, 2])
+        self.assertEqual(metadata['logical_cost']['num_retrieved_chunks'], 1)
+
+    def test_evisrag_metadata_exposes_unified_retrieval_context_and_cost(self):
+        builder = EVisRAGContextBuilder(OmegaConf.create({
+            'baselines': {'name': 'evisrag', 'params': {'top_k': 3, 'max_images': 2}},
+        }))
+
+        metadata = builder._metadata(
+            [
+                {'page_index': 4, 'page_number': 5, 'score': 3.0},
+                {'page_index': 1, 'page_number': 2, 'score': 2.0},
+                {'page_index': 2, 'page_number': 3, 'score': 1.0},
+            ],
+            [1, 2, 4],
+            'pdf.safetensors',
+            'question.safetensors',
+        )
+
+        self.assertEqual(metadata['retrieval']['initial_retrieved_pages'], [4, 1, 2])
+        self.assertEqual(metadata['retrieval']['final_context_pages'], [4, 1])
+        self.assertEqual(metadata['context_summary']['num_image_units'], 2)
+        self.assertEqual(metadata['logical_cost']['num_retriever_calls'], 1)
 
     def test_m3docrag_longdocurl_images_mask_blocks_out_of_range_page(self):
         from PIL import Image

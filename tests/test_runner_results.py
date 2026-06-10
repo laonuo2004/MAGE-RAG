@@ -251,6 +251,31 @@ class RunnerResultsTests(unittest.TestCase):
 
         self.assertEqual([sample["id"] for sample in written], ["b", "a"])
 
+    def test_run_pending_writes_enriched_result_envelope(self):
+        adapter = DummyAdapter()
+        cfg = OmegaConf.create({
+            "benchmarks": {
+                "name": "longdocurl",
+                "process_mode": "serial",
+                "workers": 1,
+                "qa_model_name": "qa-model",
+            },
+            "baselines": {
+                "name": "dummy",
+                "params": {"top_k": 1},
+            },
+        })
+        samples = [{"id": "a"}]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = Path(tmp_dir) / "results.jsonl"
+            run_pending(adapter, cfg, samples, output_path, object(), object())
+            written = [json.loads(line) for line in output_path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(written[0]["benchmark"], "longdocurl")
+        self.assertEqual(written[0]["baseline"], "dummy")
+        self.assertEqual(written[0]["run_config"]["baseline"]["params"]["top_k"], 1)
+        self.assertEqual(samples[0]["benchmark"], "longdocurl")
+
     def test_parallel_write_failure_does_not_stop_later_results(self):
         adapter = WriteFailureAdapter()
         cfg = OmegaConf.create({"benchmarks": {"process_mode": "parallel", "workers": 2}})

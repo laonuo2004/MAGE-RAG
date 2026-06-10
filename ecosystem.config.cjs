@@ -21,13 +21,13 @@ module.exports = {
       args: "128k",
       cwd: "/root/autodl-tmp/ylz/NeurIPS_2026/code",
       env: {
-        CUDA_VISIBLE_DEVICES: "0",
+        CUDA_VISIBLE_DEVICES: "0,1",
         PORT: "8010",
-        GPU_MEMORY_UTILIZATION: "0.6",
+        GPU_MEMORY_UTILIZATION: "0.4",
         VLLM_SERVE_SCRIPT: "scripts/serve_qwen3_vl_vllm.sh",
         VLLM_STOP_GRACE_SECONDS: "20",
         CLEAN_STALE_ON_START: "1",
-        TENSOR_PARALLEL_SIZE: "1",
+        TENSOR_PARALLEL_SIZE: "2",
         DATA_PARALLEL_SIZE: "1"
       },
       autorestart: true,

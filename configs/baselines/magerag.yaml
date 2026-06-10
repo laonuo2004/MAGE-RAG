@@ -23,9 +23,25 @@ evaluator:
   recent_trace_limit: 25
 
 controller:
+  mode: full
   watchdog_iterations: 5
   watchdog_repeated_noop_rounds: 2
+  enable_online_controller: true
+  enable_search: true
+  enable_prune: true
   final_open_active_node_limit: 100
+
+graph:
+  mode: full_graph
+  enabled_edge_types: null
+  disabled_edge_types: []
+  max_edges_per_node: null
+
+trace:
+  save_full_prompt: false
+  save_full_context: false
+  save_candidate_actions: true
+  save_action_rationales: true
 
 reader:
   not_answerable_text: Not answerable.

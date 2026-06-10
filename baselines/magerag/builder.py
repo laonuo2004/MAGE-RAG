@@ -18,7 +18,7 @@ from baselines.magerag.graph_store import EvidenceGraphStore
 from baselines.magerag.renderer import ReaderRenderer
 from baselines.magerag.retrieval import ColPaliTop1Retriever
 from baselines.magerag.state import EvidenceAgentState
-from baselines.base import ContextBuilder, ContextMessages
+from baselines.base import ContextBuilder, ContextMessages, build_context_summary, build_logical_cost, build_retrieval_metadata
 from benchmarks.utils.document_preprocess import allowed_page_indices
 from benchmarks.utils.data_utils import mmlongbench_file_id
 from utils.config_utils import get_config_value, require_config_value
@@ -59,7 +59,11 @@ class MAGERAGContextBuilder(ContextBuilder):
             1,
             int(get_config_value(cfg, "baselines.evaluator.max_total_selected_actions", 24)),
         )
-        self.watchdog_iterations = max(1, int(get_config_value(cfg, "baselines.controller.watchdog_iterations", 6)))
+        self.controller_mode = str(get_config_value(cfg, "baselines.controller.mode", "full"))
+        self.enable_online_controller = bool(get_config_value(cfg, "baselines.controller.enable_online_controller", True))
+        self.enable_search = bool(get_config_value(cfg, "baselines.controller.enable_search", True))
+        self.enable_prune = bool(get_config_value(cfg, "baselines.controller.enable_prune", True))
+        self.watchdog_iterations = max(0, int(get_config_value(cfg, "baselines.controller.watchdog_iterations", 6)))
         self.watchdog_repeated_noop_rounds = max(1, int(get_config_value(cfg, "baselines.controller.watchdog_repeated_noop_rounds", 2)))
         self.auto_activate_initial_page_nodes = True
         self.auto_open_initial_page_nodes = True
@@ -259,6 +263,8 @@ class MAGERAGContextBuilder(ContextBuilder):
         selected_action_attempts = 0
         if client is None:
             return "fallback_no_client"
+        if not self.enable_online_controller or self.watchdog_iterations <= 0:
+            return "controller_disabled"
         for iteration in range(1, self.watchdog_iterations + 1):
             # 每轮都重新枚举候选，因为上轮动作可能激活页面、打开节点或引入搜索结果。
             candidates = generator.generate(state)
@@ -338,7 +344,7 @@ class MAGERAGContextBuilder(ContextBuilder):
                 node_id = str(request.get("node_id") or "")
                 result = state.execute(OpenNode(node_id), iteration=iteration)
                 made_progress = made_progress or result.ok
-            if decision.search_query:
+            if decision.search_query and self.enable_search:
                 # SearchEvidence 对应方法图里的 Jump：根据当前证据缺口重新找入口页/节点。
                 result = state.execute(SearchEvidence(decision.search_query), iteration=iteration)
                 made_progress = made_progress or result.ok
@@ -351,10 +357,24 @@ class MAGERAGContextBuilder(ContextBuilder):
                         iteration=iteration,
                     )
                     made_progress = made_progress or bool(activated_pages)
-            for request in decision.prune_requests:
+            elif decision.search_query:
+                state.trace.append({
+                    "iteration": iteration,
+                    "action": "SkippedSearchEvidence",
+                    "query": str(decision.search_query),
+                    "reason": "search_disabled",
+                })
+            for request in (decision.prune_requests if self.enable_prune else []):
                 # Prune 不删除节点，只把它从当前证据上下文降权，并保留原因供 trace 分析。
                 result = state.execute(PruneNode(request["node_id"], request.get("reason", "")), iteration=iteration)
                 made_progress = made_progress or result.ok
+            if decision.prune_requests and not self.enable_prune:
+                state.trace.append({
+                    "iteration": iteration,
+                    "action": "SkippedPruneRequests",
+                    "count": len(decision.prune_requests),
+                    "reason": "prune_disabled",
+                })
 
             if not made_progress:
                 repeated_noop_rounds += 1
@@ -434,6 +454,32 @@ class MAGERAGContextBuilder(ContextBuilder):
             for node_id, node_state in state.final_node_states().items()
             if node_state in {"Active", "Opened"} and state.graph.is_page_node(state.graph.node(node_id))
         )
+        initial_retrieved_pages = [
+            int(page["page_index"])
+            for page in retrieval_metadata.get("retrieved_pages", [])
+            if page.get("page_index") is not None
+        ]
+        if not initial_retrieved_pages and initial_page:
+            initial_retrieved_pages = [int(initial_page["page_index"])]
+        retrieval_items = [
+            {
+                "rank": rank,
+                "page_index": int(page["page_index"]),
+                "page_number": int(page.get("page_number", int(page["page_index"]) + 1)),
+                "score": page.get("score"),
+            }
+            for rank, page in enumerate(retrieval_metadata.get("retrieved_pages", []) or [initial_page], start=1)
+            if page and page.get("page_index") is not None
+        ]
+        opened_node_ids = state.opened_node_ids()
+        active_node_ids = state.active_node_ids()
+        trace = list(state.trace)
+        graph_stats = self._graph_stats(state)
+        trace_summary = self._trace_summary(trace, stop_reason)
+        context_page_ids = sorted(set(activated_pages))
+        node_ids = sorted(set(active_node_ids + opened_node_ids))
+        reader_text_chars = sum(len(str(part)) for part in reader_input.get("text_parts", []))
+        reader_image_refs = reader_input.get("image_refs", [])
         return {
             "context_builder": self.name,
             "params": self.params,
@@ -447,15 +493,104 @@ class MAGERAGContextBuilder(ContextBuilder):
             },
             "reader_input": reader_input,
             "final_node_states": state.final_node_states(),
-            "active_node_ids": state.active_node_ids(),
-            "opened_node_ids": state.opened_node_ids(),
+            "active_node_ids": active_node_ids,
+            "opened_node_ids": opened_node_ids,
             "pruned_node_ids": state.pruned_node_ids(),
-            "iteration_trace": list(state.trace),
+            "iteration_trace": trace,
             "stop_reason": stop_reason,
             "validation_errors": list(state.validation_errors),
             "evaluator_model_name": self.evaluator_model_name,
             "max_selected_actions_per_iteration": self.max_selected_actions_per_iteration,
             "max_total_selected_actions": self.max_total_selected_actions,
+            "retrieval": build_retrieval_metadata(
+                retrieved_items=retrieval_items,
+                initial_retrieved_pages=initial_retrieved_pages,
+                final_context_pages=context_page_ids,
+            ),
+            "context_summary": build_context_summary(
+                page_ids=context_page_ids,
+                node_ids=node_ids,
+                node_types=[
+                    str(state.graph.node(node_id).get("type") or "")
+                    for node_id in node_ids
+                    if node_id in state.graph.nodes
+                ],
+                num_context_pages=len(context_page_ids),
+                num_context_nodes=len(node_ids),
+                num_text_units=len(reader_input.get("text_parts", [])),
+                num_image_units=len(reader_image_refs),
+                num_text_chars=reader_text_chars,
+            ),
+            "logical_cost": build_logical_cost(
+                num_llm_calls=trace_summary["num_evaluator_calls"],
+                num_retriever_calls=1 + trace_summary["num_search_retrievals"],
+                num_input_text_chars=reader_text_chars,
+                num_input_images=len(reader_image_refs),
+                num_context_pages=len(context_page_ids),
+                num_context_nodes=len(node_ids),
+                num_retrieved_pages=len(initial_retrieved_pages),
+                num_final_evidence_units=len(context_page_ids) + len(opened_node_ids),
+            ),
+            "magerag": {
+                "graph_stats": graph_stats,
+                "initial_retrieval": {
+                    "initial_page": initial_page,
+                    **retrieval_metadata,
+                },
+                "state_summary": state.snapshot(),
+                "trace_summary": trace_summary,
+                "iteration_trace": trace,
+                "controller": {
+                    "mode": self.controller_mode,
+                    "enable_online_controller": self.enable_online_controller,
+                    "enable_search": self.enable_search,
+                    "enable_prune": self.enable_prune,
+                    "watchdog_iterations": self.watchdog_iterations,
+                    "watchdog_repeated_noop_rounds": self.watchdog_repeated_noop_rounds,
+                    "final_open_active_node_limit": self.final_open_active_node_limit,
+                },
+            },
+        }
+
+    def _graph_stats(self, state: EvidenceAgentState) -> dict:
+        node_type_counts = {}
+        edge_type_counts = {}
+        for node in state.graph.nodes.values():
+            node_type = str(node.get("type") or "unknown")
+            node_type_counts[node_type] = node_type_counts.get(node_type, 0) + 1
+        for edge in state.graph.edges.values():
+            edge_type = str(edge.get("type") or "unknown")
+            edge_type_counts[edge_type] = edge_type_counts.get(edge_type, 0) + 1
+        return {
+            "num_nodes": len(state.graph.nodes),
+            "num_edges": len(state.graph.edges),
+            "num_allowed_pages": None if state.graph.allowed_pages is None else len(state.graph.allowed_pages),
+            "num_page_nodes": len(state.graph.page_nodes),
+            "node_type_counts": dict(sorted(node_type_counts.items())),
+            "edge_type_counts": dict(sorted(edge_type_counts.items())),
+        }
+
+    def _trace_summary(self, trace: list[dict], stop_reason: str) -> dict:
+        action_counts = {}
+        iterations = set()
+        for item in trace:
+            action = str(item.get("action") or "")
+            action_counts[action] = action_counts.get(action, 0) + 1
+            iteration = item.get("iteration")
+            if isinstance(iteration, int) and iteration > 0:
+                iterations.add(iteration)
+        return {
+            "stop_reason": stop_reason,
+            "num_iterations": len(iterations),
+            "num_trace_events": len(trace),
+            "num_evaluator_calls": action_counts.get("EvaluatorDecision", 0),
+            "num_search_requests": action_counts.get("SearchEvidence", 0),
+            "num_search_retrievals": action_counts.get("SearchEvidenceRetrieval", 0),
+            "num_activate_page": action_counts.get("ActivatePage", 0),
+            "num_activate_node": action_counts.get("ActivateNode", 0),
+            "num_open_node": action_counts.get("OpenNode", 0),
+            "num_prune_node": action_counts.get("PruneNode", 0),
+            "action_counts": dict(sorted(action_counts.items())),
         }
 
 def _page_index_from_image(image_path) -> int:

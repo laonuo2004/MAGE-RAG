@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 from tqdm import tqdm
 
-from benchmarks.adapters import BenchmarkAdapter
+from benchmarks.adapters import BenchmarkAdapter, _finalize_result_fields
 from benchmarks.utils.results_utils import (
     append_jsonl,
     build_results_file,
@@ -42,16 +42,16 @@ def compact_results_file(adapter: BenchmarkAdapter, output_path: str | Path) -> 
     output_path = Path(output_path)
     if not output_path.exists():
         return
+    original_text = output_path.read_text(encoding="utf-8")
     raw = read_jsonl(output_path)
     unique = {}
     for sample in raw:
         if adapter.is_successful_result(sample):
-            unique[adapter.sample_key(sample)] = sample
-    if len(unique) == len(raw):
+            unique[adapter.sample_key(sample)] = _finalize_result_fields(dict(sample))
+    compacted_text = "".join(json.dumps(sample, ensure_ascii=False) + "\n" for sample in unique.values())
+    if compacted_text == original_text:
         return
-    with output_path.open("w", encoding="utf-8") as f:
-        for sample in unique.values():
-            f.write(json.dumps(sample, ensure_ascii=False) + "\n")
+    output_path.write_text(compacted_text, encoding="utf-8")
 
 
 def merge_existing_samples(adapter: BenchmarkAdapter, samples: List[Dict[str, Any]], output_path: str | Path) -> List[Dict[str, Any]]:

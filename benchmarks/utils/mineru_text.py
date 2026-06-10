@@ -112,7 +112,7 @@ def build_block_text(block: dict[str, Any], *, mineru_dir: Path, client=None, mo
 
 def describe_visual_block(*, client, model_name: str, block_type: str, extracted_text: str, image_path: str, max_tokens: int = 512) -> str:
     content = []
-    if image_path and Path(image_path).exists():
+    if image_path and Path(image_path).is_file():
         from benchmarks.utils.document_preprocess import encode_image_file_to_base64
 
         suffix = Path(image_path).suffix.lower().lstrip(".") or "png"

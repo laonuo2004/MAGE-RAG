@@ -186,6 +186,57 @@ class RunnerResultsTests(unittest.TestCase):
         self.assertEqual(merged[0]["score"], 0.5)
         self.assertNotIn("score", merged[1])
 
+    def test_compact_results_file_normalizes_correction_field_order(self):
+        adapter = DummyAdapter()
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = Path(tmp_dir) / "results.jsonl"
+            append_jsonl({
+                "id": "a",
+                "pred": "fixed",
+                "pred_format": "String",
+                "score": 1.0,
+                "corrected_pred": "fixed",
+                "corrected_format": "String",
+                "corrected_score": 1.0,
+                "prepare_metadata": {},
+                "generation_metadata": {},
+                "extraction_metadata": {},
+                "correction_metadata": {
+                    "initial_pred": "raw",
+                    "initial_pred_format": "String",
+                    "initial_score": 0.0,
+                    "corrected_pred": "fixed",
+                    "corrected_pred_format": "String",
+                    "corrected_score": 1.0,
+                    "applied": True,
+                },
+            }, output_path)
+            output_path.write_text(output_path.read_text(encoding="utf-8") + "{bad json}\n", encoding="utf-8")
+
+            compact_results_file(adapter, output_path)
+            row = json.loads(output_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(row["pred"], "raw")
+        self.assertEqual(row["score"], 0.0)
+        self.assertEqual(row["corrected_pred"], "fixed")
+        self.assertEqual(row["corrected_score"], 1.0)
+        keys = list(row)
+        self.assertEqual(
+            keys[keys.index("prepare_metadata"):keys.index("corrected_score") + 1],
+            [
+                "prepare_metadata",
+                "generation_metadata",
+                "extraction_metadata",
+                "correction_metadata",
+                "pred",
+                "pred_format",
+                "score",
+                "corrected_pred",
+                "corrected_format",
+                "corrected_score",
+            ],
+        )
+
     def test_failed_samples_retry_on_next_round(self):
         adapter = DummyAdapter()
         cfg = OmegaConf.create({"benchmarks": {"process_mode": "serial", "workers": 1}})

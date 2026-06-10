@@ -167,6 +167,134 @@ def test_runtime_patch_dag_adjust_rounds_uses_configured_limit(tmp_path):
     assert calls == [0]
 
 
+
+def test_runtime_patch_dag_parser_repairs_common_invalid_json(tmp_path):
+    class FakeLogger:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, message):
+            self.messages.append(("info", message))
+
+        def warning(self, message):
+            self.messages.append(("warning", message))
+
+    class FakeDAGPred:
+        decomposer_dag_prompt = "$DOC$ $Q$"
+
+        def __init__(self):
+            self.logger = FakeLogger()
+
+        def query_llm(self, *args, **kwargs):
+            return """Here is the DAG:
+<dag>
+```json
+{
+  "nodes": [
+    {"id": "root", "task": "Answer the question", "children": ["n1"]},
+    {"id": "n1", "task": "Find the phrase \"White households\" and output like ["1","2"]", "children": []},
+  ]
+}
+```
+</dag>
+"""
+
+        def _validate_dag(self, dag, max_depth, max_nodes):
+            return isinstance(dag, dict) and len(dag.get("nodes", [])) == 2
+
+        def _compute_depth(self, dag):
+            return 2
+
+        def dag_decomposer(self, *args, **kwargs):
+            raise RuntimeError("DAG 解析多轮失败，无法Generated valid DAG。")
+
+    cfg = {
+        "benchmarks": {"name": "mmlongbench"},
+        "baselines": {
+            "params": {},
+            "paths": {"cache_root": str(tmp_path / "cache")},
+        },
+    }
+
+    runtime = G2ReaderRuntime(cfg)
+    runtime._patch_dag_json_repair(FakeDAGPred)
+    dag = FakeDAGPred().dag_decomposer("ctx", "question", "model", None, object())
+
+    assert dag["nodes"][1]["task"] == 'Find the phrase "White households" and output like ["1","2"]'
+
+
+def test_runtime_patch_dag_parser_falls_back_when_repaired_dag_has_cycle(tmp_path):
+    class FakeLogger:
+        def __init__(self):
+            self.messages = []
+
+        def info(self, message):
+            self.messages.append(("info", message))
+
+        def warning(self, message):
+            self.messages.append(("warning", message))
+
+    class FakeDAGPred:
+        decomposer_dag_prompt = "$DOC$ $Q$"
+
+        def __init__(self):
+            self.logger = FakeLogger()
+
+        def query_llm(self, *args, **kwargs):
+            return '<dag>\n{\n  "nodes": [\n    {"id": "root", "type": "question", "task": "Answer", "children": ["n1"]},\n    {"id": "n1", "type": "subquestion", "task": "Find evidence", "children": ["root"]}\n  ]\n}\n</dag>\n'
+
+        def _validate_dag(self, dag, max_depth, max_nodes):
+            nodes = dag.get("nodes", []) if isinstance(dag, dict) else []
+            if len(nodes) > max_nodes or not all(isinstance(n, dict) for n in nodes):
+                return False
+            indegree = {n.get("id"): 0 for n in nodes}
+            graph = {n.get("id"): list(n.get("children", [])) for n in nodes}
+            for children in graph.values():
+                for child in children:
+                    indegree[child] = indegree.get(child, 0) + 1
+            queue = [node_id for node_id, degree in indegree.items() if degree == 0]
+            visited = 0
+            while queue:
+                node_id = queue.pop()
+                visited += 1
+                for child in graph.get(node_id, []):
+                    indegree[child] -= 1
+                    if indegree[child] == 0:
+                        queue.append(child)
+            return visited == len(nodes)
+
+        def _compute_depth(self, dag):
+            return 1
+
+        def dag_decomposer(self, *args, **kwargs):
+            raise RuntimeError("DAG 解析多轮失败，无法Generated valid DAG。")
+
+    cfg = {
+        "benchmarks": {"name": "longdocurl"},
+        "baselines": {
+            "params": {},
+            "paths": {"cache_root": str(tmp_path / "cache")},
+        },
+    }
+
+    runtime = G2ReaderRuntime(cfg)
+    runtime._patch_dag_json_repair(FakeDAGPred)
+    pred = FakeDAGPred()
+    dag = pred.dag_decomposer("ctx", "original question", "model", None, object())
+
+    assert dag == {
+        "nodes": [
+            {
+                "id": "root",
+                "type": "question",
+                "task": "original question",
+                "children": [],
+            }
+        ]
+    }
+    assert any("falling back to direct-answer DAG" in message for _, message in pred.logger.messages)
+
+
 def test_runtime_patch_updates_g2_config_without_modifying_vendored_package(monkeypatch, tmp_path):
     config_module = types.SimpleNamespace(
         LLM_BASE_URL="old",

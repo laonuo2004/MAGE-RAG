@@ -48,8 +48,8 @@ class MAGERAGContextBuilder(ContextBuilder):
             include_images_for_opened_nodes=get_config_value(cfg, "baselines.evaluator.include_opened_node_images", False),
             candidate_preview_char_limit=get_config_value(cfg, "baselines.evaluator.candidate_preview_char_limit", 160),
             max_selected_actions_per_iteration=get_config_value(cfg, "baselines.evaluator.max_selected_actions_per_iteration", 4),
-            prompt_style=get_config_value(cfg, "baselines.evaluator.prompt_style", "structured"),
             include_few_shot_examples=get_config_value(cfg, "baselines.evaluator.include_few_shot_examples", True),
+            recent_trace_limit=get_config_value(cfg, "baselines.evaluator.recent_trace_limit", 25),
         )
         self.max_selected_actions_per_iteration = max(
             1,
@@ -113,7 +113,6 @@ class MAGERAGContextBuilder(ContextBuilder):
             self.cfg,
             include_page_images=get_config_value(self.cfg, "baselines.reader.include_page_images", True),
             include_opened_node_images=get_config_value(self.cfg, "baselines.reader.include_opened_node_images", True),
-            raw_text_limit=get_config_value(self.cfg, "baselines.reader.raw_text_char_limit", 8192),
         )
         # Stage III: evidence graph state -> LVLM reader messages，同时保留 trace 供分析插件复盘。
         content = renderer.render(benchmark_name, sample, state)

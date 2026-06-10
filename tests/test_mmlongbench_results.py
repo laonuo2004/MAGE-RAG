@@ -54,11 +54,11 @@ class MMLongBenchResultsTests(unittest.TestCase):
 
     def test_run_pending_does_not_append_failed_sample(self):
         class Adapter(MMLongBenchAdapter):
-            def process_sample(self, sample, cfg, context_builder, client):
+            async def process_sample_async(self, sample, cfg, context_builder, client, *, local_executor=None):
                 return None
 
         samples = [{"doc_id": "d1", "question": "q?", "answer": "a", "answer_format": "Str"}]
-        cfg = OmegaConf.create({"benchmarks": {"process_mode": "serial", "workers": 1}})
+        cfg = OmegaConf.create({"benchmarks": {"local_workers": 1}})
         with tempfile.TemporaryDirectory() as tmp_dir:
             output_path = Path(tmp_dir) / "results.jsonl"
             run_pending(Adapter(), cfg, samples, output_path, object(), object())

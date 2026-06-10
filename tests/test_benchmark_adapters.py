@@ -22,6 +22,15 @@ class StubContextBuilder:
         )
 
 
+class MAGERAGStubContextBuilder:
+    def build(self, benchmark_name, sample, **kwargs):
+        self.last_kwargs = kwargs
+        return ContextMessages(
+            [{"role": "user", "content": text_content_parts(f"magerag:{benchmark_name}:{sample['question']}")}],
+            metadata={"context_builder": "magerag", "sample_question": sample["question"]},
+        )
+
+
 def completion(content, *, model="served-model", prompt_tokens=10, completion_tokens=2):
     return SimpleNamespace(
         id="cmpl-test",
@@ -157,7 +166,9 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertIn("_anls_compute", prompt)
         self.assertIn("hyphenation", prompt)
         self.assertIn("<think>...</think>", prompt)
-        self.assertIn("After &lt;/think&gt;, output the corrected formatted extraction", prompt)
+        self.assertIn("<thinking_policy>", prompt)
+        self.assertIn("<output_schema>", prompt)
+        self.assertIn("<self_check>", prompt)
         self.assertIn("<corrected_extraction>", prompt)
         self.assertIn("Output sequence:", prompt)
         self.assertNotIn("def score_int", prompt)
@@ -291,8 +302,8 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertIs(stub_builder.last_kwargs["client"], client)
         self.assertEqual([call[0][1] for call in calls], ["qa-model", "extractor-model"])
         self.assertEqual(calls[1][0][2][0]["content"][0]["type"], "text")
-        self.assertIn("Question: q", calls[1][0][2][0]["content"][0]["text"])
-        self.assertIn("Analysis: raw answer", calls[1][0][2][0]["content"][0]["text"])
+        self.assertIn("<question>q</question>", calls[1][0][2][0]["content"][0]["text"])
+        self.assertIn("<model_response>raw answer</model_response>", calls[1][0][2][0]["content"][0]["text"])
         self.assertEqual(result["generation_metadata"]["response"], "raw answer")
         self.assertEqual(result["pred"], "answer")
         self.assertEqual(result["pred_format"], "String")
@@ -308,6 +319,158 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertIn("duration_seconds", result["generation_metadata"])
         self.assertIn("duration_seconds", result["extraction_metadata"])
         self.assertNotIn("stale", result["prepare_metadata"])
+
+    def test_extraction_prompt_requests_think_then_structured_xml_result(self):
+        prompt = MMLongBenchAdapter().build_extraction_messages(
+            {"question": "q"},
+            "analysis",
+        )[0]["content"][0]["text"]
+
+        self.assertIn("<extraction_prompt>", prompt)
+        self.assertIn("<role>", prompt)
+        self.assertIn("<objective>", prompt)
+        self.assertIn("<input_data>", prompt)
+        self.assertIn("<extraction_policy>", prompt)
+        self.assertIn("<not_answerable_policy>", prompt)
+        self.assertIn("<format_policy>", prompt)
+        self.assertIn("<thinking_policy>", prompt)
+        self.assertIn("<output_schema>", prompt)
+        self.assertIn("<few_shot_examples>", prompt)
+        self.assertIn("<think>...</think>", prompt)
+        self.assertIn("<extraction_result>", prompt)
+        self.assertIn("Extracted answer: [answer]", prompt)
+        self.assertIn("Answer format: [answer_format]", prompt)
+        self.assertIn("Use None as answer format only when the extracted answer is exactly Not answerable or Fail to answer.", prompt)
+        self.assertIn("<question>q</question>", prompt)
+        self.assertIn("<model_response>analysis</model_response>", prompt)
+
+    def test_longdocurl_extraction_prompt_constrains_none_format_to_unanswerable(self):
+        prompt = LongDocURLAdapter().build_extraction_messages(
+            {"question": "q"},
+            "analysis",
+        )[0]["content"][0]["text"]
+
+        self.assertIn("<extraction_prompt>", prompt)
+        self.assertIn("<target_answer_formats>Integer, Float, String, List, None</target_answer_formats>", prompt)
+        self.assertIn("Use None as answer format only when the extracted answer is exactly Not answerable or Fail to answer.", prompt)
+        self.assertIn("If the model response contains a concrete answer, never use None as the answer format.", prompt)
+
+    def test_mmlongbench_extraction_strips_think_and_result_xml_before_parsing(self):
+        pred, pred_format = MMLongBenchAdapter.parse_extraction_result(
+            "<think>Compare the response to the question and choose the concise answer.</think>\n"
+            "<extraction_result>\n"
+            "Extracted answer: less well-off\n"
+            "Answer format: String\n"
+            "</extraction_result>"
+        )
+
+        self.assertEqual(pred, "less well-off")
+        self.assertEqual(pred_format, "String")
+
+    def test_mmlongbench_extraction_unwraps_answer_tags_and_code_fences(self):
+        pred, pred_format = MMLongBenchAdapter.parse_extraction_result(
+            "```xml\n"
+            "<think>The answer block contains the concise answer.</think>\n"
+            "<extraction_result>\n"
+            "Extracted answer: <answer>less well-off</answer>\n"
+            "Answer format: <answer_format>String</answer_format>\n"
+            "</extraction_result>\n"
+            "```"
+        )
+
+        self.assertEqual(pred, "less well-off")
+        self.assertEqual(pred_format, "String")
+
+    def test_longdocurl_extraction_strips_think_and_result_xml_before_parsing(self):
+        pred, pred_format = LongDocURLAdapter().parse_extraction_result(
+            "<think>The response gives a numeric percentage answer.</think>\n"
+            "<extraction_result>\n"
+            "Extracted answer: <concise_answer>84 percent</concise_answer>\n"
+            "Answer format: <answer_format>String</answer_format>\n"
+            "</extraction_result>"
+        )
+
+        self.assertEqual(pred, "84 percent")
+        self.assertEqual(pred_format, "String")
+
+    def test_magerag_generation_response_unwraps_answer_for_extraction(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion(
+                        "<think>The evidence states the normalized phrase.</think>\n"
+                        "<answer>less well-off</answer>",
+                        model="qa-served",
+                    )
+                return completion(
+                    "Extracted answer: less well-off\nAnswer format: String",
+                    model="extractor-served",
+                )
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                }
+            })
+            sample = {"doc_id": "d1", "question": "q", "answer": "less well-off", "answer_format": "String"}
+
+            result = MMLongBenchAdapter().process_sample(sample, cfg, MAGERAGStubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        extraction_prompt = calls[1][0][2][0]["content"][0]["text"]
+        self.assertIn("<model_response>less well-off</model_response>", extraction_prompt)
+        self.assertNotIn("<answer>less well-off</answer>", extraction_prompt)
+        self.assertEqual(result["generation_metadata"]["response"], "less well-off")
+        self.assertIn("<think>", result["generation_metadata"]["raw_response"])
+        self.assertEqual(result["pred"], "less well-off")
+
+    def test_magerag_generation_records_raw_response_when_answer_tag_is_absent(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion(
+                        "<think>The evidence identifies the two capacity columns.</think>\n"
+                        "Installed photovoltaic (PV) power*; Installed wind turbine capacity*",
+                        model="qa-served",
+                    )
+                return completion(
+                    "Extracted answer: Installed photovoltaic (PV) power*; Installed wind turbine capacity*\n"
+                    "Answer format: String",
+                    model="extractor-served",
+                )
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                }
+            })
+            sample = {"doc_id": "d1", "question": "q", "answer": "capacity", "answer_format": "String"}
+
+            result = MMLongBenchAdapter().process_sample(sample, cfg, MAGERAGStubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        self.assertEqual(
+            result["generation_metadata"]["response"],
+            "Installed photovoltaic (PV) power*; Installed wind turbine capacity*",
+        )
+        self.assertIn("<think>", result["generation_metadata"]["raw_response"])
+        extraction_prompt = calls[1][0][2][0]["content"][0]["text"]
+        self.assertIn(
+            "<model_response>Installed photovoltaic (PV) power*; Installed wind turbine capacity*</model_response>",
+            extraction_prompt,
+        )
 
     def test_mmlongbench_adapter_has_no_prediction_postprocess_hook(self):
         self.assertFalse(hasattr(MMLongBenchAdapter, "postprocess_prediction"))
@@ -373,9 +536,12 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertIn("Actively fix representation errors", correction_prompt)
         self.assertIn("benchmark-friendly surface form", correction_prompt)
         self.assertIn("Do not copy gold_truth into the answer unless model_response supports it", correction_prompt)
-        self.assertEqual(result["pred"], "22 million")
-        self.assertEqual(result["pred_format"], "String")
-        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["pred"], "22000000")
+        self.assertEqual(result["pred_format"], "Integer")
+        self.assertEqual(result["score"], 0.0)
+        self.assertEqual(result["corrected_pred"], "22 million")
+        self.assertEqual(result["corrected_format"], "String")
+        self.assertEqual(result["corrected_score"], 1.0)
         self.assertEqual(result["correction_metadata"]["initial_pred"], "22000000")
         self.assertEqual(result["correction_metadata"]["corrected_pred"], "22 million")
         self.assertTrue(result["correction_metadata"]["applied"])
@@ -414,9 +580,12 @@ class BenchmarkAdapterTests(unittest.TestCase):
         finally:
             adapters.call_llm_messages = original_call_llm_messages
 
-        self.assertEqual(result["pred"], "22 million")
-        self.assertEqual(result["pred_format"], "String")
-        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["pred"], "22000000")
+        self.assertEqual(result["pred_format"], "Integer")
+        self.assertEqual(result["score"], 0.0)
+        self.assertEqual(result["corrected_pred"], "22 million")
+        self.assertEqual(result["corrected_format"], "String")
+        self.assertEqual(result["corrected_score"], 1.0)
         self.assertEqual(result["correction_metadata"]["corrected_pred"], "22 million")
         self.assertIn("<think>", result["correction_metadata"]["corrected_extracted_res"])
 
@@ -447,6 +616,9 @@ class BenchmarkAdapterTests(unittest.TestCase):
         finally:
             adapters.call_llm_messages = original_call_llm_messages
 
+        self.assertEqual(result["pred"], "22000000")
+        self.assertEqual(result["pred_format"], "Integer")
+        self.assertEqual(result["score"], 0.0)
         self.assertEqual(result["corrected_pred"], "22 million")
         self.assertEqual(result["corrected_format"], "String")
         self.assertEqual(result["corrected_score"], 1.0)
@@ -511,9 +683,12 @@ class BenchmarkAdapterTests(unittest.TestCase):
             "Extracted answer: <concise_answer>84</concise_answer>\n"
             "Answer format: <answer_format>Integer</answer_format>"
         ))
-        self.assertEqual(result["pred"], "84 percent")
-        self.assertEqual(result["pred_format"], "String")
-        self.assertEqual(result["score"], 1.0)
+        self.assertEqual(result["pred"], 84)
+        self.assertEqual(result["pred_format"], "Integer")
+        self.assertEqual(result["score"], 0.0)
+        self.assertEqual(result["corrected_pred"], "84 percent")
+        self.assertEqual(result["corrected_format"], "String")
+        self.assertEqual(result["corrected_score"], 1.0)
         self.assertEqual(result["correction_metadata"]["corrected_score"], 1.0)
         self.assertTrue(result["correction_metadata"]["applied"])
 
@@ -544,6 +719,9 @@ class BenchmarkAdapterTests(unittest.TestCase):
 
         self.assertEqual([call[0][1] for call in calls], ["qa-model", "extractor-model"])
         self.assertNotIn("correction_metadata", result)
+        self.assertEqual(result["corrected_pred"], result["pred"])
+        self.assertEqual(result["corrected_format"], result["pred_format"])
+        self.assertEqual(result["corrected_score"], result["score"])
 
     def test_correction_parse_failure_preserves_initial_result(self):
         calls = []
@@ -574,7 +752,12 @@ class BenchmarkAdapterTests(unittest.TestCase):
 
         self.assertEqual(result["pred"], "22000000")
         self.assertEqual(result["score"], 0.0)
+        self.assertEqual(result["corrected_pred"], "22000000")
+        self.assertEqual(result["corrected_format"], "Integer")
+        self.assertEqual(result["corrected_score"], 0.0)
         self.assertFalse(result["correction_metadata"]["applied"])
+        self.assertFalse(result["correction_metadata"]["changed"])
+        self.assertFalse(result["correction_metadata"]["improved"])
         self.assertIn("error", result["correction_metadata"])
 
 

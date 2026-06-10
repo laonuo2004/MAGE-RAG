@@ -1,7 +1,9 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from utils.llm_utils import call_llm_messages, xml_block
+import utils.llm_utils as llm_utils
+from utils.llm_utils import AsyncLLMExecutor, call_llm_messages, xml_block
 
 
 def completion(content):
@@ -26,11 +28,50 @@ class FailingCompletions:
         return completion("ok")
 
 
+class AsyncRecordingCompletions:
+    def __init__(self):
+        self.active = 0
+        self.max_active = 0
+        self.calls = 0
+
+    async def create(self, **kwargs):
+        self.calls += 1
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.01)
+            return completion("ok")
+        finally:
+            self.active -= 1
+
+
+def test_async_llm_executor_limits_in_flight_requests():
+    completions = AsyncRecordingCompletions()
+    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+    executor = AsyncLLMExecutor(client, concurrency=2)
+
+    async def run_calls():
+        return await asyncio.gather(*[
+            executor.call_messages(
+                "test-model",
+                [{"role": "user", "content": f"hello {index}"}],
+                retries=1,
+            )
+            for index in range(5)
+        ])
+
+    results = asyncio.run(run_calls())
+
+    assert [result.choices[0].message.content for result in results] == ["ok"] * 5
+    assert completions.calls == 5
+    assert completions.max_active <= 2
+
+
 def test_call_llm_messages_waits_with_exponential_backoff_between_retries():
     completions = FailingCompletions(failures_before_success=3)
     client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
 
-    with patch("utils.llm_utils.time.sleep") as sleep:
+    with patch.object(llm_utils.time, "sleep") as sleep:
         result = call_llm_messages(
             client,
             "test-model",

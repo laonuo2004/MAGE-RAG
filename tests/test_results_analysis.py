@@ -1,12 +1,23 @@
 import json
 from pathlib import Path
 
+import pandas as pd
+import pyarrow as pa
+
 from analysis.plugins import AnalysisPlugin, ParameterSpec, get_plugin, registered_plugins
 from analysis.plugins.magerag import MAGERAGPlugin
-from analysis.dashboard_app import DEFAULT_RESULT_SUBDIRS, load_agent_trace_runs, load_runs
+from analysis.dashboard_app import (
+    DEFAULT_RESULT_SUBDIRS,
+    _dataframe_for_streamlit,
+    _extract_xml_document,
+    _image_ref_display_image,
+    load_agent_trace_runs,
+    load_runs,
+)
 from analysis.results_loader import parse_run_parameters, read_jsonl_cached, scan_runs
 from analysis.results_metrics import (
     build_leaderboard,
+    case_rows,
     correction_rows,
     flatten_metrics,
     pairwise_comparison,
@@ -170,6 +181,27 @@ def test_dashboard_agent_trace_runs_are_scoped_to_magerag_subdirectories(tmp_pat
     runs = load_agent_trace_runs(str(results_root))
 
     assert [run.run_id for run in runs] == ["longdocurl/magerag/res_top_k_1_model"]
+
+
+def test_dashboard_dataframe_for_streamlit_serializes_mixed_object_columns():
+    df = _dataframe_for_streamlit(
+        pd.DataFrame(
+            [
+                {"question_id": "q1", "answer": ["white", "10%"], "score": 0.0},
+                {"question_id": "q2", "answer": "less well-off", "score": 1.0},
+            ]
+        )
+    )
+
+    assert df["answer"].tolist() == ['["white", "10%"]', "less well-off"]
+    assert df["score"].tolist() == [0.0, 1.0]
+    pa.Table.from_pandas(df)
+
+
+def test_dashboard_extract_xml_document_wraps_reader_think_and_answer_blocks():
+    wrapped = _extract_xml_document("<think>Reason.</think><answer>Final.</answer>")
+
+    assert wrapped == "<analysis_xml><think>Reason.</think><answer>Final.</answer></analysis_xml>"
 
 
 def test_scan_runs_prefers_run_metadata_then_legacy_then_sample_then_filename(tmp_path):
@@ -514,7 +546,26 @@ def test_magerag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
     record = {
         "question_id": "q1",
         "score": 1.0,
-        "generation_metadata": {"response": "Reader raw answer"},
+        "generation_metadata": {
+            "response": "Reader parsed answer",
+            "raw_response": "<think>Reason about the evidence.</think><answer>Reader parsed answer</answer>",
+        },
+        "extraction_metadata": {
+            "input_messages": [{"role": "user", "content": [{"type": "text", "text": "Extraction prompt"}]}],
+            "extracted_res": "Extracted answer: page 1\nAnswer format: String",
+            "model": "extractor",
+        },
+        "correction_metadata": {
+            "input_messages": [{"role": "user", "content": [{"type": "text", "text": "Correction prompt"}]}],
+            "corrected_extracted_res": "Extracted answer: page 1\nAnswer format: String",
+            "initial_pred": "page one",
+            "initial_score": 0.0,
+            "corrected_pred": "page 1",
+            "corrected_score": 1.0,
+            "changed": True,
+            "improved": True,
+            "applied": True,
+        },
         "prepare_metadata": {
             "graph_dir": str(graph_dir),
             "allowed_pages": [0],
@@ -558,8 +609,16 @@ def test_magerag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
     data = MAGERAGPlugin().case_visualization(record)
 
     assert data["reader_input"]["text_parts"] == ["Reader prompt"]
-    assert data["reader_output"] == "Reader raw answer"
+    assert data["reader_output"] == "Reader parsed answer"
+    assert data["reader_raw_output"] == "<think>Reason about the evidence.</think><answer>Reader parsed answer</answer>"
+    assert data["reader_think_output"] == "Reason about the evidence."
     assert data["reader_image_refs"][0]["page_index"] == 0
+    assert data["extraction_io"]["input"]["prompt_text"] == "Extraction prompt"
+    assert data["extraction_io"]["output"] == "Extracted answer: page 1\nAnswer format: String"
+    assert data["correction_io"]["input"]["prompt_text"] == "Correction prompt"
+    assert data["correction_io"]["output"] == "Extracted answer: page 1\nAnswer format: String"
+    assert data["correction_io"]["changed"] is True
+    assert data["correction_io"]["improved"] is True
     assert data["evaluator_rows"][0]["prompt_text"] == "controller prompt"
     assert data["evaluator_rows"][0]["iteration_label"] == "Iteration 1"
     assert data["evaluator_rows"][0]["candidate_action_count"] == 1
@@ -569,6 +628,52 @@ def test_magerag_plugin_exposes_reader_evaluator_and_expansion_rows(tmp_path):
     assert data["graph_snapshots"][0]["iteration"] == 1
     assert data["graph_snapshots"][0]["nodes"][0]["state"] == "Active"
     assert data["graph_snapshots"][0]["edges"][0]["edge_type"] == "containment"
+
+
+def test_agent_trace_rows_use_corrected_score_for_bucket_and_display():
+    rows = case_rows(
+        [
+            {
+                "question_id": "q1",
+                "question": "Q",
+                "answer": "A",
+                "pred": "initial",
+                "score": 0.0,
+                "corrected_score": 1.0,
+                "correction_metadata": {
+                    "initial_score": 0.0,
+                    "corrected_score": 1.0,
+                    "corrected_pred": "fixed",
+                },
+            }
+        ]
+    )
+
+    assert rows[0]["score"] == 1.0
+    assert rows[0]["score_bucket"] == "correct"
+    assert rows[0]["initial_score"] == 0.0
+    assert rows[0]["corrected_score"] == 1.0
+
+
+def test_magerag_plugin_summary_and_diagnostics_use_corrected_score():
+    record = {
+        "question_id": "q1",
+        "score": 0.0,
+        "corrected_score": 1.0,
+        "prepare_metadata": {"iteration_trace": []},
+        "correction_metadata": {
+            "initial_score": 0.0,
+            "corrected_score": 1.0,
+            "corrected_pred": "fixed",
+        },
+    }
+
+    plugin = MAGERAGPlugin()
+    data = plugin.case_visualization(record)
+    diagnostic_rows = plugin.diagnostic_rows([record])
+
+    assert data["summary"]["score"] == 1.0
+    assert diagnostic_rows[0]["score"] == 1.0
 
 
 def test_magerag_plugin_handles_missing_graph_dir_without_crashing():
@@ -587,3 +692,35 @@ def test_magerag_plugin_handles_missing_graph_dir_without_crashing():
     assert data["graph_available"] is False
     assert data["page_rows"][0]["page_index"] == 3
     assert data["summary"]["trace_steps"] == 1
+
+
+def test_magerag_plugin_does_not_fake_raw_reader_output_from_parsed_response():
+    data = MAGERAGPlugin().case_visualization(
+        {
+            "question_id": "q-no-raw",
+            "generation_metadata": {"response": "Parsed answer only"},
+            "prepare_metadata": {},
+        }
+    )
+
+    assert data["reader_output"] == "Parsed answer only"
+    assert data["reader_raw_output"] is None
+    assert data["reader_think_output"] is None
+
+
+def test_dashboard_image_ref_display_crops_opened_node_bbox(tmp_path):
+    from PIL import Image
+
+    page_path = tmp_path / "page.png"
+    Image.new("RGB", (200, 200), color="white").save(page_path)
+
+    display = _image_ref_display_image(
+        {
+            "kind": "opened_node_crop",
+            "image_path": str(page_path),
+            "bbox": [250, 250, 750, 750],
+        }
+    )
+
+    assert not isinstance(display, str)
+    assert display.size == (116, 116)

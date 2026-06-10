@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
 from analysis.plugins.base import AnalysisPlugin, ParameterSpec
+from analysis.result_fields import display_score
 
 
 STATE_RANK = {"Pruned": 4, "Opened": 3, "Active": 2, "Inactive": 1}
@@ -41,7 +43,7 @@ class MAGERAGPlugin(AnalysisPlugin):
             rows.append(
                 {
                     "question_id": record.get("question_id"),
-                    "score": _to_float(record.get("score")),
+                    "score": display_score(record),
                     "stop_reason": metadata.get("stop_reason"),
                     "trace_steps": len(trace),
                     "opened_nodes": len(metadata.get("opened_node_ids") or []),
@@ -80,7 +82,11 @@ class MAGERAGPlugin(AnalysisPlugin):
             "trace_rows": trace_rows,
             "reader_input": _reader_input(metadata),
             "reader_output": _reader_output(record),
+            "reader_raw_output": _reader_raw_output(record),
+            "reader_think_output": _reader_think_output(record),
             "reader_image_refs": _reader_image_refs(metadata),
+            "extraction_io": _extraction_io(record),
+            "correction_io": _correction_io(record),
             "evaluator_rows": _evaluator_rows(trace_rows),
             "expansion_rows": _expansion_rows(trace_rows),
             "graph_snapshots": _graph_snapshots(graph, trace_rows),
@@ -178,7 +184,7 @@ def _summary(
     state_counts = Counter(node_states.values())
     return {
         "question_id": record.get("question_id"),
-        "score": _to_float(record.get("score")),
+        "score": display_score(record),
         "stop_reason": metadata.get("stop_reason"),
         "trace_steps": len(trace),
         "opened_nodes": state_counts.get("Opened", len(metadata.get("opened_node_ids") or [])),
@@ -224,7 +230,13 @@ def _trace_rows(trace: list[dict[str, Any]], page_lookup: dict[str, int]) -> lis
 
 def _reader_input(metadata: dict[str, Any]) -> dict[str, Any]:
     value = metadata.get("reader_input")
-    return value if isinstance(value, dict) else {}
+    if not isinstance(value, dict):
+        return {}
+    result = dict(value)
+    text_parts = result.get("text_parts")
+    if "prompt_text" not in result and isinstance(text_parts, list):
+        result["prompt_text"] = "".join(str(part or "") for part in text_parts)
+    return result
 
 
 def _reader_image_refs(metadata: dict[str, Any]) -> list[dict[str, Any]]:
@@ -238,6 +250,76 @@ def _reader_output(record: dict[str, Any]) -> str | None:
         return None
     value = metadata.get("response")
     return str(value) if value is not None else None
+
+
+def _reader_raw_output(record: dict[str, Any]) -> str | None:
+    metadata = record.get("generation_metadata")
+    if not isinstance(metadata, dict):
+        return None
+    value = metadata.get("raw_response")
+    return str(value) if value is not None else None
+
+
+def _reader_think_output(record: dict[str, Any]) -> str | None:
+    raw_output = _reader_raw_output(record)
+    if raw_output is None:
+        return None
+    match = re.search(r"<think\b[^>]*>\s*(.*?)\s*</think>", raw_output, flags=re.DOTALL)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _messages_io(metadata: dict[str, Any]) -> dict[str, Any]:
+    messages = metadata.get("input_messages")
+    text_parts = []
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if isinstance(content, str):
+                text_parts.append(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        text_parts.append(str(part.get("text") or ""))
+    return {"input_messages": messages if isinstance(messages, list) else [], "prompt_text": "".join(text_parts)}
+
+
+def _extraction_io(record: dict[str, Any]) -> dict[str, Any]:
+    metadata = record.get("extraction_metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        "input": _messages_io(metadata),
+        "output": str(metadata.get("extracted_res")) if metadata.get("extracted_res") is not None else None,
+        "model": metadata.get("model"),
+        "pred": record.get("pred"),
+        "pred_format": record.get("pred_format"),
+        "score": _to_float(record.get("score")),
+    }
+
+
+def _correction_io(record: dict[str, Any]) -> dict[str, Any]:
+    metadata = record.get("correction_metadata")
+    if not isinstance(metadata, dict):
+        return {}
+    return {
+        "input": _messages_io(metadata),
+        "output": str(metadata.get("corrected_extracted_res")) if metadata.get("corrected_extracted_res") is not None else None,
+        "model": metadata.get("model"),
+        "initial_pred": metadata.get("initial_pred"),
+        "initial_pred_format": metadata.get("initial_pred_format"),
+        "initial_score": _to_float(metadata.get("initial_score")),
+        "corrected_pred": metadata.get("corrected_pred"),
+        "corrected_pred_format": metadata.get("corrected_pred_format"),
+        "corrected_score": _to_float(metadata.get("corrected_score")),
+        "changed": bool(metadata.get("changed", False)),
+        "improved": bool(metadata.get("improved", False)),
+        "applied": bool(metadata.get("applied", False)),
+        "error": metadata.get("error"),
+    }
 
 
 def _evaluator_rows(trace_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

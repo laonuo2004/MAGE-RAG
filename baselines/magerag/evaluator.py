@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from baselines.magerag.actions import CandidateAction
-from baselines.magerag.state import EvidenceAgentState
+from baselines.magerag.state import ACTIVE, OPENED, PRUNED, EvidenceAgentState
 from benchmarks.utils.document_preprocess import encode_image_file_to_base64
 from utils.llm_utils import call_llm_messages, completion_content, xml_block
 
@@ -49,8 +49,8 @@ class XMLEvaluator:
         include_images_for_opened_nodes: bool = False,
         candidate_preview_char_limit: int = 160,
         max_selected_actions_per_iteration: int = 4,
-        prompt_style: str = "structured",
         include_few_shot_examples: bool = True,
+        recent_trace_limit: int = 25,
     ):
         self.model_name = model_name
         self.temperature = float(temperature)
@@ -59,15 +59,15 @@ class XMLEvaluator:
         self.include_images_for_opened_nodes = bool(include_images_for_opened_nodes)
         self.candidate_preview_char_limit = int(candidate_preview_char_limit)
         self.max_selected_actions_per_iteration = max(1, int(max_selected_actions_per_iteration))
-        self.prompt_style = str(prompt_style)
         self.include_few_shot_examples = bool(include_few_shot_examples)
+        self.recent_trace_limit = max(0, int(recent_trace_limit))
 
     def build_context_xml(self, question: str, state: EvidenceAgentState, candidates: list[CandidateAction]) -> str:
         # XML context 是 evaluator 的“可观测状态”：按页面组织证据和候选动作。
         parts = ["<agent_step_context>", xml_block("question", question, escape=True, inline=True, indent=2)]
         parts.append("  <evidence_state>")
         for page_id in self._context_page_ids(state):
-            if state.state_of(page_id) == "Pruned":
+            if state.state_of(page_id) == PRUNED:
                 continue
             page = state.graph.node(page_id)
             page_index = state.graph.node_page_index(page)
@@ -76,12 +76,13 @@ class XMLEvaluator:
             for node in state.graph.nodes_on_page(page_index):
                 node_id = str(node["id"])
                 node_state = state.state_of(node_id)
-                if node_state not in {"Active", "Opened", "Pruned"}:
+                if node_state not in {ACTIVE, OPENED}:
                     continue
                 parts.append(self._node_xml(state, node_id, node_state))
             parts.append("    </page>")
         parts.append("  </evidence_state>")
-        parts.append(_recent_trace_xml(state.trace[-5:]))
+        trace_items = state.trace[-self.recent_trace_limit:] if self.recent_trace_limit else []
+        parts.append(_recent_trace_xml(trace_items, state=state))
         parts.append("  <candidate_actions>")
         activate_candidates = [candidate for candidate in candidates if candidate.action_type == "ActivateNode"]
         parts.append("    <ActivateNode>")
@@ -245,11 +246,13 @@ class XMLEvaluator:
 
     def _context_page_ids(self, state: EvidenceAgentState) -> list[str]:
         page_ids = set()
-        for node_id in state.active_node_ids() + state.opened_node_ids() + state.pruned_node_ids():
+        for node_id in state.active_node_ids() + state.opened_node_ids():
             if node_id not in state.graph.nodes:
                 continue
             node = state.graph.node(node_id)
             page_id = node_id if state.graph.is_page_node(node) else state.graph.parent_page_node_id(node_id)
+            if state.state_of(page_id) == PRUNED:
+                continue
             page_ids.add(page_id)
         return sorted(page_ids, key=lambda page_id: (state.graph.node_page_index(page_id), page_id))
 
@@ -259,9 +262,7 @@ class XMLEvaluator:
             f'id="{_esc(node_id)}" type="{_esc(node.get("type", ""))}" '
             f'state="{_esc(node_state.lower())}"'
         )
-        if node_state == "Pruned":
-            body = [xml_block("content", state.prune_reasons.get(node_id, ""), escape=True, inline=True)]
-        elif node_state == "Opened":
+        if node_state == OPENED:
             text = state.graph.node_text(node_id)
             truncated = len(text) > self.raw_text_char_limit
             body = [
@@ -275,7 +276,7 @@ class XMLEvaluator:
             ]
             if node.get("bbox") is not None:
                 body.append(xml_block("bbox", str(node.get("bbox")), escape=True, inline=True))
-            if self._node_image_path(node):
+            if _image_file_exists(self._node_image_path(node)):
                 body.append('<image ref="image_0"/>')
         else:
             body = [xml_block("content", node.get("abstract", ""), escape=True, inline=True)]
@@ -285,10 +286,10 @@ class XMLEvaluator:
         if not self.include_images_for_opened_nodes:
             return []
         parts = []
-        for node_id in state.opened_node_ids():
+        for node_id in self._visible_opened_node_ids(state):
             node = state.graph.node(node_id)
             image_path = self._node_image_path(node)
-            if not image_path:
+            if not _image_file_exists(image_path):
                 continue
             parts.append({"type": "text", "text": f"Opened node image for {node_id}:\n"})
             parts.append({
@@ -299,10 +300,10 @@ class XMLEvaluator:
 
     def _opened_node_image_refs(self, state: EvidenceAgentState) -> list[dict[str, Any]]:
         refs = []
-        for node_id in state.opened_node_ids():
+        for node_id in self._visible_opened_node_ids(state):
             node = state.graph.node(node_id)
             image_path = self._node_image_path(node)
-            if not image_path:
+            if not _image_file_exists(image_path):
                 continue
             refs.append({
                 "node_id": node_id,
@@ -310,6 +311,20 @@ class XMLEvaluator:
                 "image_path": image_path,
             })
         return refs
+
+    def _visible_opened_node_ids(self, state: EvidenceAgentState) -> list[str]:
+        node_ids = []
+        for node_id in state.opened_node_ids():
+            if node_id not in state.graph.nodes:
+                continue
+            node = state.graph.node(node_id)
+            if state.graph.is_page_node(node):
+                continue
+            page_id = state.graph.parent_page_node_id(node_id)
+            if state.state_of(page_id) == PRUNED:
+                continue
+            node_ids.append(node_id)
+        return node_ids
 
     def _node_image_path(self, node: dict[str, Any]) -> str | None:
         image_path = node.get("image_path") or node.get("crop_path")
@@ -445,7 +460,9 @@ def _text_bool(text: str | None) -> bool:
 
 
 def _optional_int(value: Any) -> int | None:
-    text = str(value or "").strip()
+    if isinstance(value, bool) or value is None:
+        return None
+    text = str(value).strip()
     if not text:
         return None
     try:
@@ -468,33 +485,159 @@ def _truncate(value: Any, char_limit: int) -> str:
     return text[:limit] + "..."
 
 
-def _recent_trace_xml(trace_items: list[dict[str, Any]]) -> str:
+def _recent_trace_xml(trace_items: list[dict[str, Any]], state: EvidenceAgentState | None = None) -> str:
     lines = ["  <recent_trace>"]
+    if not trace_items:
+        lines.append("    <none/>")
+        lines.append("  </recent_trace>")
+        return "\n".join(lines)
     for item in trace_items:
         action = str(item.get("action") or "")
         attrs: dict[str, Any] = {
             "iteration": item.get("iteration"),
             "action": action,
         }
-        payload = item.get("payload")
-        if isinstance(payload, dict):
-            target = payload.get("node_id") or payload.get("target_id") or payload.get("page_index") or payload.get("query")
-            if target is not None:
-                attrs["target"] = _truncate(target, 160)
-        decision = item.get("decision")
-        if action == "EvaluatorDecision" and isinstance(decision, dict):
-            attrs["selected_actions"] = len(decision.get("selected_actions") or [])
-            attrs["open_requests"] = len(decision.get("open_requests") or [])
-            attrs["prune_requests"] = len(decision.get("prune_requests") or [])
+        if "ok" in item:
+            attrs["ok"] = bool(item.get("ok"))
+        payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+        selection = item.get("selection") if isinstance(item.get("selection"), dict) else {}
+        decision = item.get("decision") if isinstance(item.get("decision"), dict) else {}
+        body: list[str] = []
+
+        if action == "ActivatePage":
+            page_index = _optional_int(payload.get("page_index"))
+            attrs.update({
+                "page_index": page_index,
+                "page_node": payload.get("node_id") or _page_node_id(state, page_index),
+                "source": payload.get("source"),
+                "previous_state": payload.get("previous_state"),
+            })
+        elif action in {"ActivateNode", "OpenNode", "FinalOpenActiveNode", "FinalOpenActivePageNode"}:
+            attrs.update({
+                "target": payload.get("node_id") or item.get("node_id"),
+                "previous_state": payload.get("previous_state"),
+            })
+            if selection:
+                attrs["selection"] = selection.get("candidate_index")
+                attrs["candidate"] = selection.get("resolved_candidate_id") or selection.get("candidate_id")
+        elif action == "PruneNode":
+            attrs.update({
+                "target": payload.get("node_id"),
+                "previous_state": payload.get("previous_state"),
+            })
+            reason = payload.get("reason")
+            if reason:
+                body.append("      " + xml_block("reason", _truncate(reason, 240), escape=True, inline=True))
+        elif action == "SearchEvidence":
+            attrs["query"] = _truncate(payload.get("query"), 240)
+        elif action == "SearchEvidenceRetrieval":
+            attrs["query"] = _truncate(item.get("query"), 240)
+            activated_pages = item.get("activated_pages") if isinstance(item.get("activated_pages"), list) else []
+            retrieved_pages = item.get("retrieved_pages") if isinstance(item.get("retrieved_pages"), list) else []
+            body.append("      <retrieved_pages>")
+            for page in retrieved_pages:
+                if not isinstance(page, dict):
+                    continue
+                page_index = _optional_int(page.get("page_index"))
+                page_attrs = {
+                    "page_index": page_index,
+                    "page_node": _page_node_id(state, page_index),
+                    "score": page.get("score"),
+                    "activated": page_index in {_optional_int(value) for value in activated_pages},
+                }
+                body.append("        " + _empty_xml("page", page_attrs))
+            body.append("      </retrieved_pages>")
+            body.append("      <activated_page_nodes>")
+            for page_index in activated_pages:
+                page_index = _optional_int(page_index)
+                body.append("        " + _empty_xml("page", {
+                    "page_index": page_index,
+                    "page_node": _page_node_id(state, page_index),
+                }))
+            body.append("      </activated_page_nodes>")
+        elif action == "EvaluatorDecision":
+            selected_actions = decision.get("selected_actions") if isinstance(decision.get("selected_actions"), list) else []
+            open_requests = decision.get("open_requests") if isinstance(decision.get("open_requests"), list) else []
+            prune_requests = decision.get("prune_requests") if isinstance(decision.get("prune_requests"), list) else []
+            attrs.update({
+                "stop": bool(decision.get("stop")),
+                "selected_actions": len(selected_actions),
+                "open_requests": len(open_requests),
+                "prune_requests": len(prune_requests),
+            })
             if decision.get("search_query"):
-                attrs["query"] = _truncate(decision.get("search_query"), 160)
-        selection = item.get("selection")
-        if isinstance(selection, dict) and selection.get("candidate_index") is not None:
-            attrs["selection"] = selection.get("candidate_index")
+                attrs["query"] = _truncate(decision.get("search_query"), 240)
+            candidate_map = item.get("candidate_index_map") if isinstance(item.get("candidate_index_map"), dict) else {}
+            if selected_actions:
+                body.append("      <selected_actions>")
+                for selected in selected_actions:
+                    if not isinstance(selected, dict):
+                        continue
+                    index = selected.get("candidate_index")
+                    body.append("        " + _empty_xml("action", {
+                        "index": index,
+                        "candidate": candidate_map.get(str(index)),
+                        "utility": selected.get("utility"),
+                    }))
+                body.append("      </selected_actions>")
+            if open_requests:
+                body.append("      <open_requests>")
+                for request in open_requests:
+                    if isinstance(request, dict):
+                        body.append("        " + _empty_xml("node", {"id": request.get("node_id")}))
+                body.append("      </open_requests>")
+            if decision.get("search_query"):
+                body.append("      " + xml_block("search_request", _truncate(decision.get("search_query"), 240), escape=True, inline=True))
+            if prune_requests:
+                body.append("      <prune_requests>")
+                for request in prune_requests:
+                    if not isinstance(request, dict):
+                        continue
+                    node_id = request.get("node_id")
+                    reason = _truncate(request.get("reason"), 240)
+                    body.append(
+                        f'        <node id="{_esc(node_id)}">'
+                        f'{xml_block("reason", reason, escape=True, inline=True)}</node>'
+                    )
+                body.append("      </prune_requests>")
+        elif action == "TruncatedSelectedActions":
+            attrs.update({
+                "original_count": item.get("original_count"),
+                "executed_count": item.get("executed_count"),
+            })
+        elif action == "InvalidCandidate":
+            attrs["candidate_index"] = item.get("candidate_index")
+        elif action == "SelectedActionBudgetReached":
+            attrs.update({"executed_total": item.get("executed_total"), "limit": item.get("limit")})
+
+        message = str(item.get("message") or "")
+        if message and not body:
+            body.append("      " + xml_block("message", _truncate(message, 240), escape=True, inline=True))
         attr_text = " ".join(f'{_esc(key)}="{_esc(value)}"' for key, value in attrs.items() if value is not None)
-        lines.append(f"    <step {attr_text}/>")
+        if body:
+            lines.append(f"    <step {attr_text}>")
+            lines.extend(body)
+            lines.append("    </step>")
+        else:
+            lines.append(f"    <step {attr_text}/>")
     lines.append("  </recent_trace>")
     return "\n".join(lines)
+
+
+def _empty_xml(tag: str, attrs: dict[str, Any]) -> str:
+    attr_text = " ".join(f'{_esc(key)}="{_esc(value)}"' for key, value in attrs.items() if value is not None)
+    if attr_text:
+        return f"<{tag} {attr_text}/>"
+    return f"<{tag}/>"
+
+
+def _page_node_id(state: EvidenceAgentState | None, page_index: int | None) -> str | None:
+    if state is None or page_index is None:
+        return None
+    try:
+        return state.graph.page_node_id(int(page_index))
+    except Exception:
+        return None
 
 
 def _activate_candidate_xml_attrs(candidate: CandidateAction) -> dict[str, Any]:
@@ -527,3 +670,7 @@ def _image_mime_type(image_path: str) -> str:
     if ext == ".webp":
         return "image/webp"
     return "image/png"
+
+
+def _image_file_exists(path: str | None) -> bool:
+    return bool(path) and os.path.isfile(str(path))

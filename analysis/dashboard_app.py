@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from analysis.results_metrics import (
     parameter_curve_rows,
     retrieval_diagnostics,
 )
+from utils.image_crop import crop_image_to_normalized_bbox_1000
 
 DEFAULT_RESULTS_ROOT = Path("results")
 DEFAULT_CACHE_ROOT = Path("analysis_cache/result_analysis")
@@ -49,6 +51,37 @@ def load_agent_trace_runs(results_root: str) -> list[RunRecord]:
 @st.cache_data(show_spinner=True)
 def load_records(jsonl_path: str, cache_root: str, cache_namespace: str = "default") -> list[dict[str, Any]]:
     return read_jsonl_cached(Path(jsonl_path), Path(cache_root), cache_namespace=cache_namespace)
+
+
+def _render_dataframe(df: pd.DataFrame) -> None:
+    st.dataframe(_dataframe_for_streamlit(df), use_container_width=True, hide_index=True)
+
+
+def _dataframe_for_streamlit(df: pd.DataFrame) -> pd.DataFrame:
+    display_df = df.copy()
+    for column in display_df.columns:
+        if display_df[column].dtype == "object":
+            display_df[column] = display_df[column].map(_cell_for_streamlit)
+    return display_df
+
+
+def _cell_for_streamlit(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, float) and pd.isna(value):
+        return value
+    if isinstance(value, list | tuple | dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    if isinstance(value, set):
+        return json.dumps(sorted(value, key=str), ensure_ascii=False, default=str)
+    if isinstance(value, str):
+        return value
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(value)
 
 
 def main() -> None:
@@ -160,7 +193,7 @@ def render_inventory(df: pd.DataFrame) -> None:
         filtered = filtered[filtered["benchmark"].isin(selected_benchmarks)]
     if selected_baselines:
         filtered = filtered[filtered["baseline"].isin(selected_baselines)]
-    st.dataframe(filtered, use_container_width=True, hide_index=True)
+    _render_dataframe(filtered)
 
 
 def render_leaderboard(runs: list[RunRecord], metric: str) -> None:
@@ -173,7 +206,7 @@ def render_leaderboard(runs: list[RunRecord], metric: str) -> None:
         px.bar(df, x="baseline", y="score", color="benchmark", facet_col="benchmark"),
         use_container_width=True,
     )
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    _render_dataframe(df)
 
 
 def render_parameter_curves(runs: list[RunRecord], metric: str) -> None:
@@ -190,7 +223,7 @@ def render_parameter_curves(runs: list[RunRecord], metric: str) -> None:
         with tab:
             render_chart_spec(df, spec)
     with curve_tabs[-1]:
-        st.dataframe(df.drop(columns=["chart_specs"], errors="ignore"), use_container_width=True, hide_index=True)
+        _render_dataframe(df.drop(columns=["chart_specs"], errors="ignore"))
 
 
 def render_chart_spec(df: pd.DataFrame, spec: dict[str, Any]) -> None:
@@ -214,7 +247,7 @@ def render_chart_spec(df: pd.DataFrame, spec: dict[str, Any]) -> None:
     if kind == "scatter":
         render_scatter(subset, spec.get("x"), spec.get("color") or "baseline")
         return
-    st.dataframe(subset.drop(columns=["chart_specs"], errors="ignore"), use_container_width=True, hide_index=True)
+    _render_dataframe(subset.drop(columns=["chart_specs"], errors="ignore"))
 
 
 def render_line(df: pd.DataFrame, x: str | None, color: str) -> None:
@@ -226,7 +259,7 @@ def render_line(df: pd.DataFrame, x: str | None, color: str) -> None:
         st.info(f"No {x} rows available.")
         return
     st.plotly_chart(px.line(plot_df, x=x, y="score", color=color, markers=True), use_container_width=True)
-    st.dataframe(plot_df.drop(columns=["chart_specs"], errors="ignore"), use_container_width=True, hide_index=True)
+    _render_dataframe(plot_df.drop(columns=["chart_specs"], errors="ignore"))
 
 
 def render_scatter(df: pd.DataFrame, x: str | None, color: str) -> None:
@@ -238,7 +271,7 @@ def render_scatter(df: pd.DataFrame, x: str | None, color: str) -> None:
         st.info(f"No {x} rows available.")
         return
     st.plotly_chart(px.scatter(plot_df, x=x, y="score", color=color, hover_data=["run_id"]), use_container_width=True)
-    st.dataframe(plot_df.drop(columns=["chart_specs"], errors="ignore"), use_container_width=True, hide_index=True)
+    _render_dataframe(plot_df.drop(columns=["chart_specs"], errors="ignore"))
 
 
 def render_heatmap(df: pd.DataFrame, spec: dict[str, Any]) -> None:
@@ -252,7 +285,7 @@ def render_heatmap(df: pd.DataFrame, spec: dict[str, Any]) -> None:
         st.info("No heatmap parameter rows available.")
         return
     st.plotly_chart(px.imshow(heatmap, aspect="auto", text_auto=".3f"), use_container_width=True)
-    st.dataframe(df.drop(columns=["chart_specs"], errors="ignore"), use_container_width=True, hide_index=True)
+    _render_dataframe(df.drop(columns=["chart_specs"], errors="ignore"))
 
 
 def _chart_specs_from_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
@@ -291,7 +324,7 @@ def render_breakdowns(run: RunRecord) -> None:
     if selected:
         df = df[df["category"].isin(selected)]
     st.plotly_chart(px.bar(df, x="path", y="value", color="category"), use_container_width=True)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    _render_dataframe(df)
 
 
 def render_retrieval(run: RunRecord, records: list[dict[str, Any]]) -> None:
@@ -308,11 +341,11 @@ def render_retrieval(run: RunRecord, records: list[dict[str, Any]]) -> None:
     if "evidence_hit" in df.columns:
         st.plotly_chart(px.histogram(df, x="score", color="evidence_hit", nbins=20), use_container_width=True)
     duration_cols = [col for col in df.columns if col.endswith("duration_seconds")]
-    st.dataframe(df[["question_id", "score", "evidence_hit", "first_hit_rank", "first_hit_score", *duration_cols]], use_container_width=True, hide_index=True)
+    _render_dataframe(df[["question_id", "score", "evidence_hit", "first_hit_rank", "first_hit_score", *duration_cols]])
     plugin_rows = get_plugin(run.baseline).diagnostic_rows(records)
     if plugin_rows:
         st.subheader("Plugin diagnostics")
-        st.dataframe(pd.DataFrame(plugin_rows), use_container_width=True, hide_index=True)
+        _render_dataframe(pd.DataFrame(plugin_rows))
 
 
 def render_case_explorer(records: list[dict[str, Any]]) -> None:
@@ -336,11 +369,7 @@ def render_case_explorer(records: list[dict[str, Any]]) -> None:
     if query:
         mask = filtered[["question_id", "question", "answer", "pred"]].fillna("").astype(str).agg(" ".join, axis=1).str.contains(query, case=False, regex=False)
         filtered = filtered[mask]
-    st.dataframe(
-        filtered.drop(columns=["images", "metadata"], errors="ignore"),
-        use_container_width=True,
-        hide_index=True,
-    )
+    _render_dataframe(filtered.drop(columns=["images", "metadata"], errors="ignore"))
     if filtered.empty:
         return
     selected_id = st.selectbox("Question", filtered["question_id"].astype(str).tolist())
@@ -417,7 +446,7 @@ def render_correction(records: list[dict[str, Any]]) -> None:
         "corrected_pred",
         "final_pred",
     ]
-    st.dataframe(filtered[[col for col in visible_cols if col in filtered.columns]], use_container_width=True, hide_index=True)
+    _render_dataframe(filtered[[col for col in visible_cols if col in filtered.columns]])
     if filtered.empty:
         return
     selected_id = st.selectbox("Question", filtered["question_id"].astype(str).tolist(), key="correction_question")
@@ -496,7 +525,7 @@ def render_agent_trace(run: RunRecord, records: list[dict[str, Any]]) -> None:
         "answer",
         "pred",
     ]
-    st.dataframe(filtered[[col for col in visible_cols if col in filtered.columns]], use_container_width=True, hide_index=True)
+    _render_dataframe(filtered[[col for col in visible_cols if col in filtered.columns]])
     if filtered.empty:
         return
 
@@ -617,7 +646,7 @@ def render_page_details(data: dict[str, Any]) -> None:
         node_df = pd.DataFrame(data.get("node_rows") or [])
         if not node_df.empty and "page_index" in node_df:
             page_nodes = node_df[node_df["page_index"] == page.get("page_index")]
-            st.dataframe(page_nodes, use_container_width=True, hide_index=True)
+            _render_dataframe(page_nodes)
 
 
 def render_trace_steps(data: dict[str, Any]) -> None:
@@ -629,7 +658,7 @@ def render_trace_steps(data: dict[str, Any]) -> None:
     if actions:
         trace_df = trace_df[trace_df["action"].isin(actions)]
     display_cols = ["step_index", "iteration", "action", "ok", "page_number", "node_id", "state_delta", "message"]
-    st.dataframe(trace_df[[col for col in display_cols if col in trace_df.columns]], use_container_width=True, hide_index=True)
+    _render_dataframe(trace_df[[col for col in display_cols if col in trace_df.columns]])
     if trace_df.empty:
         return
     selected_step = st.selectbox("Step", trace_df["step_index"].astype(int).tolist(), key="agent_trace_step")
@@ -664,10 +693,10 @@ def render_evaluator_io(data: dict[str, Any]) -> None:
         render_xml_or_code(evaluator_input["context_xml"], key=f"evaluator_context_{selected_step}")
     if evaluator_input.get("candidate_actions"):
         st.subheader("Candidate actions")
-        st.dataframe(pd.DataFrame(evaluator_input["candidate_actions"]), use_container_width=True, hide_index=True)
+        _render_dataframe(pd.DataFrame(evaluator_input["candidate_actions"]))
     if evaluator_input.get("opened_image_refs"):
         st.subheader("Opened image refs")
-        st.dataframe(pd.DataFrame(evaluator_input["opened_image_refs"]), use_container_width=True, hide_index=True)
+        _render_dataframe(pd.DataFrame(evaluator_input["opened_image_refs"]))
     if row.get("decision"):
         st.subheader("Parsed decision")
         st.json(row["decision"])
@@ -691,10 +720,26 @@ def render_reader_io(data: dict[str, Any]) -> None:
             st.json(reader_input.get("messages") or [])
     st.subheader("Reader output")
     output = data.get("reader_output")
-    if output:
-        st.code(str(output), language="text")
-    else:
-        st.info("No reader output recorded for this sample.")
+    raw_output = data.get("reader_raw_output")
+    think_output = data.get("reader_think_output")
+    parsed_tab, think_tab, raw_tab = st.tabs(["Parsed answer", "Think", "Raw output"])
+    with parsed_tab:
+        if output:
+            st.code(str(output), language="text")
+        else:
+            st.info("No parsed reader output recorded for this sample.")
+    with think_tab:
+        if think_output:
+            st.code(str(think_output), language="text")
+        elif raw_output:
+            st.info("Raw reader output is recorded, but it does not contain a <think> block.")
+        else:
+            st.info("No raw reader output was recorded for this sample, so <think> cannot be displayed.")
+    with raw_tab:
+        if raw_output:
+            render_xml_or_code(str(raw_output), key="reader_raw_output")
+        else:
+            st.info("No raw reader output recorded for this sample.")
 
 
 def render_reader_content_parts(reader_input: dict[str, Any]) -> None:
@@ -748,10 +793,39 @@ def render_image_ref(ref: dict[str, Any]) -> None:
     path = Path(str(image_path))
     caption = _image_ref_label(ref)
     if path.exists():
-        st.image(str(path), caption=caption, use_container_width=True)
+        st.image(_image_ref_display_image(ref), caption=caption, use_container_width=True)
     else:
         st.info(f"Missing image path: {path}")
-    st.caption(str(path))
+    st.caption(_image_ref_source_caption(ref))
+
+
+def _image_ref_display_image(ref: dict[str, Any]) -> Any:
+    image_path = ref.get("image_path")
+    if not image_path:
+        return None
+    path = Path(str(image_path))
+    if ref.get("kind") != "opened_node_crop":
+        return str(path)
+    bbox = ref.get("bbox")
+    if not isinstance(bbox, list | tuple) or len(bbox) != 4:
+        return str(path)
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            crop = crop_image_to_normalized_bbox_1000(image, bbox)
+            if crop is None:
+                return str(path)
+            return crop.copy()
+    except (OSError, TypeError, ValueError):
+        return str(path)
+
+
+def _image_ref_source_caption(ref: dict[str, Any]) -> str:
+    image_path = str(ref.get("image_path") or "")
+    if ref.get("kind") == "opened_node_crop" and ref.get("bbox") is not None:
+        return f"{image_path} | bbox {ref.get('bbox')}"
+    return image_path
 
 
 def render_graph_expansion(data: dict[str, Any]) -> None:
@@ -789,7 +863,7 @@ def render_graph_expansion(data: dict[str, Any]) -> None:
         "pruned_nodes",
         "message",
     ]
-    st.dataframe(df[[col for col in display_cols if col in df.columns]], use_container_width=True, hide_index=True)
+    _render_dataframe(df[[col for col in display_cols if col in df.columns]])
     if df.empty:
         return
     selected_step = st.selectbox("Expansion step", df["step_index"].astype(int).tolist(), key="agent_expansion_step")
@@ -957,7 +1031,7 @@ def render_agent_images(data: dict[str, Any]) -> None:
     if not deduped:
         st.info("No image refs available.")
         return
-    st.dataframe(pd.DataFrame(deduped), use_container_width=True, hide_index=True)
+    _render_dataframe(pd.DataFrame(deduped))
     selected = st.selectbox(
         "Image",
         list(range(len(deduped))),
@@ -1008,12 +1082,12 @@ def render_xml_node(node: ET.Element, key: str, depth: int = 0) -> None:
 
 def _extract_xml_document(text: str) -> str:
     value = str(text or "").strip()
-    start = _first_xml_tag_index(value, ["correction_prompt", "evaluator_prompt", "agent_step_context", "think", "agent_decision"])
+    start = _first_xml_tag_index(value, ["correction_prompt", "evaluator_prompt", "agent_step_context", "think", "answer", "agent_decision"])
     if start is not None:
         value = value[start:]
     top_level_tags = [
         tag
-        for tag in ("correction_prompt", "evaluator_prompt", "agent_step_context", "think", "agent_decision")
+        for tag in ("correction_prompt", "evaluator_prompt", "agent_step_context", "think", "answer", "agent_decision")
         if f"<{tag}" in value
     ]
     if len(top_level_tags) > 1:
@@ -1029,8 +1103,8 @@ def _first_xml_tag_index(text: str, tags: list[str]) -> int | None:
 
 def _image_ref_label(ref: dict[str, Any]) -> str:
     pieces = [str(ref.get("kind") or "image")]
-    if ref.get("page_number") is not None:
-        pieces.append(f"page {ref['page_number']}")
+    if ref.get("page_index") is not None:
+        pieces.append(f"page_index {ref['page_index']}")
     if ref.get("node_id"):
         pieces.append(str(ref["node_id"]))
     return " | ".join(pieces)
@@ -1079,7 +1153,7 @@ def render_pairwise(records_a: list[dict[str, Any]], records_b: list[dict[str, A
     if outcome:
         df = df[df["outcome"].isin(outcome)]
     st.plotly_chart(px.histogram(df, x="delta", color="outcome", nbins=30), use_container_width=True)
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    _render_dataframe(df)
 
 
 def run_selector(run_lookup: dict[str, RunRecord], key: str, label: str) -> RunRecord:

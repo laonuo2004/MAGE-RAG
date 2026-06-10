@@ -16,6 +16,7 @@ from baselines.magerag.evaluator import EvaluatorDecision, XMLEvaluator, parse_a
 from baselines.magerag.graph_store import EvidenceGraphStore
 from baselines.magerag.retrieval import ColPaliTop1Retriever
 from baselines.magerag.renderer import ReaderRenderer
+from utils.image_crop import normalized_bbox_1000_to_pixel_box
 from baselines.magerag.state import ACTIVE, OPENED, PRUNED, EvidenceAgentState
 from baselines.base import ContextMessages
 from baselines.wrapper import build_context_builder
@@ -73,26 +74,36 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("graph_escape", cfg.params)
         self.assertNotIn("online_agent", cfg.params)
         self.assertEqual(set(cfg.params.keys()), {"top_k"})
-        self.assertEqual(list(cfg.result_name_params), ["params.top_k", "controller.watchdog_iterations"])
+        self.assertEqual(list(cfg.result_name_params), ["params.top_k", "controller.watchdog_iterations", "evaluator.max_selected_actions_per_iteration"])
         self.assertEqual(str(cfg.models.evaluator), "Qwen3-VL-8B-Instruct")
-        self.assertEqual(str(cfg.evaluator.prompt_style), "structured")
         self.assertTrue(bool(cfg.evaluator.include_few_shot_examples))
+        self.assertNotIn("prompt_style", cfg.evaluator)
         self.assertNotIn("reason_max_words", cfg.evaluator)
         self.assertEqual(int(cfg.evaluator.raw_text_char_limit), 1200)
         self.assertNotIn("max_candidate_actions", cfg.evaluator)
         self.assertEqual(int(cfg.evaluator.max_selected_actions_per_iteration), 3)
-        self.assertEqual(int(cfg.evaluator.max_total_selected_actions), 24)
-        self.assertEqual(int(cfg.controller.watchdog_iterations), 6)
+        self.assertEqual(int(cfg.evaluator.max_total_selected_actions), 100)
+        self.assertEqual(int(cfg.evaluator.recent_trace_limit), 25)
+        self.assertEqual(int(cfg.controller.watchdog_iterations), 5)
         self.assertEqual(int(cfg.controller.watchdog_repeated_noop_rounds), 2)
         self.assertNotIn("auto_open_max_nodes_per_page", cfg.controller)
-        self.assertEqual(int(cfg.controller.final_open_active_node_limit), 16)
-        self.assertEqual(str(cfg.reader.mode), "compact")
-        self.assertEqual(str(cfg.reader.prompt_style), "structured")
+        self.assertEqual(int(cfg.controller.final_open_active_node_limit), 100)
         self.assertEqual(str(cfg.reader.not_answerable_text), "Not answerable.")
         self.assertTrue(bool(cfg.reader.include_self_check_instruction))
-        self.assertTrue(bool(cfg.reader.include_image_page_labels))
+        self.assertTrue(bool(cfg.reader.include_page_images))
+        self.assertTrue(bool(cfg.reader.include_opened_node_images))
+        self.assertTrue(bool(cfg.reader.include_opened_node_crops))
+        self.assertEqual(int(cfg.reader.opened_node_text_char_limit), 1200)
+        self.assertNotIn("mode", cfg.reader)
+        self.assertNotIn("prompt_style", cfg.reader)
+        self.assertNotIn("raw_text_char_limit", cfg.reader)
+        self.assertNotIn("include_image_page_labels", cfg.reader)
+        self.assertNotIn("include_opened_node_text", cfg.reader)
         self.assertNotIn("mmlongbench_prompt", cfg.reader)
-        self.assertNotIn("mmlongbench_include_image_page_labels", cfg.reader)
+        self.assertNotIn("mmlongbench_page_text_char_limit", cfg.reader)
+        self.assertNotIn("mmlongbench_page_text_max_pages", cfg.reader)
+        self.assertNotIn("mmlongbench_include_opened_node_crops", cfg.reader)
+        self.assertNotIn("mmlongbench_max_opened_node_crops", cfg.reader)
         self.assertNotIn("agent", cfg)
         self.assertIn("evaluator", cfg)
         self.assertNotIn("safety", cfg)
@@ -148,6 +159,18 @@ class MAGERAGTests(unittest.TestCase):
         self.assertFalse(pruned_result.ok)
         self.assertEqual(state.state_of("n1"), PRUNED)
 
+    def test_open_node_rejects_active_child_when_parent_page_is_pruned(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
+            state.execute(PruneNode("page:0", "irrelevant page"))
+
+            result = state.execute(OpenNode("n1"))
+
+        self.assertFalse(result.ok)
+        self.assertEqual(state.state_of("n1"), ACTIVE)
+
     def test_open_node_duplicate_is_noop_without_validation_error(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
@@ -189,6 +212,42 @@ class MAGERAGTests(unittest.TestCase):
         self.assertFalse(any(candidate.payload.get("node_id") in {"n1", "n3", "n_title"} for candidate in candidates))
         self.assertNotIn('id="page:0"', context_xml)
         self.assertNotIn('id="n1"', context_xml)
+
+    def test_evaluator_context_excludes_pruned_element_nodes(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
+            state.execute(OpenNode("n1"))
+            state.execute(PruneNode("n1", "irrelevant"))
+
+            context_xml = XMLEvaluator("model").build_context_xml("question", state, [])
+
+        evidence_state = ET.fromstring(context_xml).find("evidence_state")
+        evidence_xml = ET.tostring(evidence_state, encoding="unicode")
+        self.assertIn('id="page:0"', evidence_xml)
+        self.assertNotIn('id="n1"', evidence_xml)
+        self.assertNotIn("irrelevant", evidence_xml)
+
+    def test_evaluator_image_refs_exclude_opened_nodes_on_pruned_pages(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = os.path.join(tmp_dir, "node.png")
+            Image.new("RGB", (4, 4), color=(255, 0, 0)).save(image_path)
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
+            state.graph.nodes["n1"]["image_path"] = image_path
+            state.execute(ActivatePage(0, "initial_retrieval"))
+            state.execute(ActivateNode("n1"))
+            state.execute(OpenNode("n1"))
+            state.execute(PruneNode("page:0", "irrelevant page"))
+
+            evaluator = XMLEvaluator("model", include_images_for_opened_nodes=True)
+            content_parts = evaluator._opened_node_image_parts(state)
+            image_refs = evaluator._opened_node_image_refs(state)
+
+        self.assertEqual(content_parts, [])
+        self.assertEqual(image_refs, [])
 
     def test_relation_edges_emit_activate_node_candidates_directly(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -977,6 +1036,36 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("context_xml", xml)
         self.assertNotIn("raw_response", xml)
 
+    def test_evaluator_recent_trace_limit_and_details_are_rendered(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.trace.extend([
+                {"iteration": 1, "action": "ActivateNode", "ok": True, "payload": {"node_id": "n1", "previous_state": "Inactive"}},
+                {"iteration": 1, "action": "OpenNode", "ok": True, "payload": {"node_id": "n1", "previous_state": "Active"}},
+                {"iteration": 1, "action": "PruneNode", "ok": True, "payload": {"node_id": "n_title", "previous_state": "Active", "reason": "Title is not needed."}},
+                {"iteration": 2, "action": "SearchEvidence", "ok": True, "payload": {"query": "principal author report"}},
+                {
+                    "iteration": 2,
+                    "action": "SearchEvidenceRetrieval",
+                    "query": "principal author report",
+                    "retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 0.9}],
+                    "activated_pages": [0],
+                },
+            ])
+
+            xml = XMLEvaluator("model", recent_trace_limit=3).build_context_xml("question", state, [])
+
+        self.assertNotIn('action="ActivateNode"', xml)
+        self.assertNotIn('action="OpenNode"', xml)
+        self.assertIn('action="PruneNode"', xml)
+        self.assertIn('target="n_title"', xml)
+        self.assertIn("Title is not needed.", xml)
+        self.assertIn('action="SearchEvidence"', xml)
+        self.assertIn('query="principal author report"', xml)
+        self.assertIn('<activated_page_nodes>', xml)
+        self.assertIn('page_node="page:0"', xml)
+        self.assertNotIn("page_number", xml)
+
     def test_evaluator_decision_has_no_summary_request_surface(self):
         decision = parse_agent_decision_xml(
             "<agent_decision><stop>true</stop></agent_decision>"
@@ -1004,6 +1093,33 @@ class MAGERAGTests(unittest.TestCase):
         prompt = content[0]["text"]
         self.assertNotIn("[n1] type=", prompt)
         self.assertNotIn("<online_summaries>", prompt)
+
+    def test_reader_renderer_excludes_pruned_page_and_its_nodes_from_reader_input(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
+            state.execute(ActivatePage(0, "initial_retrieval"), iteration=0)
+            state.execute(ActivateNode("n1"), iteration=0)
+            state.execute(OpenNode("n1"), iteration=0)
+            state.execute(ActivatePage(1, "initial_retrieval"), iteration=0)
+            state.execute(ActivateNode("n2"), iteration=0)
+            state.execute(OpenNode("n2"), iteration=0)
+            state.execute(PruneNode("page:0", "irrelevant page"), iteration=1)
+
+            renderer = ReaderRenderer(
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {}}}),
+                include_page_images=False,
+            )
+            content = renderer.render("mmlongbench", {"question": "Q?"}, state)
+            trace = renderer.trace_input("mmlongbench", {"question": "Q?"}, state, content)
+
+        prompt = content[0]["text"]
+        self.assertEqual(renderer._reader_page_indices(state), [1])
+        self.assertNotIn('<page index="0">', prompt)
+        self.assertNotIn("<abstract>Document page 1</abstract>", prompt)
+        self.assertNotIn("<abstract>needle source</abstract>", prompt)
+        self.assertIn('<page index="1">', prompt)
+        self.assertIn("<abstract>needle target</abstract>", prompt)
+        self.assertTrue(all(ref.get("page_index") != 0 for ref in trace["image_refs"]))
 
     def test_reader_renderer_full_mode_uses_general_evidence_id_warning(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1039,7 +1155,7 @@ class MAGERAGTests(unittest.TestCase):
             state.execute(ActivateNode("n1"))
 
             content = ReaderRenderer(
-                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "compact"}}}),
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {}}}),
                 include_page_images=False,
             ).render(
                 "longdocurl",
@@ -1048,26 +1164,28 @@ class MAGERAGTests(unittest.TestCase):
             )
 
         prompt = content[0]["text"]
-        self.assertIn("<task>", prompt)
+        self.assertIn("<role>", prompt)
+        self.assertIn("<objective>", prompt)
         self.assertIn("<question>Which section best matches the description?</question>", prompt)
         self.assertIn("<answer_policy>", prompt)
         self.assertIn("If the answer cannot be found, answer exactly: Not answerable.", prompt)
         self.assertNotIn("Candidate visible labels from retrieved evidence:", prompt)
-        self.assertNotIn("Important Section Title", prompt)
+        self.assertIn("Important Section Title", prompt)
         self.assertNotIn("Active evidence graph:", prompt)
         self.assertNotIn("provenance_id=n_title", prompt)
-        self.assertNotIn("needle source", prompt)
+        self.assertIn("needle source", prompt)
 
     def test_reader_renderer_prompt_uses_parseable_xml_blocks_for_sensitive_text(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.graph.nodes["n1"]["text"] = "Visible answer is A < B & C."
+            state.graph.nodes["n1"]["abstract"] = "Visible answer is A < B & C."
             state.execute(ActivatePage(0, "initial_retrieval"))
             state.execute(ActivateNode("n1"))
             state.execute(OpenNode("n1"))
 
             content = ReaderRenderer(
-                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "compact"}}}),
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {}}}),
                 include_page_images=False,
             ).render(
                 "longdocurl",
@@ -1078,7 +1196,14 @@ class MAGERAGTests(unittest.TestCase):
         prompt = content[0]["text"]
         root = ET.fromstring(prompt)
         self.assertEqual(root.find("question").text, "Which answer contains < and &?")
-        self.assertIn("Visible answer is A < B & C.", root.find(".//opened_evidence_text/evidence_text").text)
+        self.assertIn("Visible answer is A < B & C.", root.find("./evidence/page/node/abstract").text)
+        self.assertIsNone(root.find("./evidence/page/node/content"))
+
+    def test_normalized_bbox_1000_maps_to_image_pixels_with_padding(self):
+        self.assertEqual(
+            normalized_bbox_1000_to_pixel_box([250, 250, 750, 750], (200, 100)),
+            (42, 17, 158, 83),
+        )
 
     def test_reader_renderer_compact_mode_limits_candidate_labels_to_locating_questions(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1087,7 +1212,7 @@ class MAGERAGTests(unittest.TestCase):
             state.execute(ActivateNode("n_title"))
 
             content = ReaderRenderer(
-                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "compact"}}}),
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {}}}),
                 include_page_images=False,
             ).render(
                 "longdocurl",
@@ -1097,7 +1222,7 @@ class MAGERAGTests(unittest.TestCase):
 
         prompt = content[0]["text"]
         self.assertNotIn("Candidate visible labels", prompt)
-        self.assertNotIn("Important Section Title", prompt)
+        self.assertIn("Important Section Title", prompt)
 
     def test_reader_renderer_compact_uses_opened_text_without_table_name_candidates(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1109,7 +1234,7 @@ class MAGERAGTests(unittest.TestCase):
             state.execute(OpenNode("n1"))
 
             content = ReaderRenderer(
-                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {"mode": "compact"}}}),
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {}}}),
                 include_page_images=False,
             ).render(
                 "longdocurl",
@@ -1129,13 +1254,14 @@ class MAGERAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"reader": {"mode": "compact"}},
+                    "baselines": {"reader": {}},
                 }),
                 include_page_images=False,
             ).render("mmlongbench", {"question": "Which area is not shown?"}, state)
 
         prompt = content[0]["text"]
-        self.assertIn("<task>", prompt)
+        self.assertIn("<role>", prompt)
+        self.assertIn("<objective>", prompt)
         self.assertIn("<evidence_policy>", prompt)
         self.assertIn("<answer_policy>", prompt)
         self.assertIn("<self_check>", prompt)
@@ -1151,15 +1277,17 @@ class MAGERAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"reader": {"mode": "compact"}},
+                    "baselines": {"reader": {}},
                 }),
                 include_page_images=False,
             ).render("mmlongbench", {"question": "Which area is shown?"}, state)
 
         prompt = content[0]["text"]
-        self.assertIn("<retrieved_pages>1, 2</retrieved_pages>", prompt)
+        self.assertIn("<retrieved_page_indices>0, 1</retrieved_page_indices>", prompt)
         self.assertIn("If the answer cannot be found, answer exactly: Not answerable.", prompt)
-        self.assertIn("Return only the final answer.", prompt)
+        self.assertIn("&lt;think&gt;...&lt;/think&gt;", prompt)
+        self.assertIn("&lt;answer&gt;[final_answer]&lt;/answer&gt;", prompt)
+        self.assertIn("Output sequence:", prompt)
 
     def test_reader_renderer_compact_no_longer_supports_plain_prompt_mode(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1169,14 +1297,14 @@ class MAGERAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"reader": {"mode": "compact"}},
+                    "baselines": {"reader": {}},
                 }),
                 include_page_images=False,
             ).render("mmlongbench", {"question": "Which area is shown?"}, state)
 
         prompt = content[0]["text"]
         self.assertIn("If the answer cannot be found", prompt)
-        self.assertIn("<retrieved_pages>1</retrieved_pages>", prompt)
+        self.assertIn("<retrieved_page_indices>0</retrieved_page_indices>", prompt)
         self.assertNotIn("For color questions", prompt)
 
     def test_reader_renderer_compact_omits_color_question_hint(self):
@@ -1187,7 +1315,7 @@ class MAGERAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"reader": {"mode": "compact"}},
+                    "baselines": {"reader": {}},
                 }),
                 include_page_images=False,
             ).render("mmlongbench", {"question": "What color is the highlighted area?"}, state)
@@ -1195,7 +1323,7 @@ class MAGERAGTests(unittest.TestCase):
         prompt = content[0]["text"]
         self.assertNotIn("For color questions, use common color names rather than hex codes.", prompt)
         self.assertIn("If the answer cannot be found", prompt)
-        self.assertIn("<retrieved_pages>1</retrieved_pages>", prompt)
+        self.assertIn("<retrieved_page_indices>0</retrieved_page_indices>", prompt)
 
     def test_reader_renderer_compact_omits_page_scope_hint(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1205,7 +1333,7 @@ class MAGERAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"reader": {"mode": "compact"}},
+                    "baselines": {"reader": {}},
                 }),
                 include_page_images=False,
             ).render(
@@ -1218,25 +1346,7 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("For questions that name specific pages or slides", prompt)
         self.assertNotIn("If the retrieved pages do not include the requested page or slide scope", prompt)
 
-    def test_reader_renderer_can_label_mmlongbench_page_images(self):
-        renderer = ReaderRenderer(
-            OmegaConf.create({
-                "benchmarks": {},
-                "baselines": {
-                    "reader": {
-                        "mode": "compact",
-                        "include_image_page_labels": True,
-                    }
-                },
-            }),
-            include_page_images=True,
-        )
-
-        label = renderer._image_label("mmlongbench", 0, 2, 4)
-
-        self.assertEqual(label, "Document page 5:\n")
-
-    def test_reader_renderer_selects_relevant_opened_node_crops(self):
+    def test_reader_renderer_selects_all_opened_node_crops_without_benchmark_limit(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
             state.graph.nodes["n1"]["bbox"] = [10, 10, 100, 100]
@@ -1253,14 +1363,41 @@ class MAGERAGTests(unittest.TestCase):
             renderer = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {"reader": {"mmlongbench_max_opened_node_crops": 1}},
+                    "baselines": {"reader": {"include_opened_node_crops": True}},
                 }),
                 include_page_images=False,
             )
 
-            node_ids = renderer._candidate_crop_node_ids("Which chart contains the needle target?", state)
+            node_ids = renderer._candidate_node_image_ids(state)
 
-        self.assertEqual(node_ids, ["n2"])
+        self.assertEqual(node_ids, ["n1", "n2"])
+
+    def test_reader_renderer_builds_opened_node_crops_for_longdocurl(self):
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_dir = Path(tmp_dir) / "images" / "1234"
+            image_dir.mkdir(parents=True)
+            image_path = image_dir / "123456_0.png"
+            Image.new("RGB", (200, 200), color="white").save(image_path)
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.graph.nodes["n1"]["bbox"] = [20, 20, 120, 120]
+            state.execute(ActivatePage(0, "initial_retrieval"), iteration=0)
+            state.execute(ActivateNode("n1"), iteration=0)
+            state.execute(OpenNode("n1"), iteration=0)
+            cfg = OmegaConf.create({
+                "benchmarks": {"image_prefix": str(Path(tmp_dir) / "images")},
+                "baselines": {"reader": {"include_opened_node_crops": True}},
+            })
+            renderer = ReaderRenderer(cfg, include_page_images=False, include_opened_node_images=True)
+
+            content = renderer.render("longdocurl", {"doc_no": "123456", "question": "What is shown?"}, state)
+            trace = renderer.trace_input("longdocurl", {"doc_no": "123456", "question": "What is shown?"}, state, content)
+
+        self.assertTrue(any(part.get("type") == "image_url" for part in content if isinstance(part, dict)))
+        self.assertEqual(trace["image_refs"][0]["kind"], "opened_node_crop")
+        self.assertEqual(trace["image_refs"][0]["node_id"], "n1")
+        self.assertEqual(trace["image_refs"][0]["image_path"], str(image_path))
 
     def test_reader_renderer_preserves_activation_page_order(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1272,10 +1409,12 @@ class MAGERAGTests(unittest.TestCase):
 
         self.assertEqual(page_indices, [1, 0])
 
-    def test_reader_renderer_compact_mmlongbench_includes_page_text_snippets(self):
+    def test_reader_renderer_includes_all_active_page_text_without_benchmark_limit(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0, 1]))
+            state.graph.nodes["page:1"]["abstract"] = "Document page 2"
             state.graph.nodes["page:1"]["text"] = "Page two chart says With family and friends 20%."
+            state.graph.nodes["page:0"]["abstract"] = "Document page 1"
             state.graph.nodes["page:0"]["text"] = "Page one unrelated text."
             state.execute(ActivatePage(1, "initial_retrieval"), iteration=0)
             state.execute(ActivatePage(0, "initial_retrieval"), iteration=0)
@@ -1283,22 +1422,98 @@ class MAGERAGTests(unittest.TestCase):
             content = ReaderRenderer(
                 OmegaConf.create({
                     "benchmarks": {},
-                    "baselines": {
-                        "reader": {
-                            "mode": "compact",
-                            "mmlongbench_page_text_char_limit": 80,
-                            "mmlongbench_page_text_max_pages": 1,
-                        }
-                    },
+                    "baselines": {"reader": {}},
                 }),
                 include_page_images=False,
-            ).render("mmlongbench", {"question": "How much time was spent with family?"}, state)
+            ).render("longdocurl", {"question": "How much time was spent with family?"}, state)
 
         prompt = content[0]["text"]
-        self.assertIn("<retrieved_page_text_snippets>", prompt)
-        self.assertIn('<page_text page="2">', prompt)
-        self.assertNotIn('<page_text page="1">', prompt)
-        self.assertIn("With family and friends 20%", prompt)
+        self.assertIn("<evidence>", prompt)
+        self.assertIn('<page index="1">', prompt)
+        self.assertIn('<page index="0">', prompt)
+        self.assertIn("<abstract>Document page 2</abstract>", prompt)
+        self.assertNotIn("<content>Page one unrelated text.</content>", prompt)
+        self.assertNotIn("With family and friends 20%", prompt)
+
+    def test_reader_renderer_page_node_does_not_duplicate_identical_abstract_and_content(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.graph.nodes["page:0"]["abstract"] = "Same page summary"
+            state.graph.nodes["page:0"]["text"] = "Same page summary"
+            state.execute(ActivatePage(0, "initial_retrieval"), iteration=0)
+
+            content = ReaderRenderer(
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {}}}),
+                include_page_images=False,
+            ).render("mmlongbench", {"question": "What is shown?"}, state)
+
+        prompt = content[0]["text"]
+        self.assertIn("<abstract>Same page summary</abstract>", prompt)
+        self.assertNotIn("<content>Same page summary</content>", prompt)
+        self.assertNotIn("number=", prompt)
+
+    def test_reader_renderer_falls_back_to_bbox_crop_when_node_image_path_is_directory(self):
+        import base64
+        import re
+        from io import BytesIO
+
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            page_dir = Path(tmp_dir) / "pngs" / "sample"
+            page_dir.mkdir(parents=True)
+            page_path = page_dir / "page_0001_dpi144.png"
+            Image.new("RGB", (200, 200), color="white").save(page_path)
+            bad_image_dir = Path(tmp_dir) / "images"
+            bad_image_dir.mkdir()
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            state.graph.nodes["n1"]["image_path"] = str(bad_image_dir)
+            state.graph.nodes["n1"]["bbox"] = [250, 250, 750, 750]
+            state.execute(ActivatePage(0, "initial_retrieval"), iteration=0)
+            state.execute(ActivateNode("n1"), iteration=0)
+            state.execute(OpenNode("n1"), iteration=0)
+            renderer = ReaderRenderer(
+                OmegaConf.create({
+                    "benchmarks": {"pdf_png_dir": str(Path(tmp_dir) / "pngs"), "resolution": 144},
+                    "baselines": {"reader": {"include_opened_node_crops": True}},
+                }),
+                include_page_images=False,
+                include_opened_node_images=True,
+            )
+
+            content = renderer.render("mmlongbench", {"doc_id": "sample.pdf", "question": "What is shown?"}, state)
+            trace = renderer.trace_input("mmlongbench", {"doc_id": "sample.pdf", "question": "What is shown?"}, state, content)
+
+        refs = [ref for ref in trace["image_refs"] if ref.get("node_id") == "n1"]
+        self.assertEqual(refs[0]["kind"], "opened_node_crop")
+        self.assertNotIn("page_number", refs[0])
+        image_part = next(part for part in content if isinstance(part, dict) and part.get("type") == "image_url")
+        encoded = re.search(r"base64,(.*)$", image_part["image_url"]["url"]).group(1)
+        with Image.open(BytesIO(base64.b64decode(encoded))) as crop:
+            self.assertEqual(crop.size, (116, 116))
+
+    def test_reader_renderer_skips_opened_node_image_path_when_it_is_directory(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
+            bad_image_dir = os.path.join(tmp_dir, "images")
+            os.makedirs(bad_image_dir)
+            state.graph.nodes["n1"]["image_path"] = bad_image_dir
+            state.execute(ActivatePage(0, "initial_retrieval"), iteration=0)
+            state.execute(ActivateNode("n1"), iteration=0)
+            state.execute(OpenNode("n1"), iteration=0)
+            renderer = ReaderRenderer(
+                OmegaConf.create({"benchmarks": {}, "baselines": {"reader": {}}}),
+                include_page_images=False,
+                include_opened_node_images=True,
+            )
+
+            content = renderer.render("mmlongbench", {"doc_id": "sample.pdf", "question": "What is shown?"}, state)
+            trace = renderer.trace_input("mmlongbench", {"doc_id": "sample.pdf", "question": "What is shown?"}, state, content)
+
+        self.assertEqual([ref for ref in trace["image_refs"] if ref.get("node_id") == "n1"], [])
+        self.assertNotIn('kind="opened_node_image"', content[0]["text"])
+        self.assertIn("<abstract>needle source</abstract>", content[0]["text"])
+        self.assertNotIn("needle source evidence", content[0]["text"])
 
     def test_final_context_metadata_contains_trace_and_node_state_fields(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1514,9 +1729,6 @@ class MAGERAGTests(unittest.TestCase):
                     "name": "magerag",
                     "params": {},
                     "reader": {
-                        "mode": "compact",
-                        "include_opened_node_text": True,
-                        "include_opened_node_text_mmlongbench": True,
                         "opened_node_text_char_limit": 200,
                     },
                 },
@@ -1570,8 +1782,9 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("n_title", messages.metadata["opened_node_ids"])
         self.assertIn("n1", messages.metadata["opened_node_ids"])
         prompt = messages[0]["content"][0]["text"]
-        self.assertIn("<opened_evidence_text>", prompt)
-        self.assertIn("needle source evidence", prompt)
+        self.assertIn("<evidence>", prompt)
+        self.assertIn("<abstract>needle source</abstract>", prompt)
+        self.assertNotIn("needle source evidence", prompt)
 
     def test_mmlongbench_uses_fixed_default_auto_open_limit(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1631,7 +1844,7 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("n_title", messages.metadata["opened_node_ids"])
         self.assertIn("n1", messages.metadata["opened_node_ids"])
 
-    def test_renderer_can_disable_opened_node_text_for_mmlongbench_only(self):
+    def test_renderer_uses_same_opened_node_text_policy_for_all_benchmarks(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             state = EvidenceAgentState(EvidenceGraphStore(self._write_graph(tmp_dir), allowed_pages=[0]))
             state.execute(ActivatePage(0, "initial_retrieval"))
@@ -1639,13 +1852,7 @@ class MAGERAGTests(unittest.TestCase):
             state.execute(OpenNode("n1"))
             cfg = OmegaConf.create({
                 "benchmarks": {},
-                "baselines": {
-                    "reader": {
-                        "mode": "compact",
-                        "include_opened_node_text": True,
-                        "include_opened_node_text_mmlongbench": False,
-                    }
-                },
+                "baselines": {"reader": {}},
             })
 
             mmlong = ReaderRenderer(cfg, include_page_images=False).render(
@@ -1655,8 +1862,12 @@ class MAGERAGTests(unittest.TestCase):
                 "longdocurl", {"question": "What does the source evidence say?"}, state
             )
 
-        self.assertNotIn("<opened_evidence_text>", mmlong[0]["text"])
-        self.assertIn("<opened_evidence_text>", longdoc[0]["text"])
+        self.assertIn("<evidence>", mmlong[0]["text"])
+        self.assertIn("<evidence>", longdoc[0]["text"])
+        self.assertIn("<abstract>needle source</abstract>", mmlong[0]["text"])
+        self.assertIn("<abstract>needle source</abstract>", longdoc[0]["text"])
+        self.assertNotIn("needle source evidence", mmlong[0]["text"])
+        self.assertNotIn("needle source evidence", longdoc[0]["text"])
 
     def test_reader_renderer_prioritizes_question_scope_pages_for_mmlongbench(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1665,7 +1876,7 @@ class MAGERAGTests(unittest.TestCase):
             state.execute(ActivatePage(1, "question_page_scope"))
             cfg = OmegaConf.create({
                 "benchmarks": {},
-                "baselines": {"reader": {"mode": "compact"}},
+                "baselines": {"reader": {}},
             })
 
             content = ReaderRenderer(cfg, include_page_images=False).render(
@@ -1674,7 +1885,7 @@ class MAGERAGTests(unittest.TestCase):
                 state,
             )
 
-        self.assertIn("<retrieved_pages>2, 1</retrieved_pages>", content[0]["text"])
+        self.assertIn("<retrieved_page_indices>1, 0</retrieved_page_indices>", content[0]["text"])
 
     def test_mmlongbench_allowed_pages_use_embedding_page_count(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

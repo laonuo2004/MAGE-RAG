@@ -105,8 +105,12 @@ class EvidenceAgentState:
             })
         if state != ACTIVE:
             return self._validation("OpenNode", f"OpenNode requires Active node; {node_id} is {state}. ActivateNode first.")
-        if self.graph.is_page_node(self.graph.node(node_id)):
+        node = self.graph.node(node_id)
+        if self.graph.is_page_node(node):
             return self._validation("OpenNode", f"Page nodes cannot be opened: {node_id}.")
+        page_node_id = self.graph.parent_page_node_id(node_id)
+        if self.state_of(page_node_id) == PRUNED:
+            return self._validation("OpenNode", f"Parent page is Pruned for node {node_id}.")
         self.node_states[node_id] = OPENED
         return ActionResult(True, "OpenNode", payload={"node_id": node_id, "previous_state": state})
 

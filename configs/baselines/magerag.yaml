@@ -3,6 +3,7 @@ name: magerag
 result_name_params:
   - params.top_k
   - controller.watchdog_iterations
+  - evaluator.max_selected_actions_per_iteration
 
 params:
   top_k: 3
@@ -12,34 +13,24 @@ models:
 
 evaluator:
   temperature: 0.0
-  retries: 2
-  prompt_style: structured
+  retries: 3
   include_few_shot_examples: true
   raw_text_char_limit: 1200
   include_opened_node_images: false
   max_selected_actions_per_iteration: 3
   max_total_selected_actions: 100
   candidate_preview_char_limit: 160
+  recent_trace_limit: 25
 
 controller:
-  watchdog_iterations: 6
+  watchdog_iterations: 5
   watchdog_repeated_noop_rounds: 2
-  final_open_active_node_limit: 16
+  final_open_active_node_limit: 100
 
 reader:
-  mode: compact
-  prompt_style: structured
   not_answerable_text: Not answerable.
   include_self_check_instruction: true
   include_page_images: true
   include_opened_node_images: true
-  raw_text_char_limit: 8192
-  mmlongbench_page_text_char_limit: 1200
-  mmlongbench_page_text_max_pages: 1
-  include_image_page_labels: true
-  include_opened_node_text: true
-  include_opened_node_text_longdocurl: true
-  include_opened_node_text_mmlongbench: false
+  include_opened_node_crops: true
   opened_node_text_char_limit: 1200
-  mmlongbench_include_opened_node_crops: false
-  mmlongbench_max_opened_node_crops: 4

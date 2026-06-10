@@ -68,13 +68,31 @@ def _reset_sample_fields(sample: Dict[str, Any], keys) -> None:
 def _finalize_result_fields(sample: Dict[str, Any]) -> Dict[str, Any]:
     correction_metadata = sample.get("correction_metadata")
     if isinstance(correction_metadata, dict):
-        sample["corrected_pred"] = correction_metadata.get("corrected_pred")
-        sample["corrected_format"] = correction_metadata.get("corrected_pred_format")
-        sample["corrected_score"] = correction_metadata.get("corrected_score")
+        sample["pred"] = correction_metadata.get("initial_pred", sample.get("pred"))
+        sample["pred_format"] = correction_metadata.get("initial_pred_format", sample.get("pred_format"))
+        sample["score"] = correction_metadata.get("initial_score", sample.get("score"))
+        sample["corrected_pred"] = correction_metadata.get("corrected_pred", sample.get("pred"))
+        sample["corrected_format"] = correction_metadata.get("corrected_pred_format", sample.get("pred_format"))
+        sample["corrected_score"] = correction_metadata.get("corrected_score", sample.get("score"))
+    else:
+        sample["corrected_pred"] = sample.get("pred")
+        sample["corrected_format"] = sample.get("pred_format")
+        sample["corrected_score"] = sample.get("score")
 
     ordered_values = {key: sample.pop(key) for key in COMMON_RESULT_FIELDS if key in sample}
     sample.update(ordered_values)
     return sample
+
+
+def _final_prediction_sample(sample: Dict[str, Any]) -> Dict[str, Any]:
+    final_sample = dict(sample)
+    if "corrected_pred" in sample:
+        final_sample["pred"] = sample.get("corrected_pred")
+    if "corrected_format" in sample:
+        final_sample["pred_format"] = sample.get("corrected_format")
+    if "corrected_score" in sample:
+        final_sample["score"] = sample.get("corrected_score")
+    return final_sample
 
 
 def _apply_sample_limit(samples: List[Dict[str, Any]], cfg) -> List[Dict[str, Any]]:
@@ -96,6 +114,51 @@ def _completion_metadata(completion: Any, model_name: str) -> Dict[str, Any]:
         "usage": to_plain_data(getattr(completion, "usage", None)),
     }
     return {key: value for key, value in metadata.items() if value is not None}
+
+
+def _strip_markdown_code_fence(text: Any) -> str:
+    content = str(text or "").strip()
+    match = re.fullmatch(r"```(?:xml|XML)?\s*(.*?)\s*```", content, flags=re.DOTALL)
+    return match.group(1).strip() if match else content
+
+
+def _strip_leading_think_block(text: Any) -> str:
+    content = _strip_markdown_code_fence(text)
+    return re.sub(r"^\s*<think>.*?</think>\s*", "", content, count=1, flags=re.DOTALL).strip()
+
+
+def _unwrap_xml_block(text: Any, tag: str) -> str | None:
+    content = str(text or "")
+    match = re.search(rf"<{re.escape(tag)}>\s*(.*?)\s*</{re.escape(tag)}>", content, flags=re.DOTALL)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _unwrap_extraction_result(text: Any) -> str:
+    content = _strip_leading_think_block(text)
+    extraction = _unwrap_xml_block(content, "extraction_result")
+    return extraction if extraction is not None else content
+
+
+def _unwrap_generation_answer(text: Any) -> str:
+    content = _strip_leading_think_block(text)
+    answer = _unwrap_xml_block(content, "answer")
+    return answer if answer is not None else content
+
+
+def _unwrap_inline_xml_value(text: Any, tags: tuple[str, ...]) -> str:
+    content = _strip_markdown_code_fence(text)
+    for tag in tags:
+        value = _unwrap_xml_block(content, tag)
+        if value is not None:
+            return value
+    return content.strip()
+
+
+def _uses_magerag_context(sample: Dict[str, Any]) -> bool:
+    prepare_metadata = sample.get("prepare_metadata")
+    return isinstance(prepare_metadata, dict) and prepare_metadata.get("context_builder") == "magerag"
 
 
 def _prepare_messages(sample: Dict[str, Any], cfg, context_builder, benchmark_name: str, client) -> tuple[Any, str, str]:
@@ -150,10 +213,12 @@ def _generate_response(sample: Dict[str, Any], messages, model_name: str, client
         log_prefix=log_prefix,
         failure_value=lambda exc: f"Failed: {exc}",
     )
-    response = completion_content(completion)
+    raw_response = completion_content(completion)
+    response = _unwrap_generation_answer(raw_response) if _uses_magerag_context(sample) else raw_response
     sample["generation_metadata"] = {
         **_completion_metadata(completion, model_name),
         "response": response,
+        "raw_response": raw_response,
         "duration_seconds": round(perf_counter() - generation_start, 3),
     }
     return response
@@ -310,6 +375,340 @@ def _correction_output_contract(benchmark_name: str) -> str:
     )
 
 
+def _extraction_output_contract(benchmark_name: str) -> str:
+    if benchmark_name == "longdocurl":
+        return (
+            "Output sequence:\n"
+            "<think>...</think>\n"
+            "<extraction_result>\n"
+            "Extracted answer: <concise_answer>[answer]</concise_answer>\n"
+            "Answer format: <answer_format>[answer_format]</answer_format>\n"
+            "</extraction_result>\n"
+            "No other text outside these two XML blocks."
+        )
+    return (
+        "Output sequence:\n"
+        "<think>...</think>\n"
+        "<extraction_result>\n"
+        "Extracted answer: [answer]\n"
+        "Answer format: [answer_format]\n"
+        "</extraction_result>\n"
+        "No other text outside these two XML blocks."
+    )
+
+
+def _extraction_few_shot_examples_xml(benchmark_name: str) -> str:
+    if benchmark_name == "longdocurl":
+        examples = [
+            xml_block(
+                "example",
+                "\n".join([
+                    xml_block("problem", "Extract a concrete integer answer.", escape=True, indent=4),
+                    xml_block(
+                        "example_input",
+                        xml_block("question", "How many regulations were breached?", escape=True)
+                        + "\n"
+                        + xml_block("model_response", "The report states that 10 regulations were breached.", escape=True),
+                        indent=4,
+                    ),
+                    xml_block(
+                        "example_output",
+                        "<think>The response directly gives the count. Integer is the correct format.</think>\n"
+                        "<extraction_result>\n"
+                        "Extracted answer: <concise_answer>10</concise_answer>\n"
+                        "Answer format: <answer_format>Integer</answer_format>\n"
+                        "</extraction_result>",
+                        cdata=True,
+                        indent=4,
+                    ),
+                ]),
+                indent=2,
+            ),
+            xml_block(
+                "example",
+                "\n".join([
+                    xml_block("problem", "Return None format only for an unanswerable final answer.", escape=True, indent=4),
+                    xml_block(
+                        "example_input",
+                        xml_block("question", "What percentage of Chinese respondents paid more attention?", escape=True)
+                        + "\n"
+                        + xml_block("model_response", "The document does not specify this; the answer is Not answerable.", escape=True),
+                        indent=4,
+                    ),
+                    xml_block(
+                        "example_output",
+                        "<think>The response says the requested value is not present, so the extracted answer is Not answerable and the format is None.</think>\n"
+                        "<extraction_result>\n"
+                        "Extracted answer: <concise_answer>Not answerable</concise_answer>\n"
+                        "Answer format: <answer_format>None</answer_format>\n"
+                        "</extraction_result>",
+                        cdata=True,
+                        indent=4,
+                    ),
+                ]),
+                indent=2,
+            ),
+            xml_block(
+                "example",
+                "\n".join([
+                    xml_block("problem", "Do not use None when a concrete answer is present.", escape=True, indent=4),
+                    xml_block(
+                        "example_input",
+                        xml_block("question", "Wind energy percentage in 2016 is lower than that in 2017, yes or no?", escape=True)
+                        + "\n"
+                        + xml_block("model_response", "Yes. The 2016 wind energy percentage is lower than the 2017 percentage.", escape=True),
+                        indent=4,
+                    ),
+                    xml_block(
+                        "example_output",
+                        "<think>The response gives a concrete yes/no answer. Even if the dataset has a missing format label, None is not appropriate for an answerable response.</think>\n"
+                        "<extraction_result>\n"
+                        "Extracted answer: <concise_answer>yes</concise_answer>\n"
+                        "Answer format: <answer_format>String</answer_format>\n"
+                        "</extraction_result>",
+                        cdata=True,
+                        indent=4,
+                    ),
+                ]),
+                indent=2,
+            ),
+        ]
+        return xml_block("few_shot_examples", "\n".join(examples), indent=2)
+    examples = [
+        xml_block(
+            "example",
+            "\n".join([
+                xml_block("problem", "Extract a list answer from a final response.", escape=True, indent=4),
+                xml_block(
+                    "example_input",
+                    xml_block("question", "List the primary questions asked about the services in this report.", escape=True)
+                    + "\n"
+                    + xml_block("model_response", "The primary questions are: Is the service safe? Is the service effective? Is the service caring? Is the service responsive? Is the service well-led?", escape=True),
+                    indent=4,
+                ),
+                xml_block(
+                    "example_output",
+                    "<think>The response lists five requested questions, so the extraction should preserve all items as a List.</think>\n"
+                    "<extraction_result>\n"
+                    "Extracted answer: ['Is the service safe?', 'Is the service effective?', 'Is the service caring?', 'Is the service responsive?', 'Is the service well-led?']\n"
+                    "Answer format: List\n"
+                    "</extraction_result>",
+                    cdata=True,
+                    indent=4,
+                ),
+            ]),
+            indent=2,
+        ),
+        xml_block(
+            "example",
+            "\n".join([
+                xml_block("problem", "Return None format only when the answer itself is Not answerable.", escape=True, indent=4),
+                xml_block(
+                    "example_input",
+                    xml_block("question", "Which subgroup gained the most confidence?", escape=True)
+                    + "\n"
+                    + xml_block("model_response", "The report does not provide enough information to answer. Final answer: Not answerable.", escape=True),
+                    indent=4,
+                ),
+                xml_block(
+                    "example_output",
+                    "<think>The response explicitly concludes that the requested answer cannot be found.</think>\n"
+                    "<extraction_result>\n"
+                    "Extracted answer: Not answerable\n"
+                    "Answer format: None\n"
+                    "</extraction_result>",
+                    cdata=True,
+                    indent=4,
+                ),
+            ]),
+            indent=2,
+        ),
+        xml_block(
+            "example",
+            "\n".join([
+                xml_block("problem", "Prefer a concrete final answer over uncertainty in reasoning.", escape=True, indent=4),
+                xml_block(
+                    "example_input",
+                    xml_block("question", "Which group is identified?", escape=True)
+                    + "\n"
+                    + xml_block("model_response", "<think>I was initially unsure, but the evidence states the group.</think><answer>less well-off</answer>", escape=True),
+                    indent=4,
+                ),
+                xml_block(
+                    "example_output",
+                    "<think>The final answer block contains a concrete supported answer, so it is not Not answerable.</think>\n"
+                    "<extraction_result>\n"
+                    "Extracted answer: less well-off\n"
+                    "Answer format: String\n"
+                    "</extraction_result>",
+                    cdata=True,
+                    indent=4,
+                ),
+            ]),
+            indent=2,
+        ),
+    ]
+    return xml_block("few_shot_examples", "\n".join(examples), indent=2)
+
+
+def _build_extraction_prompt(benchmark_name: str, question: Any, response: Any) -> str:
+    target_formats = "Integer, Float, String, List, None"
+    visibility_policy = ""
+    if benchmark_name == "longdocurl":
+        visibility_policy = xml_block(
+            "visibility_policy",
+            "If the question restricts visible pages or image ranges, discard answer components that come only from outside that requested range.",
+            escape=True,
+            indent=2,
+        )
+    input_data = "\n".join([
+        xml_block("question", "" if question is None else str(question), escape=True, inline=True),
+        xml_block("model_response", "" if response is None else str(response), escape=True, inline=True),
+        xml_block("target_answer_formats", target_formats, inline=True),
+    ])
+    blocks = [
+        xml_block("role", "You are a benchmark answer extraction normalizer.", escape=True, indent=2),
+        xml_block(
+            "objective",
+            "Extract the concise benchmark answer and answer format from model_response without adding facts not present in that response.",
+            escape=True,
+            indent=2,
+        ),
+        xml_block("input_data", input_data, indent=2),
+        xml_block(
+            "extraction_policy",
+            "Prefer the final answer span when model_response contains explicit answer markup such as <answer>...</answer>. Use reasoning text only to disambiguate that final answer. Preserve every requested item for list questions. Normalize surface form only when the normalized value is directly supported by model_response.",
+            escape=True,
+            indent=2,
+        ),
+        xml_block(
+            "not_answerable_policy",
+            "Use Not answerable only when model_response's final conclusion says the document evidence does not answer the question or no answer can be extracted. Do not output Not answerable merely because the reasoning mentions uncertainty before giving a concrete final answer. Use Fail to answer only when model_response says it cannot read, view, or understand the provided document/images.",
+            escape=True,
+            indent=2,
+        ),
+        xml_block(
+            "format_policy",
+            "Choose the most specific answer format from Integer, Float, String, or List for every concrete answer. Use None as answer format only when the extracted answer is exactly Not answerable or Fail to answer. If the model response contains a concrete answer, never use None as the answer format. For List, output a parseable list of answer items rather than a prose sentence.",
+            escape=True,
+            indent=2,
+        ),
+    ]
+    if visibility_policy:
+        blocks.append(visibility_policy)
+    blocks.extend([
+        xml_block(
+            "thinking_policy",
+            "First output one <think>...</think> block. In it, compare the question with model_response, identify the final answer span, decide whether the case is answerable, and verify the answer format.",
+            escape=True,
+            indent=2,
+        ),
+        xml_block("output_schema", _extraction_output_contract(benchmark_name), cdata=True, indent=2),
+        xml_block(
+            "self_check",
+            "Before returning, verify that the extraction is supported by model_response, the answer format is one of the target formats, None is used only for Not answerable or Fail to answer, and no text appears outside the required XML blocks.",
+            escape=True,
+            indent=2,
+        ),
+        _extraction_few_shot_examples_xml(benchmark_name),
+    ])
+    return xml_block("extraction_prompt", "\n\n".join(blocks))
+
+
+def _correction_few_shot_examples_xml(benchmark_name: str) -> str:
+    contract = _correction_output_contract(benchmark_name)
+    examples = [
+        xml_block(
+            "example",
+            "\n".join([
+                xml_block("problem", "Fix a formatting-only false negative.", escape=True, indent=4),
+                xml_block(
+                    "example_input",
+                    xml_block("model_response", "The group is less well off.", escape=True)
+                    + "\n"
+                    + xml_block("gold_truth", "less well-off", escape=True)
+                    + "\n"
+                    + xml_block("initial_formatted_extraction", "Extracted answer: less well off\nAnswer format: String", escape=True),
+                    indent=4,
+                ),
+                xml_block(
+                    "example_output",
+                    "<think>The response supports the gold phrase, and the mismatch is only hyphenation.</think>\n"
+                    "<corrected_extraction>\n"
+                    "Extracted answer: less well-off\n"
+                    "Answer format: String\n"
+                    "</corrected_extraction>",
+                    cdata=True,
+                    indent=4,
+                ),
+            ]),
+            indent=2,
+        ),
+        xml_block(
+            "example",
+            "\n".join([
+                xml_block("problem", "Keep the initial extraction when the response is substantively wrong.", escape=True, indent=4),
+                xml_block(
+                    "example_input",
+                    xml_block("model_response", "The reported school is the French Lycee in London.", escape=True)
+                    + "\n"
+                    + xml_block("gold_truth", "Ecole Normale Superieure", escape=True)
+                    + "\n"
+                    + xml_block("initial_formatted_extraction", "Extracted answer: French Lycee in London\nAnswer format: String", escape=True),
+                    indent=4,
+                ),
+                xml_block(
+                    "example_output",
+                    "<think>The model_response does not support the gold truth, so copying gold_truth would inject unsupported facts.</think>\n"
+                    "<corrected_extraction>\n"
+                    "Extracted answer: French Lycee in London\n"
+                    "Answer format: String\n"
+                    "</corrected_extraction>",
+                    cdata=True,
+                    indent=4,
+                ),
+            ]),
+            indent=2,
+        ),
+        xml_block(
+            "example",
+            "\n".join([
+                xml_block("problem", "Repair list serialization when all items are supported.", escape=True, indent=4),
+                xml_block(
+                    "example_input",
+                    xml_block("model_response", "The answer is White households and 10 percentage points.", escape=True)
+                    + "\n"
+                    + xml_block("gold_truth", "['White', '10%']", escape=True)
+                    + "\n"
+                    + xml_block("initial_formatted_extraction", "Extracted answer: White households, 10 percentage points\nAnswer format: String", escape=True),
+                    indent=4,
+                ),
+                xml_block(
+                    "example_output",
+                    "<think>The two list items are directly supported, and benchmark scoring expects list serialization.</think>\n"
+                    "<corrected_extraction>\n"
+                    "Extracted answer: ['White', '10%']\n"
+                    "Answer format: List\n"
+                    "</corrected_extraction>",
+                    cdata=True,
+                    indent=4,
+                ),
+            ]),
+            indent=2,
+        ),
+    ]
+    if benchmark_name == "longdocurl":
+        examples[0] = examples[0].replace(
+            "Extracted answer: less well-off\nAnswer format: String",
+            "Extracted answer: <concise_answer>less well-off</concise_answer>\nAnswer format: <answer_format>String</answer_format>",
+        )
+    return xml_block(
+        "few_shot_examples",
+        "\n".join(examples) + "\n" + xml_block("output_contract_reference", contract, cdata=True, indent=2),
+        indent=2,
+    )
+
+
 def _build_correction_messages(
     adapter: Any,
     benchmark_name: str,
@@ -332,47 +731,50 @@ def _build_correction_messages(
             "role",
             "You are auditing a benchmark answer extraction after code-based scoring.",
             escape=True,
-            inline=True,
             indent=2,
         ),
         xml_block(
-            "task",
-            "Recover the benchmark answer from model_response when the initial extraction or answer format caused a false negative.",
+            "objective",
+            "Recover the benchmark answer when model_response supports it but the initial extraction or answer format caused a false negative.",
             escape=True,
-            inline=True,
             indent=2,
         ),
         xml_block(
             "correction_policy",
-            "Use gold_truth as a reference target for what to look for in model_response, not as an independent source of facts.\n"
-            "Actively fix representation errors when model_response contains or directly entails the answer but the initial extraction loses score because of formatting.\n"
-            "Allowed corrections include units, scale words, punctuation, hyphenation, capitalization, numeric spelling, percentage-point wording, list serialization, answer-format labels, aliases, paraphrases, and adding missing list items that are supported by model_response.\n"
-            "Prefer the benchmark-friendly surface form: if model_response says 'less well off' and gold_truth shows the same phrase as 'less well-off', output the hyphenated form; if model_response says 'White households, 10 percentage points' and gold_truth is a two-item list, output the two supported list items.\n"
-            "For list answers, output the supported items at the same granularity and serialization style as gold_truth when model_response clearly mentions them.\n"
-            "Do not copy gold_truth into the answer unless model_response supports it. If model_response is substantively wrong or does not contain enough evidence, copy the initial formatted extraction exactly.\n"
-            "First output one <think>...</think> block where you freely compare model_response, gold_truth, the initial extraction, and scoring_code.\n"
-            "After </think>, output the corrected formatted extraction inside exactly one <corrected_extraction> XML block.",
+            "Use gold_truth as a reference target for what to look for in model_response, not as an independent source of facts. Actively fix representation errors when model_response contains or directly entails the answer but the initial extraction loses score because of formatting. Allowed corrections include units, scale words, punctuation, hyphenation, capitalization, numeric spelling, percentage-point wording, list serialization, answer-format labels, aliases, paraphrases, and adding missing list items that are supported by model_response. Prefer the benchmark-friendly surface form when it is supported by model_response. For list answers, output the supported items at the same granularity and serialization style as gold_truth when model_response clearly mentions them. Do not copy gold_truth into the answer unless model_response supports it.",
             escape=True,
             indent=2,
         ),
         xml_block("input_data", input_data),
-        xml_block("output_contract", _correction_output_contract(benchmark_name), cdata=True, indent=2),
         xml_block(
             "decision_rule",
-            "Return a changed extraction when model_response supports gold_truth in a direct, paraphrased, normalized numeric/unit, alias, or list-equivalent form. Otherwise return initial_formatted_extraction unchanged.",
+            "Return a changed extraction when model_response supports gold_truth in a direct, paraphrased, normalized numeric/unit, alias, or list-equivalent form. If model_response is substantively wrong or does not contain enough evidence, return initial_formatted_extraction unchanged.",
             escape=True,
             indent=2,
         ),
+        xml_block(
+            "thinking_policy",
+            "First output one <think>...</think> block. Compare model_response, gold_truth, initial_formatted_extraction, initial_score, and scoring_code. State whether the correction is supported by model_response or whether the initial extraction must be preserved.",
+            escape=True,
+            indent=2,
+        ),
+        xml_block("output_schema", _correction_output_contract(benchmark_name), cdata=True, indent=2),
+        xml_block(
+            "self_check",
+            "Before returning, verify that corrected_extraction is parseable, uses the benchmark-specific extraction format, does not introduce unsupported facts from gold_truth, and is unchanged when model_response does not support a correction.",
+            escape=True,
+            indent=2,
+        ),
+        _correction_few_shot_examples_xml(benchmark_name),
     ]))
     return [{"role": "user", "content": text_content_parts(prompt)}]
 
 
 def _unwrap_corrected_extraction(text: Any) -> str:
-    content = str(text or "").strip()
-    content = re.sub(r"^\s*<think>.*?</think>\s*", "", content, count=1, flags=re.DOTALL)
-    extraction_match = re.search(r"<corrected_extraction>\s*(.*?)\s*</corrected_extraction>", content, flags=re.DOTALL)
-    if extraction_match:
-        return extraction_match.group(1).strip()
+    content = _strip_leading_think_block(text)
+    extraction = _unwrap_xml_block(content, "corrected_extraction")
+    if extraction is not None:
+        return extraction
     return content
 
 
@@ -413,6 +815,8 @@ def _apply_correction_if_needed(
         "initial_pred": to_plain_data(initial_pred),
         "initial_pred_format": initial_pred_format,
         "initial_score": initial_score,
+        "changed": False,
+        "improved": False,
         "applied": False,
     }
     try:
@@ -438,11 +842,13 @@ def _apply_correction_if_needed(
         metadata["corrected_pred"] = to_plain_data(corrected_pred)
         metadata["corrected_pred_format"] = corrected_pred_format
         metadata["corrected_score"] = corrected_score
+        metadata["changed"] = (
+            str(to_plain_data(corrected_pred)) != str(to_plain_data(initial_pred))
+            or str(corrected_pred_format) != str(initial_pred_format)
+        )
+        metadata["improved"] = corrected_score > initial_score
         if corrected_score < initial_score:
             return
-        sample["pred"] = corrected_pred
-        sample["pred_format"] = corrected_pred_format
-        sample["score"] = corrected_score
         metadata["applied"] = True
     except Exception as exc:
         metadata["error"] = str(exc)
@@ -651,22 +1057,21 @@ class MMLongBenchAdapter:
 
     @staticmethod
     def parse_extraction_result(extracted_res: Any) -> tuple[str | None, str | None]:
-        text = str(extracted_res or "")
+        text = _unwrap_extraction_result(extracted_res)
         answer_match = re.search(r"Extracted answer:\s*(.*?)(?:\n+Answer format:|$)", text, flags=re.DOTALL)
         if not answer_match:
             return None, None
         format_match = re.search(r"Answer format:\s*(.*?)(?:\n|$)", text, flags=re.DOTALL)
-        pred_format = format_match.group(1).strip() if format_match else None
-        return answer_match.group(1).strip(), pred_format
+        pred_format = _unwrap_inline_xml_value(format_match.group(1).strip(), ("answer_format",)) if format_match else None
+        pred = _unwrap_inline_xml_value(answer_match.group(1).strip(), ("answer", "concise_answer"))
+        return pred, pred_format
 
     def build_extraction_messages(
         self,
         sample: Dict[str, Any],
         response: Any,
     ) -> List[Dict[str, Any]]:
-        question = "" if sample.get("question") is None else str(sample.get("question"))
-        output = "" if response is None else str(response)
-        prompt = self.extractor_prompt + "\n\nQuestion: " + question + "\nAnalysis: " + output
+        prompt = _build_extraction_prompt("mmlongbench", sample.get("question"), response)
         return [{"role": "user", "content": text_content_parts(prompt)}]
 
     def process_sample(self, sample: Dict[str, Any], cfg, context_builder, client) -> Dict[str, Any] | None:
@@ -711,11 +1116,13 @@ class MMLongBenchAdapter:
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:
         completed = [sample for sample in samples if self.is_successful_result(sample)]
-        overall_acc, overall_f1 = self.acc_and_f1(completed)
+        final_completed = [_final_prediction_sample(sample) for sample in completed]
+        overall_acc, overall_f1 = self.acc_and_f1(final_completed)
         metrics: Dict[str, Any] = {"overall_acc": overall_acc, "overall_f1": overall_f1}
 
         def group_metrics(group_samples: List[Dict[str, Any]]) -> Dict[str, Any]:
-            acc, f1 = self.acc_and_f1(group_samples)
+            final_group_samples = [_final_prediction_sample(sample) for sample in group_samples]
+            acc, f1 = self.acc_and_f1(final_group_samples)
             return {"acc": acc, "f1": f1, "count": len(group_samples)}
 
         single_page = [sample for sample in completed if len(_ensure_list(sample.get("evidence_pages"))) == 1]
@@ -918,15 +1325,16 @@ class LongDocURLAdapter:
         return parsed_answer
 
     def build_extraction_messages(self, sample: Dict[str, Any], response: Any) -> List[Dict[str, Any]]:
-        prompt = f"{self.extractor_prompt}\nQuestion: {sample['question']}\nAnalysis: {response}"
-        return [{"role": "user", "content": [{"type": "text", "text": prompt}]}]
+        prompt = _build_extraction_prompt("longdocurl", sample.get("question"), response)
+        return [{"role": "user", "content": text_content_parts(prompt)}]
 
     def parse_extraction_result(self, extracted_res: Any) -> tuple[Any, str | None]:
+        text = _unwrap_extraction_result(extracted_res)
         try:
-            concise_answer = re.findall(r"<concise_answer>(.*?)</concise_answer>", str(extracted_res), re.DOTALL)[0]
+            concise_answer = re.findall(r"<concise_answer>(.*?)</concise_answer>", text, re.DOTALL)[0]
         except Exception:
             return None, None
-        format_match = re.search(r"<answer_format>(.*?)</answer_format>", str(extracted_res), re.DOTALL)
+        format_match = re.search(r"<answer_format>(.*?)</answer_format>", text, re.DOTALL)
         pred_format = format_match.group(1).strip() if format_match else None
         return self.parse_concise_answer(concise_answer), pred_format
 
@@ -972,10 +1380,11 @@ class LongDocURLAdapter:
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:
         completed = [sample for sample in samples if self.is_successful_result(sample)]
+        final_completed = [_final_prediction_sample(sample) for sample in completed]
         avg_acc = self.accuracy(
-            [sample["pred"] for sample in completed],
-            [sample["answer"] for sample in completed],
-            [sample["answer_format"] for sample in completed],
+            [sample["pred"] for sample in final_completed],
+            [sample["answer"] for sample in final_completed],
+            [sample["answer_format"] for sample in final_completed],
         )
         metrics: Dict[str, Any] = {
             "overall_acc": avg_acc,
@@ -987,7 +1396,7 @@ class LongDocURLAdapter:
                 score_sample = json.load(f)
             score_dict = score_sample["scores"]
             sample_cnt_dict = score_sample["sample_cnt"]
-            fine_grained_samples = [dict(sample) for sample in completed]
+            fine_grained_samples = [dict(sample) for sample in final_completed]
             score_dict = self.accuracy_fine_grained(fine_grained_samples, score_dict)
             self.generalize_score_dict(score_dict, sample_cnt_dict)
             metrics["fine_grained_metrics"] = score_dict

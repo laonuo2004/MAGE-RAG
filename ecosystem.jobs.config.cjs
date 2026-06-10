@@ -74,6 +74,20 @@ module.exports = {
       script: "scripts/run_magerag.sh",
       out_file: "logs/pm2-job-magerag.out.log",
       error_file: "logs/pm2-job-magerag.err.log"
-    },         
+    },
+    {
+      ...jobDefaults,
+      name: "job-magerag-ai4s",
+      script: "scripts/run_magerag_ai4s.sh",
+      out_file: "logs/pm2-job-magerag-ai4s.out.log",
+      error_file: "logs/pm2-job-magerag-ai4s.err.log"
+    },
+    {
+      ...jobDefaults,
+      name: "job-evisrag",
+      script: "scripts/run_evisrag.sh",
+      out_file: "logs/pm2-job-evisrag.out.log",
+      error_file: "logs/pm2-job-evisrag.err.log"
+    },
   ]
 };

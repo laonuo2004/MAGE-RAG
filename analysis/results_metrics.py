@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from analysis.plugins import get_plugin
+from analysis.result_fields import display_score
 
 
 def flatten_metrics(metrics: dict[str, Any]) -> list[dict[str, Any]]:
@@ -59,7 +60,7 @@ def retrieval_diagnostics(records: list[dict[str, Any]]) -> list[dict[str, Any]]
         rows.append(
             {
                 "question_id": record.get("question_id"),
-                "score": _to_float(record.get("score")),
+                "score": display_score(record),
                 "evidence_pages": sorted(evidence_pages),
                 "evidence_hit": hit_candidate is not None,
                 "first_hit_rank": hit_candidate["rank"] if hit_candidate else None,
@@ -178,8 +179,8 @@ def case_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "question": record.get("question"),
                 "answer": record.get("answer"),
                 "pred": record.get("pred"),
-                "score": _to_float(record.get("score")),
-                "score_bucket": score_bucket(record.get("score")),
+                "score": display_score(record),
+                "score_bucket": score_bucket(display_score(record)),
                 "task_tag": record.get("task_tag"),
                 "doc_type": record.get("doc_type"),
                 "answer_format": record.get("answer_format"),

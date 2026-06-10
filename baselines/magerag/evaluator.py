@@ -118,7 +118,7 @@ class XMLEvaluator:
             client,
             self.model_name,
             [{"role": "user", "content": content}],
-            max_tokens=4096,
+            max_tokens=1024,
             temperature=self.temperature,
             retries=self.retries,
             logger=logger,

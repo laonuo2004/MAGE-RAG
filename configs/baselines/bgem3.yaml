@@ -2,7 +2,7 @@ name: bgem3
 params:
   mode: dense
   text_source: ocr
-  top_k: 5
+  top_k: 3
   chunk_size: 200
   chunk_overlap: 20
   allow_cross_page: true

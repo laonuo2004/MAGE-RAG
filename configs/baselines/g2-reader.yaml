@@ -2,7 +2,7 @@ name: g2-reader
 
 params:
   use_dag: true
-  top_k: 5
+  top_k: 3
   top_k_text_kw: 3
   top_k_image_kw: 3
   keyword_modality: all

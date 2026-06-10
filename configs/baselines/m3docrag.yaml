@@ -1,5 +1,4 @@
 name: m3docrag
 params:
-  top_k: 5
-result_name_params:
-  - params.top_k
+  top_k: 3
+result_name_params: []

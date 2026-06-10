@@ -1,6 +1,6 @@
 name: bm25
 params:
-  top_k: 5
+  top_k: 3
   chunk_size: 200
   chunk_overlap: 20
   bm25_k1: 1.5

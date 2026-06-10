@@ -87,8 +87,115 @@ def _add_run_envelope(sample: Dict[str, Any], cfg) -> None:
     sample["run_config"] = _run_config_from_cfg(cfg)
 
 
+def _coerce_int_list(value: Any) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            value = ast.literal_eval(text)
+        except Exception:
+            value = [text]
+    if isinstance(value, dict):
+        value = list(value.values())
+    if not isinstance(value, (list, tuple, set)):
+        value = [value]
+    values = []
+    for item in value:
+        if isinstance(item, dict):
+            for key in ("page_index", "page_number", "page", "page_id"):
+                if key in item:
+                    item = item[key]
+                    break
+        try:
+            values.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return values
+
+
+def _answer_page_sets(sample: Dict[str, Any]) -> tuple[set[int], set[int]]:
+    answer_page_ids = _coerce_int_list(sample.get("answer_page_ids"))
+    if answer_page_ids:
+        page_indices = {page for page in answer_page_ids if page >= 0}
+        page_numbers = {page + 1 for page in page_indices}
+        return page_indices, page_numbers
+    evidence_pages = _coerce_int_list(sample.get("evidence_pages"))
+    if not evidence_pages:
+        return set(), set()
+    page_numbers = set(evidence_pages)
+    page_indices = {page - 1 for page in page_numbers if page > 0}
+    return page_indices, page_numbers
+
+
+def _page_hit(values: Any, answer_page_indices: set[int], answer_page_numbers: set[int]) -> bool | None:
+    if not answer_page_indices and not answer_page_numbers:
+        return None
+    page_values = _coerce_int_list(values)
+    if not page_values:
+        return False
+    for page in page_values:
+        if page in answer_page_indices or page in answer_page_numbers:
+            return True
+    return False
+
+
+def _retrieved_items_hit(items: Any, answer_page_indices: set[int], answer_page_numbers: set[int]) -> bool | None:
+    if not answer_page_indices and not answer_page_numbers:
+        return None
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        page_index = item.get("page_index")
+        page_number = item.get("page_number")
+        covered_indices = item.get("covered_page_indices")
+        covered_numbers = item.get("covered_page_numbers")
+        if page_index is not None and _page_hit([page_index], answer_page_indices, set()) is True:
+            return True
+        if page_number is not None and _page_hit([page_number], set(), answer_page_numbers) is True:
+            return True
+        if _page_hit(covered_indices, answer_page_indices, set()) is True:
+            return True
+        if _page_hit(covered_numbers, set(), answer_page_numbers) is True:
+            return True
+    return False
+
+
+def _fill_retrieval_answer_page_hits(sample: Dict[str, Any]) -> None:
+    prepare_metadata = sample.get("prepare_metadata")
+    if not isinstance(prepare_metadata, dict):
+        return
+    retrieval = prepare_metadata.get("retrieval")
+    if not isinstance(retrieval, dict):
+        return
+    answer_page_indices, answer_page_numbers = _answer_page_sets(sample)
+    initial_hit = _page_hit(
+        retrieval.get("initial_retrieved_pages"),
+        answer_page_indices,
+        set(),
+    )
+    if initial_hit is False:
+        initial_hit = _retrieved_items_hit(
+            retrieval.get("retrieved_items"),
+            answer_page_indices,
+            answer_page_numbers,
+        )
+    final_hit = _page_hit(
+        retrieval.get("final_context_pages"),
+        answer_page_indices,
+        set(),
+    )
+    retrieval["initial_hit_answer_page"] = initial_hit
+    retrieval["final_hit_answer_page"] = final_hit
+
+
 def _finalize_result_fields(sample: Dict[str, Any], cfg=None) -> Dict[str, Any]:
     _add_run_envelope(sample, cfg)
+    _fill_retrieval_answer_page_hits(sample)
     correction_metadata = sample.get("correction_metadata")
     if isinstance(correction_metadata, dict):
         sample["pred"] = correction_metadata.get("initial_pred", sample.get("pred"))

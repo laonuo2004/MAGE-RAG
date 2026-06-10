@@ -542,6 +542,133 @@ def build_g2_memory_from_cfg(
         "dry_run": dry_run,
     }
 
+
+def _extract_g2_dag_payload(response: str) -> str | None:
+    match = re.search(r"<dag>(.*?)</dag>", response or "", re.DOTALL)
+    if match:
+        payload = match.group(1).strip()
+    else:
+        payload = response or ""
+    fence = re.search(r"```(?:json)?\s*(.*?)```", payload, re.DOTALL | re.IGNORECASE)
+    if fence:
+        payload = fence.group(1).strip()
+    start = payload.find("{")
+    end = payload.rfind("}")
+    if start < 0 or end < start:
+        return None
+    return payload[start : end + 1].strip()
+
+
+def _quote_unescaped_json_string_newlines(text: str) -> str:
+    result = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                result.append(char)
+                escaped = False
+            elif char == "\\":
+                result.append(char)
+                escaped = True
+            elif char == '"':
+                tail = text[index + 1 :]
+                next_nonspace = next((item for item in tail if not item.isspace()), "")
+                if next_nonspace in {"", ",", ":", "]", "}"}:
+                    in_string = False
+                    result.append(char)
+                else:
+                    result.append('\\"')
+            elif char == "\n":
+                result.append("\\n")
+            elif char == "\r":
+                result.append("\\r")
+            elif char == "\t":
+                result.append("\\t")
+            else:
+                result.append(char)
+        else:
+            if char == '"':
+                in_string = True
+            result.append(char)
+    return "".join(result)
+
+
+def _escape_unescaped_quotes_in_json_field(text: str, field_name: str) -> str:
+    pattern = f'"{re.escape(field_name)}"'
+    result = []
+    cursor = 0
+    while True:
+        match = re.search(pattern + r"\s*:\s*\"", text[cursor:])
+        if not match:
+            result.append(text[cursor:])
+            break
+        start = cursor + match.start()
+        value_start = cursor + match.end()
+        result.append(text[cursor:value_start])
+        index = value_start
+        escaped = False
+        while index < len(text):
+            char = text[index]
+            if escaped:
+                result.append(char)
+                escaped = False
+            elif char == "\\":
+                result.append(char)
+                escaped = True
+            elif char == '"':
+                tail = text[index + 1 :]
+                next_nonspace = next((item for item in tail if not item.isspace()), "")
+                if next_nonspace == "}" or re.match(r"\s*,\s*\"[^\"]+\"\s*:", tail):
+                    result.append(char)
+                    index += 1
+                    break
+                result.append('\\"')
+            elif char == "\n":
+                result.append("\\n")
+            elif char == "\r":
+                result.append("\\r")
+            elif char == "\t":
+                result.append("\\t")
+            else:
+                result.append(char)
+            index += 1
+        cursor = index
+    return "".join(result)
+
+
+def _repair_g2_dag_json_text(text: str) -> str:
+    repaired = text.strip().replace("\ufeff", "")
+    repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+    for field_name in ("task", "id"):
+        repaired = _escape_unescaped_quotes_in_json_field(repaired, field_name)
+    repaired = _quote_unescaped_json_string_newlines(repaired)
+    return repaired
+
+
+def parse_g2_dag_response(response: str) -> dict[str, Any]:
+    payload = _extract_g2_dag_payload(response)
+    if not payload:
+        raise json.JSONDecodeError("DAG JSON object not found", response or "", 0)
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return json.loads(_repair_g2_dag_json_text(payload))
+
+
+def build_g2_direct_answer_dag(question: str) -> dict[str, Any]:
+    return {
+        "nodes": [
+            {
+                "id": "root",
+                "type": "question",
+                "task": question,
+                "children": [],
+            }
+        ]
+    }
+
+
 def g2_memory_ready(memory_systems_dir: str | Path, sample_id: str, evolve_iters: int = 1) -> bool:
     sample_dir = Path(memory_systems_dir) / f"{sample_id}_iter_{int(evolve_iters)}"
     return (sample_dir / "memories.pkl").exists() and (sample_dir / "retriever_embeddings.npy").exists()
@@ -1225,6 +1352,7 @@ class G2ReaderRuntime:
         install_g2_lightweight_shims()
         from agent_search.pred_kw import DAGPred
 
+        self._patch_dag_json_repair(DAGPred)
         self._patch_dag_adjust_rounds(DAGPred)
         DAGPred(args).main()
         output = self._read_single_output(run_dir, args)
@@ -1329,6 +1457,72 @@ class G2ReaderRuntime:
                 "docs_col": "documents",
             }
         }
+
+    def _patch_dag_json_repair(self, dag_pred_cls) -> None:
+        current = dag_pred_cls.dag_decomposer
+        original_decomposer = getattr(current, "_project_original_dag_decomposer", current)
+        if getattr(current, "_project_dag_json_repair_patched", False):
+            return
+
+        def dag_decomposer_with_repair(instance, context, question, model, tokenizer, client, images=None, max_depth=4, max_nodes=12, max_retries=5, max_rounds=3, round_index=1):
+            try:
+                return original_decomposer(
+                    instance,
+                    context,
+                    question,
+                    model,
+                    tokenizer,
+                    client,
+                    images=images,
+                    max_depth=max_depth,
+                    max_nodes=max_nodes,
+                    max_retries=max_retries,
+                    max_rounds=max_rounds,
+                    round_index=round_index,
+                )
+            except RuntimeError as exc:
+                if "DAG" not in str(exc):
+                    raise
+                logger = getattr(instance, "logger", None)
+                if logger:
+                    logger.warning("DAG decomposition failed after built-in retries; attempting one repaired JSON parse.")
+                input_prompt = instance.decomposer_dag_prompt.replace("$DOC$", context).replace("$Q$", question)
+                response = instance.query_llm(
+                    input_prompt,
+                    model,
+                    tokenizer,
+                    client,
+                    temperature=0.2,
+                    max_new_tokens=2048,
+                    images=images,
+                )
+                try:
+                    dag = parse_g2_dag_response(response)
+                except Exception as parse_exc:
+                    fallback = build_g2_direct_answer_dag(question)
+                    if not instance._validate_dag(fallback, max_depth, max_nodes):
+                        raise RuntimeError("DAG repair fallback produced invalid DAG schema.") from parse_exc
+                    if logger:
+                        logger.warning(
+                            "DAG JSON repair response could not be parsed; falling back to direct-answer DAG."
+                        )
+                    return fallback
+                if not instance._validate_dag(dag, max_depth, max_nodes):
+                    fallback = build_g2_direct_answer_dag(question)
+                    if not instance._validate_dag(fallback, max_depth, max_nodes):
+                        raise RuntimeError("DAG repair fallback produced invalid DAG schema.") from exc
+                    if logger:
+                        logger.warning("DAG repair produced invalid DAG schema; falling back to direct-answer DAG.")
+                    return fallback
+                if logger:
+                    depth = instance._compute_depth(dag)
+                    logger.info(f"DAG JSON repair succeeded: {len(dag.get('nodes', []))} nodes, depth {depth}")
+                return dag
+
+        dag_decomposer_with_repair._project_dag_json_repair_patched = True
+        dag_decomposer_with_repair._project_original_dag_decomposer = original_decomposer
+        dag_pred_cls.dag_decomposer = dag_decomposer_with_repair
+
 
     def _patch_dag_adjust_rounds(self, dag_pred_cls) -> None:
         max_adjust_rounds = int(get_config_value(self.cfg, "baselines.params.max_adjust_rounds", 3))

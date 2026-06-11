@@ -13,7 +13,7 @@ process_mode: parallel
 workers: 4 # only for parallel processing
 qa_model_name: Qwen3-VL-8B-Instruct
 extractor_model_name: Qwen3-VL-8B-Instruct
-correction_enabled: true
+correction_enabled: false
 correction_model_name: Qwen3-VL-8B-Instruct
 max_pages: 120
 resolution: 144

@@ -41,6 +41,11 @@ COMMON_RESULT_FIELDS = (
     "corrected_format",
     "corrected_score",
 )
+FAILED_RUNTIME_SENTINELS = {
+    "Fail to answer",
+    "Fail to extract",
+    "Failed to extract",
+}
 
 
 class BenchmarkAdapter(Protocol):
@@ -225,6 +230,25 @@ def _final_prediction_sample(sample: Dict[str, Any]) -> Dict[str, Any]:
     return final_sample
 
 
+def _is_failed_runtime_text(value: Any) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    return text in FAILED_RUNTIME_SENTINELS or text.startswith("Failed:")
+
+
+def _has_failed_runtime_result(sample: Dict[str, Any]) -> bool:
+    for key in ("pred", "corrected_pred"):
+        if _is_failed_runtime_text(sample.get(key)):
+            return True
+    generation_metadata = sample.get("generation_metadata")
+    if isinstance(generation_metadata, dict):
+        for key in ("response", "raw_response"):
+            if _is_failed_runtime_text(generation_metadata.get(key)):
+                return True
+    return False
+
+
 def _apply_sample_limit(samples: List[Dict[str, Any]], cfg) -> List[Dict[str, Any]]:
     limit = get_config_value(cfg, "benchmarks.limit")
     if limit is None:
@@ -351,7 +375,6 @@ def _generate_response(sample: Dict[str, Any], messages, model_name: str, client
         retries=3,
         logger=logger,
         log_prefix=log_prefix,
-        failure_value=lambda exc: f"Failed: {exc}",
     )
     raw_response = completion_content(completion)
     response = _unwrap_generation_answer(raw_response) if _uses_magerag_context(sample) else raw_response
@@ -375,7 +398,6 @@ def _extract_prediction(sample: Dict[str, Any], messages, model_name: str, clien
         retries=3,
         logger=logger,
         log_prefix=log_prefix,
-        failure_value=lambda exc: f"Failed: {exc}",
     )
     extracted_res = completion_content(completion)
     sample["extraction_metadata"] = {
@@ -928,12 +950,12 @@ def _apply_correction_if_needed(
     initial_extracted_res: Any,
     parse_extraction_result,
     log_prefix: str,
-) -> None:
+) -> bool:
     initial_score = float(sample["score"])
     if initial_score >= 1.0:
-        return
+        return True
     if not bool(get_config_value(cfg, "benchmarks.correction_enabled", True)):
-        return
+        return True
 
     correction_model_name = get_config_value(cfg, "benchmarks.correction_model_name")
     if not correction_model_name:
@@ -969,7 +991,6 @@ def _apply_correction_if_needed(
             retries=3,
             logger=logger,
             log_prefix=log_prefix,
-            failure_value=lambda exc: f"Failed: {exc}",
         )
         corrected_extracted_res = completion_content(completion)
         metadata.update(_completion_metadata(completion, correction_model_name))
@@ -977,24 +998,26 @@ def _apply_correction_if_needed(
         corrected_pred, corrected_pred_format = parse_extraction_result(_unwrap_corrected_extraction(corrected_extracted_res))
         if corrected_pred is None:
             metadata["error"] = "Failed to parse corrected extraction"
-            return
-        corrected_score = adapter.score(sample["answer"], corrected_pred, sample["answer_format"])
-        metadata["corrected_pred"] = to_plain_data(corrected_pred)
-        metadata["corrected_pred_format"] = corrected_pred_format
-        metadata["corrected_score"] = corrected_score
-        metadata["changed"] = (
-            str(to_plain_data(corrected_pred)) != str(to_plain_data(initial_pred))
-            or str(corrected_pred_format) != str(initial_pred_format)
-        )
-        metadata["improved"] = corrected_score > initial_score
-        if corrected_score < initial_score:
-            return
-        metadata["applied"] = True
+        else:
+            corrected_score = adapter.score(sample["answer"], corrected_pred, sample["answer_format"])
+            metadata["corrected_pred"] = to_plain_data(corrected_pred)
+            metadata["corrected_pred_format"] = corrected_pred_format
+            metadata["corrected_score"] = corrected_score
+            metadata["changed"] = (
+                str(to_plain_data(corrected_pred)) != str(to_plain_data(initial_pred))
+                or str(corrected_pred_format) != str(initial_pred_format)
+            )
+            metadata["improved"] = corrected_score > initial_score
+            if corrected_score >= initial_score:
+                metadata["applied"] = True
     except Exception as exc:
         metadata["error"] = str(exc)
+        logger.warning("%s failed after retries; sample will be retried. error=%s", log_prefix, exc)
+        return False
     finally:
         metadata["duration_seconds"] = round(perf_counter() - correction_start, 3)
         sample["correction_metadata"] = metadata
+    return True
 
 
 def _levenshtein_distance(s1: str, s2: str) -> int:
@@ -1193,7 +1216,7 @@ class MMLongBenchAdapter:
         return (sample.get("doc_id"), sample.get("question"), sample.get("answer"), sample.get("answer_format"))
 
     def is_successful_result(self, sample: Dict[str, Any]) -> bool:
-        return "score" in sample and sample.get("pred") != "Failed to extract"
+        return "score" in sample and not _has_failed_runtime_result(sample)
 
     @staticmethod
     def parse_extraction_result(extracted_res: Any) -> tuple[str | None, str | None]:
@@ -1241,7 +1264,7 @@ class MMLongBenchAdapter:
         sample["pred"] = pred
         sample["pred_format"] = pred_format
         sample["score"] = self.score(sample["answer"], pred, sample["answer_format"])
-        _apply_correction_if_needed(
+        correction_ok = _apply_correction_if_needed(
             self,
             "mmlongbench",
             sample,
@@ -1252,6 +1275,8 @@ class MMLongBenchAdapter:
             self.parse_extraction_result,
             "MMLongBench correction",
         )
+        if not correction_ok:
+            return None
         return _finalize_result_fields(sample)
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:
@@ -1451,7 +1476,7 @@ class LongDocURLAdapter:
         return sample.get("question_id")
 
     def is_successful_result(self, sample: Dict[str, Any]) -> bool:
-        return "score" in sample and sample.get("pred") != "Fail to extract"
+        return "score" in sample and not _has_failed_runtime_result(sample)
 
     @staticmethod
     def parse_concise_answer(concise_answer: Any) -> Any:
@@ -1505,7 +1530,7 @@ class LongDocURLAdapter:
         sample["pred"] = pred
         sample["pred_format"] = pred_format
         sample["score"] = self.score(sample["answer"], pred, sample["answer_format"])
-        _apply_correction_if_needed(
+        correction_ok = _apply_correction_if_needed(
             self,
             "longdocurl",
             sample,
@@ -1516,6 +1541,8 @@ class LongDocURLAdapter:
             self.parse_extraction_result,
             "LongDocURL correction",
         )
+        if not correction_ok:
+            return None
         return _finalize_result_fields(sample)
 
     def build_metrics(self, samples: List[Dict[str, Any]], output_path: Path) -> Dict[str, Any]:

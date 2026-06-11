@@ -1,0 +1,27 @@
+{
+  "overall_acc": 0.0,
+  "overall_f1": 0.0,
+  "breakdowns": {
+    "single_page": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 0
+    },
+    "cross_page": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 0
+    },
+    "unanswerable": {
+      "acc": 0.0,
+      "f1": 0.0,
+      "count": 0
+    }
+  },
+  "evidence_source_breakdowns": {},
+  "document_type_breakdowns": {},
+  "answer_format_breakdowns": {},
+  "sample_count": 1091,
+  "completed_count": 0,
+  "failed_count": 1091
+}

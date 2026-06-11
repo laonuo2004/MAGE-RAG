@@ -9,6 +9,13 @@ from benchmarks.evidence_graph.writer import load_graph_artifacts
 PAGE_NODE_TYPE = "page"
 BIDIRECTIONAL_EDGE_TYPES = {"reading_order", "section_hierarchy"}
 BIDIRECTIONAL_LAYOUT_RELATIONS = {"left_of", "right_of"}
+GRAPH_MODE_EDGE_TYPES = {
+    "full_graph": None,
+    "containment_only": {"containment"},
+    "structural_graph": {"containment", "section_hierarchy", "hierarchy", "reading_order"},
+    "semantic_graph": {"containment", "semantic"},
+    "layout_graph": {"containment", "layout"},
+}
 
 
 class EvidenceGraphStore:
@@ -19,13 +26,26 @@ class EvidenceGraphStore:
     online agent 只通过这个 store 查询节点、边、页面归属和轻量检索结果。
     """
 
-    def __init__(self, graph_dir: str | Path, allowed_pages: list[int] | set[int] | None = None):
+    def __init__(
+        self,
+        graph_dir: str | Path,
+        allowed_pages: list[int] | set[int] | None = None,
+        *,
+        graph_mode: str = "full_graph",
+        enabled_edge_types: list[str] | set[str] | tuple[str, ...] | None = None,
+        disabled_edge_types: list[str] | set[str] | tuple[str, ...] | None = None,
+        max_edges_per_node: int | None = None,
+    ):
         self.graph_dir = Path(graph_dir)
         artifacts = load_graph_artifacts(self.graph_dir)
         self.metadata = artifacts.metadata
         self.allowed_pages = set(int(page) for page in allowed_pages) if allowed_pages is not None else None
-        self.nodes = {str(node["id"]): dict(node) for node in artifacts.nodes}
-        self.edges = {str(edge["id"]): dict(edge) for edge in artifacts.edges}
+        self.graph_mode = str(graph_mode or "full_graph")
+        self.enabled_edge_types = _normalize_edge_types(enabled_edge_types)
+        self.disabled_edge_types = _normalize_edge_types(disabled_edge_types) or set()
+        self.max_edges_per_node = None if max_edges_per_node is None else max(0, int(max_edges_per_node))
+        self.nodes = self._filter_nodes({str(node["id"]): dict(node) for node in artifacts.nodes})
+        self.edges = self._filter_edges([dict(edge) for edge in artifacts.edges])
         self.out_edges: dict[str, list[dict[str, Any]]] = {}
         self.in_edges: dict[str, list[dict[str, Any]]] = {}
         for edge in self.edges.values():
@@ -36,6 +56,46 @@ class EvidenceGraphStore:
             page_index = self.node_page_index(node)
             if self.is_page_node(node):
                 self.page_nodes[page_index] = node_id
+
+    def _filter_nodes(self, nodes: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        if self.graph_mode != "page_only":
+            return nodes
+        return {
+            node_id: node
+            for node_id, node in nodes.items()
+            if self.is_page_node(node)
+        }
+
+    def _filter_edges(self, edges: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        allowed_types = self._allowed_edge_types_for_mode()
+        kept: list[dict[str, Any]] = []
+        edge_counts_by_source: dict[str, int] = {}
+        for edge in edges:
+            source = str(edge.get("source") or "")
+            target = str(edge.get("target") or "")
+            if source not in self.nodes or target not in self.nodes:
+                continue
+            edge_type = str(edge.get("type") or "").lower()
+            if allowed_types is not None and edge_type not in allowed_types:
+                continue
+            if self.enabled_edge_types is not None and edge_type not in self.enabled_edge_types:
+                continue
+            if edge_type in self.disabled_edge_types:
+                continue
+            if self.max_edges_per_node is not None:
+                current_count = edge_counts_by_source.get(source, 0)
+                if current_count >= self.max_edges_per_node:
+                    continue
+                edge_counts_by_source[source] = current_count + 1
+            kept.append(edge)
+        return {str(edge["id"]): edge for edge in kept}
+
+    def _allowed_edge_types_for_mode(self) -> set[str] | None:
+        if self.graph_mode == "page_only":
+            return set()
+        if self.graph_mode not in GRAPH_MODE_EDGE_TYPES:
+            raise ValueError(f"Unsupported MAGE-RAG graph.mode: {self.graph_mode}")
+        return GRAPH_MODE_EDGE_TYPES[self.graph_mode]
 
     def is_page_allowed(self, page_index: int) -> bool:
         return bool(self.allowed_pages is None or int(page_index) in self.allowed_pages)
@@ -127,3 +187,9 @@ class EvidenceGraphStore:
             {"node": node, "score": score, "preview": self.preview_node(node_id)}
             for score, node_id, node in scored[:limit]
         ]
+
+
+def _normalize_edge_types(edge_types) -> set[str] | None:
+    if edge_types is None:
+        return None
+    return {str(edge_type).lower() for edge_type in edge_types}

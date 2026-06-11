@@ -89,5 +89,12 @@ module.exports = {
       out_file: "logs/pm2-job-evisrag.out.log",
       error_file: "logs/pm2-job-evisrag.err.log"
     },
+    {
+      ...jobDefaults,
+      name: "job-group-a",
+      script: "scripts/run_group_a.sh",
+      out_file: "logs/pm2-job-group-a.out.log",
+      error_file: "logs/pm2-job-group-a.err.log"
+    }
   ]
 };

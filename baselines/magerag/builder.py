@@ -24,6 +24,17 @@ from benchmarks.utils.data_utils import mmlongbench_file_id
 from utils.config_utils import get_config_value, require_config_value
 
 logger = logging.getLogger(__name__)
+CONTROLLER_MODES = {
+    "full",
+    "full_magerag",
+    "topk_page_only",
+    "topk_page_with_node_rendering",
+    "graph_neighbor_expansion",
+    "dynamic_controller_no_search",
+    "dynamic_controller_no_prune",
+}
+
+
 class MAGERAGContextBuilder(ContextBuilder):
     """
     把 benchmark sample 转成最终 reader messages 的 MAGE-RAG 编排器。
@@ -60,9 +71,15 @@ class MAGERAGContextBuilder(ContextBuilder):
             int(get_config_value(cfg, "baselines.evaluator.max_total_selected_actions", 24)),
         )
         self.controller_mode = str(get_config_value(cfg, "baselines.controller.mode", "full"))
+        if self.controller_mode not in CONTROLLER_MODES:
+            raise ValueError(f"Unsupported MAGE-RAG controller.mode: {self.controller_mode}")
         self.enable_online_controller = bool(get_config_value(cfg, "baselines.controller.enable_online_controller", True))
         self.enable_search = bool(get_config_value(cfg, "baselines.controller.enable_search", True))
         self.enable_prune = bool(get_config_value(cfg, "baselines.controller.enable_prune", True))
+        if self.controller_mode == "dynamic_controller_no_search":
+            self.enable_search = False
+        if self.controller_mode == "dynamic_controller_no_prune":
+            self.enable_prune = False
         self.watchdog_iterations = max(0, int(get_config_value(cfg, "baselines.controller.watchdog_iterations", 6)))
         self.watchdog_repeated_noop_rounds = max(1, int(get_config_value(cfg, "baselines.controller.watchdog_repeated_noop_rounds", 2)))
         self.auto_activate_initial_page_nodes = True
@@ -96,7 +113,14 @@ class MAGERAGContextBuilder(ContextBuilder):
         return self._build("longdocurl", sample, doc_key, graph_dir, allowed_pages, kwargs.get("client"))
 
     def _build(self, benchmark_name, sample, doc_key, graph_dir, allowed_pages, client):
-        graph = EvidenceGraphStore(graph_dir, allowed_pages=allowed_pages)
+        graph = EvidenceGraphStore(
+            graph_dir,
+            allowed_pages=allowed_pages,
+            graph_mode=get_config_value(self.cfg, "baselines.graph.mode", "full_graph"),
+            enabled_edge_types=get_config_value(self.cfg, "baselines.graph.enabled_edge_types"),
+            disabled_edge_types=get_config_value(self.cfg, "baselines.graph.disabled_edge_types", []),
+            max_edges_per_node=get_config_value(self.cfg, "baselines.graph.max_edges_per_node"),
+        )
         state = EvidenceAgentState(graph)
 
         # Stage I: ColPali 做 page-level grounding，先把最相关页面放入工作记忆。
@@ -105,8 +129,13 @@ class MAGERAGContextBuilder(ContextBuilder):
             state.execute(ActivatePage(page_index=initial_page["page_index"], source="initial_retrieval"), iteration=0)
 
         # Stage II: evaluator 反复选择有边际收益的扩展动作，直到 stop 或 watchdog 触发。
-        stop_reason = self._run_agent(benchmark_name, sample["question"], state, client, sample=sample)
-        if self.final_open_active_nodes:
+        stop_reason = self._run_mode(benchmark_name, sample["question"], state, client, sample=sample, initial_pages=initial_pages)
+        if self.final_open_active_nodes and self.controller_mode in {
+            "full",
+            "full_magerag",
+            "dynamic_controller_no_search",
+            "dynamic_controller_no_prune",
+        }:
             # 最后一轮把仍处于 Active 的高相关节点打开，避免 reader 只看到 abstract。
             self._final_open_active_nodes(
                 benchmark_name,
@@ -132,6 +161,107 @@ class MAGERAGContextBuilder(ContextBuilder):
             reader_input,
         )
         return ContextMessages([{"role": "user", "content": content}], metadata=metadata)
+
+    def _run_mode(
+        self,
+        benchmark_name: str,
+        question: str,
+        state: EvidenceAgentState,
+        client=None,
+        sample: dict | None = None,
+        initial_pages: list[dict] | None = None,
+    ) -> str:
+        if self.controller_mode == "topk_page_only":
+            return "mode_topk_page_only"
+        if self.controller_mode == "topk_page_with_node_rendering":
+            for page in initial_pages or []:
+                self._open_question_page_nodes(
+                    state,
+                    int(page["page_index"]),
+                    question,
+                    max_nodes=self.final_open_active_node_limit,
+                )
+            return "mode_topk_page_with_node_rendering"
+        if self.controller_mode == "graph_neighbor_expansion":
+            self._deterministic_graph_neighbor_expansion(state, question, initial_pages or [])
+            return "mode_graph_neighbor_expansion"
+        return self._run_agent(benchmark_name, question, state, client, sample=sample)
+
+    def _deterministic_graph_neighbor_expansion(
+        self,
+        state: EvidenceAgentState,
+        question: str,
+        initial_pages: list[dict],
+    ):
+        opened_initial_node_ids: list[str] = []
+        for page in initial_pages:
+            opened_initial_node_ids.extend(self._open_question_page_nodes(
+                state,
+                int(page["page_index"]),
+                question,
+                max_nodes=self.final_open_active_node_limit,
+            ))
+        remaining = max(0, int(self.final_open_active_node_limit) - len(opened_initial_node_ids))
+        if remaining <= 0:
+            return
+        relation_candidates = self._relation_candidates_from_nodes(state, opened_initial_node_ids)
+        relation_candidates.sort(key=lambda candidate: (
+            -_node_question_relevance(
+                state.graph.node(str(candidate.payload["node_id"])),
+                state.graph.node_text(str(candidate.payload["node_id"])),
+                question,
+            ),
+            str(candidate.payload.get("edge_type") or ""),
+            str(candidate.payload["node_id"]),
+        ))
+        for candidate in relation_candidates[:remaining]:
+            node_id = str(candidate.payload["node_id"])
+            activate_result = state.execute(action_from_candidate(candidate), iteration=0)
+            if not activate_result.ok:
+                continue
+            self._annotate_last_action_selection(
+                state,
+                {"candidate_index": None, "utility": "deterministic_graph_neighbor_expansion"},
+                candidate,
+                resolved_by="deterministic_graph_neighbor_expansion",
+            )
+            state.execute(OpenNode(node_id), iteration=0)
+
+    def _relation_candidates_from_nodes(self, state: EvidenceAgentState, node_ids: list[str]) -> list[CandidateAction]:
+        candidates = []
+        seen_targets = set()
+        for source_node_id in node_ids:
+            for edge, target_id in self._followable_relation_edges(state, source_node_id):
+                if target_id in seen_targets:
+                    continue
+                if state.state_of(target_id) in {"Active", "Opened"}:
+                    continue
+                target_page = state.graph.node_page_index(target_id)
+                if not state.graph.is_page_allowed(target_page):
+                    continue
+                seen_targets.add(target_id)
+                candidates.append(CandidateAction(
+                    id=f"deterministic:ActivateNode:{target_id}",
+                    action_type="ActivateNode",
+                    payload={
+                        "node_id": target_id,
+                        "edge_id": str(edge["id"]),
+                        "source_node_id": source_node_id,
+                        "edge_type": str(edge.get("type") or ""),
+                        "relation": str(edge.get("relation") or ""),
+                    },
+                    preview=state.graph.preview_node(target_id),
+                ))
+        return candidates
+
+    def _followable_relation_edges(self, state: EvidenceAgentState, node_id: str) -> list[tuple[dict, str]]:
+        edges: list[tuple[dict, str]] = []
+        for edge in state.graph.out_edges.get(node_id, []):
+            edges.append((edge, str(edge["target"])))
+        for edge in state.graph.in_edges.get(node_id, []):
+            if state.graph.is_logically_bidirectional_edge(edge):
+                edges.append((edge, str(edge["source"])))
+        return edges
 
     def _activate_salient_page_nodes(self, state: EvidenceAgentState, page_index: int):
         # 只激活视觉/结构性强的节点，作为不运行 online agent 时的轻量 evidence expansion。
@@ -548,6 +678,12 @@ class MAGERAGContextBuilder(ContextBuilder):
                     "watchdog_iterations": self.watchdog_iterations,
                     "watchdog_repeated_noop_rounds": self.watchdog_repeated_noop_rounds,
                     "final_open_active_node_limit": self.final_open_active_node_limit,
+                },
+                "graph": {
+                    "mode": state.graph.graph_mode,
+                    "enabled_edge_types": None if state.graph.enabled_edge_types is None else sorted(state.graph.enabled_edge_types),
+                    "disabled_edge_types": sorted(state.graph.disabled_edge_types),
+                    "max_edges_per_node": state.graph.max_edges_per_node,
                 },
             },
         }

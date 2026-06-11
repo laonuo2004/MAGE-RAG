@@ -38,7 +38,17 @@ class MMLongBenchResultsTests(unittest.TestCase):
             compacted = read_jsonl(output_path)
 
         self.assertEqual(len(raw), 2)
-        self.assertEqual(compacted, [{"doc_id": "d2", "question": "q2", "answer": "a", "answer_format": "Str", "pred": "ok", "score": 0.0}])
+        self.assertEqual(compacted, [{
+            "doc_id": "d2",
+            "question": "q2",
+            "answer": "a",
+            "answer_format": "Str",
+            "pred": "ok",
+            "score": 0.0,
+            "corrected_pred": "ok",
+            "corrected_format": None,
+            "corrected_score": 0.0,
+        }])
 
     def test_merge_existing_uses_adapter_key(self):
         adapter = MMLongBenchAdapter()

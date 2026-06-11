@@ -74,17 +74,23 @@ class MAGERAGTests(unittest.TestCase):
         self.assertNotIn("graph_escape", cfg.params)
         self.assertNotIn("online_agent", cfg.params)
         self.assertEqual(set(cfg.params.keys()), {"top_k"})
-        self.assertEqual(list(cfg.result_name_params), ["params.top_k", "controller.watchdog_iterations", "evaluator.max_selected_actions_per_iteration"])
+        self.assertEqual(list(cfg.result_name_params), [
+            "params.top_k",
+            "controller.mode",
+            "controller.watchdog_iterations",
+            "evaluator.max_selected_actions_per_iteration",
+            "graph.mode",
+        ])
         self.assertEqual(str(cfg.models.evaluator), "Qwen3-VL-8B-Instruct")
         self.assertTrue(bool(cfg.evaluator.include_few_shot_examples))
         self.assertNotIn("prompt_style", cfg.evaluator)
         self.assertNotIn("reason_max_words", cfg.evaluator)
         self.assertEqual(int(cfg.evaluator.raw_text_char_limit), 1200)
         self.assertNotIn("max_candidate_actions", cfg.evaluator)
-        self.assertEqual(int(cfg.evaluator.max_selected_actions_per_iteration), 3)
+        self.assertEqual(int(cfg.evaluator.max_selected_actions_per_iteration), 5)
         self.assertEqual(int(cfg.evaluator.max_total_selected_actions), 100)
         self.assertEqual(int(cfg.evaluator.recent_trace_limit), 25)
-        self.assertEqual(int(cfg.controller.watchdog_iterations), 5)
+        self.assertEqual(int(cfg.controller.watchdog_iterations), 10)
         self.assertEqual(int(cfg.controller.watchdog_repeated_noop_rounds), 2)
         self.assertEqual(str(cfg.controller.mode), "full")
         self.assertTrue(bool(cfg.controller.enable_online_controller))
@@ -316,6 +322,40 @@ class MAGERAGTests(unittest.TestCase):
         self.assertIn("layout_left", relation_edge_ids)
         self.assertIn("section_parent", relation_edge_ids)
         self.assertNotIn("contains_page", relation_edge_ids)
+
+    def test_graph_store_filters_edges_by_graph_mode(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(self._write_graph(tmp_dir))
+            with open(graph_dir / "edges.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"id": "layout_left", "source": "n1", "target": "n3", "type": "layout", "relation": "left_of"}) + "\n")
+                handle.write(json.dumps({"id": "read_next", "source": "n1", "target": "n3", "type": "reading_order", "relation": "next"}) + "\n")
+
+            semantic_graph = EvidenceGraphStore(graph_dir, allowed_pages=[0, 1], graph_mode="semantic_graph")
+            structural_graph = EvidenceGraphStore(graph_dir, allowed_pages=[0, 1], graph_mode="structural_graph")
+            page_only_graph = EvidenceGraphStore(graph_dir, allowed_pages=[0, 1], graph_mode="page_only")
+
+        self.assertEqual(set(semantic_graph.edges), {"e1"})
+        self.assertEqual(set(structural_graph.edges), {"read_next"})
+        self.assertEqual(set(page_only_graph.nodes), {"page:0", "page:1"})
+        self.assertEqual(page_only_graph.edges, {})
+
+    def test_graph_store_applies_enabled_disabled_and_per_node_edge_limits(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_dir = Path(self._write_graph(tmp_dir))
+            with open(graph_dir / "edges.jsonl", "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"id": "semantic_2", "source": "n1", "target": "n3", "type": "semantic", "relation": "related"}) + "\n")
+                handle.write(json.dumps({"id": "layout_left", "source": "n1", "target": "n3", "type": "layout", "relation": "left_of"}) + "\n")
+
+            graph = EvidenceGraphStore(
+                graph_dir,
+                allowed_pages=[0, 1],
+                enabled_edge_types=["semantic", "layout"],
+                disabled_edge_types=["layout"],
+                max_edges_per_node=1,
+            )
+
+        self.assertEqual(set(graph.edges), {"e1"})
+        self.assertEqual([edge["id"] for edge in graph.out_edges["n1"]], ["e1"])
 
     def test_reverse_relation_candidate_targets_source_endpoint(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1756,6 +1796,100 @@ class MAGERAGTests(unittest.TestCase):
 
         self.assertEqual(stop_reason, "controller_disabled")
         self.assertFalse(any(item.get("action") == "EvaluatorDecision" for item in state.trace))
+
+    def test_topk_page_only_mode_skips_node_opening_and_evaluator(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            self._write_graph(os.path.join(graph_root, "sample"))
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "magerag",
+                    "params": {},
+                    "controller": {"mode": "topk_page_only"},
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 1,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = MAGERAGContextBuilder(cfg)
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+            builder.evaluator.call = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("evaluator should not be called"))
+
+            messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "needle"}, client=object())
+
+        self.assertEqual(messages.metadata["stop_reason"], "mode_topk_page_only")
+        self.assertEqual(messages.metadata["opened_node_ids"], [])
+        self.assertFalse(any(item.get("action") == "EvaluatorDecision" for item in messages.metadata["iteration_trace"]))
+
+    def test_topk_page_with_node_rendering_mode_opens_initial_page_nodes_without_evaluator(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            self._write_graph(os.path.join(graph_root, "sample"))
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "magerag",
+                    "params": {},
+                    "controller": {"mode": "topk_page_with_node_rendering"},
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 1,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = MAGERAGContextBuilder(cfg)
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+            builder.evaluator.call = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("evaluator should not be called"))
+
+            messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "needle source"}, client=object())
+
+        self.assertEqual(messages.metadata["stop_reason"], "mode_topk_page_with_node_rendering")
+        self.assertIn("n1", messages.metadata["opened_node_ids"])
+        self.assertFalse(any(item.get("action") == "EvaluatorDecision" for item in messages.metadata["iteration_trace"]))
+
+    def test_graph_neighbor_expansion_mode_expands_one_hop_without_evaluator(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            graph_root = os.path.join(tmp_dir, "graphs")
+            self._write_graph(os.path.join(graph_root, "sample"))
+            cfg = OmegaConf.create({
+                "baselines": {
+                    "name": "magerag",
+                    "params": {},
+                    "controller": {"mode": "graph_neighbor_expansion"},
+                },
+                "benchmarks": {
+                    "name": "mmlongbench",
+                    "evidence_graph_dir": graph_root,
+                    "max_pages": 2,
+                    "resolution": 144,
+                    "pdf_png_dir": os.path.join(tmp_dir, "missing_pngs"),
+                },
+            })
+            builder = MAGERAGContextBuilder(cfg)
+            builder.retriever.retrieve_many = lambda benchmark_name, sample, allowed_pages: (
+                [{"page_index": 0, "page_number": 1, "score": 2.0}],
+                {"retrieved_pages": [{"page_index": 0, "page_number": 1, "score": 2.0}]},
+            )
+            builder.evaluator.call = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("evaluator should not be called"))
+
+            messages = builder.build("mmlongbench", {"doc_id": "sample.pdf", "question_id": "q1", "question": "needle target"}, client=object())
+
+        self.assertEqual(messages.metadata["stop_reason"], "mode_graph_neighbor_expansion")
+        self.assertIn("n1", messages.metadata["opened_node_ids"])
+        self.assertIn("n2", messages.metadata["opened_node_ids"])
+        self.assertFalse(any(item.get("action") == "EvaluatorDecision" for item in messages.metadata["iteration_trace"]))
 
     def test_initial_page_nodes_are_opened_and_rendered_without_expanding_top_k(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

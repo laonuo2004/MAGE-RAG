@@ -2,8 +2,10 @@ name: magerag
 
 result_name_params:
   - params.top_k
+  - controller.mode
   - controller.watchdog_iterations
   - evaluator.max_selected_actions_per_iteration
+  - graph.mode
 
 params:
   top_k: 3
@@ -17,14 +19,14 @@ evaluator:
   include_few_shot_examples: true
   raw_text_char_limit: 1200
   include_opened_node_images: false
-  max_selected_actions_per_iteration: 3
+  max_selected_actions_per_iteration: 5
   max_total_selected_actions: 100
   candidate_preview_char_limit: 160
   recent_trace_limit: 25
 
 controller:
   mode: full
-  watchdog_iterations: 5
+  watchdog_iterations: 10
   watchdog_repeated_noop_rounds: 2
   enable_online_controller: true
   enable_search: true

@@ -1,0 +1,50 @@
+model_list:
+- model_name: Qwen3-VL-8B-Instruct
+  litellm_params:
+    model: hosted_vllm/Qwen3-VL-8B-Instruct
+    api_base: http://i-2.gpushare.com:37036/v1
+    api_key: none
+  model_info:
+    max_tokens: 16384
+    input_cost_per_token: 0.000000075
+    output_cost_per_token: 0.0000003
+- model_name: Qwen3-VL-8B-Instruct
+  litellm_params:
+    model: hosted_vllm/Qwen3-VL-8B-Instruct
+    api_base: http://i-1.gpushare.com:58160/v1
+    api_key: none
+  model_info:
+    max_tokens: 16384
+    input_cost_per_token: 0.000000075
+    output_cost_per_token: 0.0000003
+- model_name: Qwen3-VL-8B-Instruct
+  litellm_params:
+    model: hosted_vllm/Qwen3-VL-8B-Instruct
+    api_base: http://i-1.gpushare.com:5720/v1
+    api_key: none
+  model_info:
+    max_tokens: 16384
+    input_cost_per_token: 0.000000075
+    output_cost_per_token: 0.0000003
+- model_name: Qwen3-VL-8B-Instruct
+  litellm_params:
+    model: hosted_vllm/Qwen3-VL-8B-Instruct
+    api_base: http://i-2.gpushare.com:51755/v1
+    api_key: none
+  model_info:
+    max_tokens: 16384
+    input_cost_per_token: 0.000000075
+    output_cost_per_token: 0.0000003
+- model_name: Qwen3-VL-8B-Instruct
+  litellm_params:
+    model: hosted_vllm/Qwen3-VL-8B-Instruct
+    api_base: http://i-2.gpushare.com:22089/v1
+    api_key: none
+  model_info:
+    max_tokens: 16384
+    input_cost_per_token: 0.000000075
+    output_cost_per_token: 0.0000003    
+router_settings:
+  routing_strategy: least-busy
+  num_retries: 3
+  enable_pre_call_checks: true

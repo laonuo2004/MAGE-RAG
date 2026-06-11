@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from omegaconf import OmegaConf
 
@@ -142,6 +143,29 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertTrue(MMLongBenchAdapter().is_successful_result({"pred": "ok", "score": 1.0}))
         self.assertTrue(LongDocURLAdapter().is_successful_result({"pred": "ok", "score": 1.0}))
         self.assertFalse(LongDocURLAdapter().is_successful_result({"pred": "ok", "score_v3": 1.0}))
+        for adapter in (MMLongBenchAdapter(), LongDocURLAdapter()):
+            with self.subTest(adapter=adapter.name):
+                self.assertFalse(adapter.is_successful_result({"pred": "Fail to answer", "score": 0.0}))
+                self.assertFalse(adapter.is_successful_result({"pred": "Failed: Connection error.", "score": 0.0}))
+                self.assertFalse(adapter.is_successful_result({
+                    "pred": "Not answerable",
+                    "score": 1.0,
+                    "generation_metadata": {"response": "Failed: Connection error."},
+                }))
+
+    def test_generation_failure_is_not_converted_to_model_response(self):
+        sample = {}
+        def fail_or_raise(*args, **kwargs):
+            failure_value = kwargs.get("failure_value")
+            if failure_value is not None:
+                return failure_value(RuntimeError("Connection error."))
+            raise RuntimeError("Connection error.")
+
+        with patch.object(adapters, "call_llm_messages", side_effect=fail_or_raise):
+            with self.assertRaisesRegex(RuntimeError, "Connection error"):
+                adapters._generate_response(sample, [], "qa-model", object(), "generation")
+
+        self.assertNotIn("generation_metadata", sample)
 
     def test_finalize_result_fields_adds_run_envelope_and_orders_metadata(self):
         cfg = OmegaConf.create({
@@ -820,6 +844,36 @@ class BenchmarkAdapterTests(unittest.TestCase):
         self.assertFalse(result["correction_metadata"]["changed"])
         self.assertFalse(result["correction_metadata"]["improved"])
         self.assertIn("error", result["correction_metadata"])
+
+    def test_correction_connection_error_returns_none_so_result_is_retried(self):
+        calls = []
+        original_call_llm_messages = adapters.call_llm_messages
+        try:
+            def fake_call_llm_messages(*args, **kwargs):
+                calls.append((args, kwargs))
+                if len(calls) == 1:
+                    return completion("The answer is $22 million.", model="qa-served")
+                if len(calls) == 2:
+                    return completion("Extracted answer: 22000000\nAnswer format: Integer", model="extractor-served")
+                raise ConnectionError("correction service unavailable")
+
+            adapters.call_llm_messages = fake_call_llm_messages
+            cfg = OmegaConf.create({
+                "benchmarks": {
+                    "qa_model_name": "qa-model",
+                    "extractor_model_name": "extractor-model",
+                    "correction_enabled": True,
+                    "correction_model_name": "correction-model",
+                }
+            })
+            sample = {"doc_id": "d1", "question": "q", "answer": "22 million", "answer_format": "String"}
+
+            result = MMLongBenchAdapter().process_sample(sample, cfg, StubContextBuilder(), object())
+        finally:
+            adapters.call_llm_messages = original_call_llm_messages
+
+        self.assertIsNone(result)
+        self.assertEqual([call[0][1] for call in calls], ["qa-model", "extractor-model", "correction-model"])
 
 
 if __name__ == "__main__":

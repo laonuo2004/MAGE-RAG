@@ -9,7 +9,9 @@ from unittest.mock import patch
 from omegaconf import OmegaConf
 
 import benchmarks.adapters as adapters
+import baselines.magerag.evaluator as magerag_evaluator
 from baselines.base import ContextMessages
+from baselines.magerag.evaluator import XMLEvaluator
 from benchmarks.adapters import LongDocURLAdapter, MMLongBenchAdapter
 from utils.llm_utils import text_content_parts
 
@@ -152,6 +154,31 @@ class BenchmarkAdapterTests(unittest.TestCase):
                     "score": 1.0,
                     "generation_metadata": {"response": "Failed: Connection error."},
                 }))
+                self.assertFalse(adapter.is_successful_result({
+                    "pred": "Not answerable",
+                    "score": 1.0,
+                    "prepare_metadata": {
+                        "iteration_trace": [
+                            {
+                                "action": "EvaluatorDecision",
+                                "raw_response": (
+                                    "<agent_decision><stop>true</stop>"
+                                    "<reason>Failed: Connection error.</reason></agent_decision>"
+                                ),
+                            }
+                        ],
+                    },
+                }))
+                self.assertFalse(adapter.is_successful_result({
+                    "pred": "Not answerable",
+                    "score": 1.0,
+                    "prepare_metadata": {
+                        "stop_reason": "fallback_invalid_xml",
+                        "validation_errors": [
+                            {"action_type": "Evaluator", "message": "Connection error."}
+                        ],
+                    },
+                }))
 
     def test_generation_failure_is_not_converted_to_model_response(self):
         sample = {}
@@ -166,6 +193,20 @@ class BenchmarkAdapterTests(unittest.TestCase):
                 adapters._generate_response(sample, [], "qa-model", object(), "generation")
 
         self.assertNotIn("generation_metadata", sample)
+
+    def test_magerag_evaluator_failure_is_not_converted_to_stop_decision(self):
+        def fail_or_raise(*args, **kwargs):
+            failure_value = kwargs.get("failure_value")
+            if failure_value is not None:
+                return failure_value(RuntimeError("Connection error."))
+            raise RuntimeError("Connection error.")
+
+        evaluator = XMLEvaluator("controller-model")
+        with patch.object(evaluator, "build_prompt", return_value="prompt"), \
+                patch.object(evaluator, "_opened_node_image_parts", return_value=[]), \
+                patch.object(magerag_evaluator, "call_llm_messages", side_effect=fail_or_raise):
+            with self.assertRaisesRegex(RuntimeError, "Connection error"):
+                evaluator.call(object(), "question", object(), [])
 
     def test_finalize_result_fields_adds_run_envelope_and_orders_metadata(self):
         cfg = OmegaConf.create({

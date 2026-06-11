@@ -237,6 +237,30 @@ def _is_failed_runtime_text(value: Any) -> bool:
     return text in FAILED_RUNTIME_SENTINELS or text.startswith("Failed:")
 
 
+def _magerag_trace_has_failed_runtime(trace: Any) -> bool:
+    if not isinstance(trace, list):
+        return False
+    for item in trace:
+        if not isinstance(item, dict):
+            continue
+        raw_response = str(item.get("raw_response") or "")
+        if "Failed:" in raw_response:
+            return True
+    return False
+
+
+def _magerag_validation_has_runtime_error(errors: Any) -> bool:
+    if not isinstance(errors, list):
+        return False
+    for error in errors:
+        if not isinstance(error, dict):
+            continue
+        message = str(error.get("message") or "").strip().lower()
+        if "connection error" in message or message.startswith("failed:"):
+            return True
+    return False
+
+
 def _has_failed_runtime_result(sample: Dict[str, Any]) -> bool:
     for key in ("pred", "corrected_pred"):
         if _is_failed_runtime_text(sample.get(key)):
@@ -245,6 +269,18 @@ def _has_failed_runtime_result(sample: Dict[str, Any]) -> bool:
     if isinstance(generation_metadata, dict):
         for key in ("response", "raw_response"):
             if _is_failed_runtime_text(generation_metadata.get(key)):
+                return True
+    prepare_metadata = sample.get("prepare_metadata")
+    if isinstance(prepare_metadata, dict):
+        if _magerag_trace_has_failed_runtime(prepare_metadata.get("iteration_trace")):
+            return True
+        if _magerag_validation_has_runtime_error(prepare_metadata.get("validation_errors")):
+            return True
+        magerag_metadata = prepare_metadata.get("magerag")
+        if isinstance(magerag_metadata, dict):
+            if _magerag_trace_has_failed_runtime(magerag_metadata.get("iteration_trace")):
+                return True
+            if _magerag_validation_has_runtime_error(magerag_metadata.get("validation_errors")):
                 return True
     return False
 

@@ -37,7 +37,7 @@ module.exports = {
       env: {
         CUDA_VISIBLE_DEVICES: "0,1",
         PORT: "8010",
-        GPU_MEMORY_UTILIZATION: "0.4",
+        GPU_MEMORY_UTILIZATION: "0.35",
         VLLM_SERVE_SCRIPT: "scripts/serve_qwen3_vl_vllm.sh",
         VLLM_STOP_GRACE_SECONDS: "20",
         CLEAN_STALE_ON_START: "1",

@@ -9,7 +9,7 @@ cd "${CODE_ROOT}"
 exec "${PYTHON_BIN}" main.py --multirun baselines=magerag \
     benchmarks=mmlongbench \
     baselines.params.top_k=3 \
-    baselines.controller.watchdog_iterations=0,1,3,5 \
-    baselines.evaluator.max_selected_actions_per_iteration=5 \
+    baselines.controller.watchdog_iterations=0,1,3,10 \
+    baselines.evaluator.max_selected_actions_per_iteration=3 \
     benchmarks.correction_enabled=true \
-    benchmarks.workers=192
+    benchmarks.workers=64

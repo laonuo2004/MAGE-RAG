@@ -123,7 +123,6 @@ class XMLEvaluator:
             retries=self.retries,
             logger=logger,
             log_prefix="MAGE-RAG evaluator",
-            failure_value=lambda exc: f"<agent_decision><stop>true</stop><reason>Failed: {html.escape(str(exc))}</reason></agent_decision>",
         )
         raw = completion_content(completion)
         return parse_agent_decision_xml(raw), str(raw)

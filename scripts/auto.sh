@@ -5,18 +5,19 @@ set -euo pipefail
 # Basic config
 # =========================
 WORKDIR="/vllm"
+DISKDIR="/root/autodl-tmp"
 VENV_DIR="${WORKDIR}/.venv"
 MODEL_ID="Qwen/Qwen3-VL-8B-Instruct"
-MODEL_DIR="/hy-tmp/Qwen3-VL-8B-Instruct"
+MODEL_DIR="${DISKDIR}/Qwen3-VL-8B-Instruct"
 SERVED_MODEL_NAME="Qwen3-VL-8B-Instruct"
-PIP_INDEX_URL="https://pypi.doubanio.com/simple/"
+PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 
-MAX_MODEL_LEN=16384
-MAX_NUM_SEQS=16
-MAX_NUM_BATCHED_TOKENS=8192
-PORT=8080
+MAX_MODEL_LEN=131072
+MAX_NUM_SEQS=32
+MAX_NUM_BATCHED_TOKENS=32768
+PORT=6006
 DATA_PARALLEL_SIZE=1
-TENSOR_PARALLEL_SIZE=2
+TENSOR_PARALLEL_SIZE=1
 
 export VLLM_VERSION=0.19.1
 export CUDA_VERSION=128
@@ -47,7 +48,7 @@ source "${VENV_DIR}/bin/activate"
 # Install Python packages
 # =========================
 
-uv pip install -U modelscope
+uv pip install -U modelscope -i "${PIP_INDEX_URL}"
 
 # =========================
 # Download model
@@ -88,7 +89,7 @@ vllm serve "${MODEL_DIR}" \\
   --port ${PORT} \\
   --trust-remote-code \\
   --max-model-len ${MAX_MODEL_LEN} \\
-  --gpu-memory-utilization 0.9 \\
+  --gpu-memory-utilization 0.8 \\
   --max-num-seqs ${MAX_NUM_SEQS} \\
   --max-num-batched-tokens ${MAX_NUM_BATCHED_TOKENS} \\
   --limit-mm-per-prompt.video 0 \\
@@ -105,6 +106,6 @@ echo "[INFO] Setup finished."
 echo "[INFO] Start server with:"
 echo "bash ${WORKDIR}/serve.sh"
 
-echo "set -g mouse on" >> ~/.tmux.conf && tmux set -g mouse on
+echo "set -g mouse on" >> ~/.tmux.conf
 tmux new-session -d -s vllm "bash ${WORKDIR}/serve.sh"
 tmux attach -t vllm

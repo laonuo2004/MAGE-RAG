@@ -95,6 +95,13 @@ module.exports = {
       script: "scripts/run_group_a.sh",
       out_file: "logs/pm2-job-group-a.out.log",
       error_file: "logs/pm2-job-group-a.err.log"
-    }
+    },
+    {
+      ...jobDefaults,
+      name: "job-group-a-2",
+      script: "scripts/run_group_a_2.sh",
+      out_file: "logs/pm2-job-group-a-2.out.log",
+      error_file: "logs/pm2-job-group-a-2.err.log"
+    }    
   ]
 };

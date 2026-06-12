@@ -12,5 +12,5 @@ exec "${PYTHON_BIN}" main.py --multirun baselines=magerag \
     baselines.controller.watchdog_iterations=10 \
     baselines.evaluator.max_selected_actions_per_iteration=5 \
     benchmarks.correction_enabled=true \
-    baselines.graph.mode=page_only,containment_only,structural_graph,semantic_graph \
+    baselines.graph.mode=layout_graph \
     benchmarks.workers=256

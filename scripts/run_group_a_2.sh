@@ -6,6 +6,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${CODE_ROOT}"
-exec "${PYTHON_BIN}" main.py --multirun baselines=image \
+exec "${PYTHON_BIN}" main.py --multirun baselines=g2-reader \
     benchmarks=longdocurl,mmlongbench \
-    benchmarks.workers=256
+    benchmarks.workers=24

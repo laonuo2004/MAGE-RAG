@@ -29,6 +29,20 @@ module.exports = {
       merge_logs: true
     },    
     {
+      name: "litellm-autodl",
+      script: "scripts/serve_litellm.sh",
+      interpreter: "bash",
+      args: "configs/litellm_autodl_config.yaml 4020",
+      cwd: "/root/autodl-tmp/ylz/NeurIPS_2026/code",
+      autorestart: true,
+      restart_delay: 5000,
+      max_restarts: 100000,
+      time: true,
+      out_file: "logs/pm2-litellm-autodl.out.log",
+      error_file: "logs/pm2-litellm-autodl.err.log",
+      merge_logs: true
+    },
+    {
       name: "vllm",
       script: "scripts/pm2_vllm_wrapper.sh",
       interpreter: "bash",

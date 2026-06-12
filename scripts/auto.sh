@@ -5,7 +5,7 @@ set -euo pipefail
 # Basic config
 # =========================
 WORKDIR="/vllm"
-DISKDIR="/root/autodl-tmp"
+DISKDIR="/hy-tmp"
 VENV_DIR="${WORKDIR}/.venv"
 MODEL_ID="Qwen/Qwen3-VL-8B-Instruct"
 MODEL_DIR="${DISKDIR}/Qwen3-VL-8B-Instruct"
@@ -15,9 +15,9 @@ PIP_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 MAX_MODEL_LEN=131072
 MAX_NUM_SEQS=32
 MAX_NUM_BATCHED_TOKENS=32768
-PORT=6006
+PORT=8080
 DATA_PARALLEL_SIZE=1
-TENSOR_PARALLEL_SIZE=1
+TENSOR_PARALLEL_SIZE=2
 
 export VLLM_VERSION=0.19.1
 export CUDA_VERSION=128

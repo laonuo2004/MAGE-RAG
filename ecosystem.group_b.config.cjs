@@ -21,31 +21,17 @@ module.exports = {
   apps: [
     {
       ...jobDefaults,
-      name: "job-group-b-0",
-      script: "scripts/run_group_b_0.sh",
-      out_file: "logs/pm2-job-group-b-0.out.log",
-      error_file: "logs/pm2-job-group-b-0.err.log"
+      name: "job-b1-10",
+      script: "scripts/run_b1_10.sh",
+      out_file: "logs/pm2-job-b1-10.out.log",
+      error_file: "logs/pm2-job-b1-10.err.log"
     },
     {
       ...jobDefaults,
-      name: "job-group-b-1",
-      script: "scripts/run_group_b_1.sh",
-      out_file: "logs/pm2-job-group-b-1.out.log",
-      error_file: "logs/pm2-job-group-b-1.err.log"
-    },
-    {
-      ...jobDefaults,
-      name: "job-group-b-2",
-      script: "scripts/run_group_b_2.sh",
-      out_file: "logs/pm2-job-group-b-2.out.log",
-      error_file: "logs/pm2-job-group-b-2.err.log"
-    },
-    {
-      ...jobDefaults,
-      name: "job-group-b-3",
-      script: "scripts/run_group_b_3.sh",
-      out_file: "logs/pm2-job-group-b-3.out.log",
-      error_file: "logs/pm2-job-group-b-3.err.log"
+      name: "job-b3-10",
+      script: "scripts/run_b3_10.sh",
+      out_file: "logs/pm2-job-b3-10.out.log",
+      error_file: "logs/pm2-job-b3-10.err.log"
     }
   ]
 };

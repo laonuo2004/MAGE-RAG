@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from typing import Any
 
 from analysis.plugins import get_plugin
@@ -270,6 +271,15 @@ def _retrieval_candidates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
         values = metadata.get(key)
         if isinstance(values, list):
             raw_candidates.extend(values)
+    retrieval = metadata.get("retrieval")
+    if isinstance(retrieval, dict):
+        values = retrieval.get("retrieved_items")
+        if isinstance(values, list):
+            raw_candidates.extend(values)
+        for key in ("initial_retrieved_pages", "final_context_pages"):
+            pages = retrieval.get(key)
+            if isinstance(pages, list):
+                raw_candidates.extend({"rank": index, "page_index": page} for index, page in enumerate(pages, start=1))
     trace = metadata.get("iteration_trace")
     if isinstance(trace, list):
         for step in trace:
@@ -297,9 +307,24 @@ def _retrieval_candidates(metadata: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(candidates, key=lambda candidate: candidate["rank"])
 
 
-def _page_number_set(values: list[Any]) -> set[int]:
+def _page_number_set(values: Any) -> set[int]:
+    if isinstance(values, str):
+        text = values.strip()
+        if not text:
+            values = []
+        else:
+            try:
+                values = ast.literal_eval(text)
+            except Exception:
+                values = [text]
+    if isinstance(values, dict):
+        values = list(values.values())
+    if not isinstance(values, (list, tuple, set)):
+        values = [values]
     pages = set()
     for value in values:
+        if isinstance(value, dict):
+            value = value.get("page_number", value.get("page", value.get("page_index")))
         if isinstance(value, int):
             pages.add(value)
         elif isinstance(value, str) and value.isdigit():

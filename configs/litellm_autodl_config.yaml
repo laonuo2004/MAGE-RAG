@@ -1,50 +1,37 @@
 model_list:
-- model_name: hyyun
+- model_name: autodl
   litellm_params:
     model: hosted_vllm/Qwen3-VL-8B-Instruct
-    api_base: http://i-2.gpushare.com:20708/v1
+    api_base: https://u854510-jyv3-4221f644.westb.seetacloud.com:8443/v1
     api_key: none
   model_info:
     max_tokens: 131072
     input_cost_per_token: 7.5e-08
     output_cost_per_token: 3.0e-07
-- model_name: hyyun
+- model_name: autodl
   litellm_params:
     model: hosted_vllm/Qwen3-VL-8B-Instruct
-    api_base: http://i-1.gpushare.com:47003/v1
+    api_base: https://uu854510-jyv3-4221f644.westb.seetacloud.com:8443/v1
     api_key: none
   model_info:
     max_tokens: 131072
     input_cost_per_token: 7.5e-08
     output_cost_per_token: 3.0e-07
-- model_name: hyyun
+- model_name: autodl
   litellm_params:
     model: hosted_vllm/Qwen3-VL-8B-Instruct
-    api_base: http://i-2.gpushare.com:57747/v1
+    api_base: https://u854510-t41j-de061d25.westd.seetacloud.com:8443/v1
     api_key: none
   model_info:
     max_tokens: 131072
     input_cost_per_token: 7.5e-08
     output_cost_per_token: 3.0e-07
-- model_name: hyyun
+- model_name: autodl
   litellm_params:
     model: hosted_vllm/Qwen3-VL-8B-Instruct
-    api_base: http://i-1.gpushare.com:56146/v1
+    api_base: https://uu854510-t41j-de061d25.westd.seetacloud.com:8443/v1
     api_key: none
   model_info:
     max_tokens: 131072
     input_cost_per_token: 7.5e-08
     output_cost_per_token: 3.0e-07
-- model_name: hyyun
-  litellm_params:
-    model: hosted_vllm/Qwen3-VL-8B-Instruct
-    api_base: http://i-1.gpushare.com:36289/v1
-    api_key: none
-  model_info:
-    max_tokens: 131072
-    input_cost_per_token: 7.5e-08
-    output_cost_per_token: 3.0e-07
-router_settings:
-  routing_strategy: least-busy
-  num_retries: 3
-  enable_pre_call_checks: true

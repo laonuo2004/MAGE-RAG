@@ -21,17 +21,38 @@ module.exports = {
   apps: [
     {
       ...jobDefaults,
-      name: "job-group-c",
-      script: "scripts/run_group_c.sh",
-      out_file: "logs/pm2-job-group-c.out.log",
-      error_file: "logs/pm2-job-group-c.err.log"
+      name: "job-c4",
+      script: "scripts/run_c4.sh",
+      out_file: "logs/pm2-job-c4.out.log",
+      error_file: "logs/pm2-job-c4.err.log"
     },
     {
       ...jobDefaults,
-      name: "job-group-d",
-      script: "scripts/run_group_d.sh",
-      out_file: "logs/pm2-job-group-d.out.log",
-      error_file: "logs/pm2-job-group-d.err.log"
+      name: "job-c5",
+      script: "scripts/run_c5.sh",
+      out_file: "logs/pm2-job-c5.out.log",
+      error_file: "logs/pm2-job-c5.err.log"
+    },
+    {
+      ...jobDefaults,
+      name: "job-d3",
+      script: "scripts/run_d3.sh",
+      out_file: "logs/pm2-job-d3.out.log",
+      error_file: "logs/pm2-job-d3.err.log"
+    },
+    {
+      ...jobDefaults,
+      name: "job-d4",
+      script: "scripts/run_d4.sh",
+      out_file: "logs/pm2-job-d4.out.log",
+      error_file: "logs/pm2-job-d4.err.log"
+    },
+    {
+      ...jobDefaults,
+      name: "job-d5",
+      script: "scripts/run_d5.sh",
+      out_file: "logs/pm2-job-d5.out.log",
+      error_file: "logs/pm2-job-d5.err.log"
     }
   ]
 };

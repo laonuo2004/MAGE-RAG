@@ -27,9 +27,23 @@ class MAGERAGPlugin(AnalysisPlugin):
     def parameter_specs(self) -> tuple[ParameterSpec, ...]:
         return (
             ParameterSpec("top_k", "top-k pages", "int", numeric=True),
+            ParameterSpec("controller_mode", "controller mode", "str"),
             ParameterSpec("watchdog_iterations", "watchdog iterations", "int", numeric=True),
+            ParameterSpec(
+                "max_selected_actions_per_iteration",
+                "max selected actions per iteration",
+                "int",
+                numeric=True,
+            ),
+            ParameterSpec("graph_mode", "graph mode", "str"),
             ParameterSpec("evaluator_model_name", "evaluator model", "str"),
         )
+
+    def extract_parameters(self, context):
+        params, sources = super().extract_parameters(context)
+        filename_params = _filename_params(context.stem)
+        self._merge_params(params, sources, filename_params, "filename.magerag_pattern")
+        return params, sources
 
     def has_case_visualization(self) -> bool:
         return True
@@ -96,6 +110,29 @@ class MAGERAGPlugin(AnalysisPlugin):
 
 
 PLUGIN = MAGERAGPlugin()
+
+
+FILENAME_PATTERN = re.compile(
+    r"^res_top_k_(?P<top_k>\d+)_"
+    r"mode_(?P<controller_mode>.+)_"
+    r"watchdog_iterations_(?P<watchdog_iterations>\d+)_"
+    r"max_selected_actions_per_iteration_(?P<max_selected_actions_per_iteration>\d+)_"
+    r"mode_(?P<graph_mode>.+?)_Qwen"
+)
+
+
+def _filename_params(stem: str) -> dict[str, Any]:
+    match = FILENAME_PATTERN.match(stem)
+    if not match:
+        return {}
+    groups = match.groupdict()
+    return {
+        "top_k": int(groups["top_k"]),
+        "controller_mode": groups["controller_mode"],
+        "watchdog_iterations": int(groups["watchdog_iterations"]),
+        "max_selected_actions_per_iteration": int(groups["max_selected_actions_per_iteration"]),
+        "graph_mode": groups["graph_mode"],
+    }
 
 
 def _metadata(record: dict[str, Any]) -> dict[str, Any]:

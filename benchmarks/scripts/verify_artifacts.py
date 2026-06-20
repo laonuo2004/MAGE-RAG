@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import struct
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import fitz
 from safetensors import safe_open
+from tqdm import tqdm
 
 
 CODE_DIR = Path(__file__).resolve().parents[2]
@@ -116,6 +118,14 @@ def source_pdf_path(benchmark, doc_key):
     return CODE_DIR / "benchmarks/mmlongbench/data/raw/documents" / f"{doc_key}.pdf"
 
 
+def read_png_size(path):
+    with path.open("rb") as file:
+        header = file.read(24)
+    if len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
+        raise ValueError(f"Invalid PNG header: {path}")
+    return struct.unpack(">II", header[16:24])
+
+
 def verify_document_pngs(benchmark, doc_key):
     pdf_path = source_pdf_path(benchmark, doc_key)
     if not pdf_path.is_file():
@@ -126,11 +136,10 @@ def verify_document_pngs(benchmark, doc_key):
             png_path = expected_png_path(benchmark, doc_key, page_index)
             if not png_path.is_file():
                 raise FileNotFoundError(png_path)
-            pixmap = fitz.Pixmap(png_path)
             page = pdf[page_index]
             pixel_rect = (page.rect * fitz.Matrix(2, 2)).irect
             expected_size = (pixel_rect.width, pixel_rect.height)
-            actual_size = (pixmap.width, pixmap.height)
+            actual_size = read_png_size(png_path)
             if actual_size != expected_size:
                 raise ValueError(
                     f"Unexpected PNG size for {png_path}: "
@@ -141,12 +150,19 @@ def verify_document_pngs(benchmark, doc_key):
 
 def verify_pngs(benchmark, doc_keys, workers):
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        page_counts = list(
-            executor.map(
-                lambda doc_key: verify_document_pngs(benchmark, doc_key),
-                doc_keys,
+        futures = [
+            executor.submit(verify_document_pngs, benchmark, doc_key)
+            for doc_key in doc_keys
+        ]
+        page_counts = [
+            future.result()
+            for future in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc=f"Verifying {benchmark} PNGs",
+                unit="doc",
             )
-        )
+        ]
     return sum(page_counts)
 
 

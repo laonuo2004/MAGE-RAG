@@ -115,8 +115,11 @@ def png_page_path(benchmark, png_root, doc_id, page_index, dpi):
 
 
 def expected_page_size(page, dpi):
+    import fitz
+
     scale = dpi / 72
-    return round(page.rect.width * scale), round(page.rect.height * scale)
+    pixel_rect = (page.rect * fitz.Matrix(scale, scale)).irect
+    return pixel_rect.width, pixel_rect.height
 
 
 def page_needs_render(output_path, page, dpi, overwrite):

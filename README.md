@@ -196,6 +196,7 @@ env \
 sudo apt-get update
 sudo apt-get install -y git-lfs
 cd MAGE-RAG
+git lfs install
 git lfs pull
 ```
 
@@ -245,6 +246,16 @@ benchmarks/mmlongbench/data/processed/pdf_pngs/
 └── <doc_key>/page_<1-based page number, 4 digits>_dpi144.png
 ```
 
+使用以下命令检查两个 Benchmark 的 PNG 是否完整且尺寸正确：
+
+```bash
+for benchmark in longdocurl mmlongbench; do
+  uv run python benchmarks/scripts/verify_artifacts.py \
+    --benchmark "$benchmark" \
+    --stage png
+done
+```
+
 #### 2. 使用 MinerU 解析 PDF
 
 ```bash
@@ -255,22 +266,23 @@ uv run --env-file .env python benchmarks/scripts/extract_mineru.py \
   --benchmark mmlongbench
 ```
 
-每个文档目录至少应包含：
+每个文档目录应包含两个 JSON 文件；文档含提取图片时还会生成 `images/`：
 
 ```text
 benchmarks/<benchmark>/data/processed/pdfs_mineru/[4000-4999/]<doc_key>/
 ├── layout.json
 ├── *_content_list_v2.json
-└── images/
+└── images/                       # 文档包含提取图片时生成
 ```
 
-完整数据应得到 396 个 LongDocURL 文档目录和 135 个 MMLongBench-Doc 文档目录：
+使用以下命令检查两个 Benchmark 的 MinerU 结果：
 
 ```bash
-find benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999 \
-  -mindepth 1 -maxdepth 1 -type d | wc -l
-find benchmarks/mmlongbench/data/processed/pdfs_mineru \
-  -mindepth 1 -maxdepth 1 -type d | wc -l
+for benchmark in longdocurl mmlongbench; do
+  uv run python benchmarks/scripts/verify_artifacts.py \
+    --benchmark "$benchmark" \
+    --stage mineru
+done
 ```
 
 #### 3. 生成 ColPali 页面与问题向量
@@ -295,9 +307,17 @@ benchmarks/mmlongbench/data/cache/colpali/
 └── question_embeddings/<question_id>.safetensors
 ```
 
-若任务中断，可直接重新执行；默认跳过已有向量。只有需要重新编码时才添加
-`--overwrite`。完整运行后，LongDocURL 应有 396 个 PDF 向量和 2,325 个问题
-向量，MMLongBench-Doc 应有 135 个 PDF 向量和 1,091 个问题向量。
+完整运行后，LongDocURL 应有 396 个 PDF 向量和 2,325 个问题向量，MMLongBench-Doc 应有 135 个 PDF 向量和 1,091 个问题向量。
+
+使用以下命令检查两个 Benchmark 的 PDF 和问题向量：
+
+```bash
+for benchmark in longdocurl mmlongbench; do
+  uv run python benchmarks/scripts/verify_artifacts.py \
+    --benchmark "$benchmark" \
+    --stage colpali
+done
+```
 
 #### 4. 构建证据图
 
@@ -320,10 +340,7 @@ uv run python benchmarks/scripts/build_evidence_graphs.py \
 ```
 
 `--workers` 可根据模型服务吞吐调整。`--abstract-processor-path` 指向本地
-Qwen3-VL processor，用于上下文预算检查。
-
-构图默认跳过已经存在的 `graph.json`。如需完整重建某篇文档，可添加
-`--doc-id <doc_key> --overwrite --overwrite-llm-abstracts`。每个文档最终产生：
+Qwen3-VL processor，用于上下文预算检查。每个文档最终产生：
 
 ```text
 benchmarks/<benchmark>/data/processed/evidence_graphs/<doc_key>/
@@ -337,6 +354,16 @@ benchmarks/<benchmark>/data/cache/colpali/node_embeddings/<doc_key>/
 
 LongDocURL 的上述两类目录在 `<doc_key>` 前还包含 `4000-4999/` shard。完整构建
 后，证据图目录数量应分别为 396 和 135。
+
+使用以下命令检查两个 Benchmark 的证据图和节点向量：
+
+```bash
+for benchmark in longdocurl mmlongbench; do
+  uv run python benchmarks/scripts/verify_artifacts.py \
+    --benchmark "$benchmark" \
+    --stage graph
+done
+```
 
 #### 5. 检查在线运行所需产物
 

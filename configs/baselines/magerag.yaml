@@ -19,7 +19,7 @@ evaluator:
   include_few_shot_examples: true
   raw_text_char_limit: 1200
   include_opened_node_images: false
-  max_selected_actions_per_iteration: 5
+  max_selected_actions_per_iteration: 3
   max_total_selected_actions: 100
   candidate_preview_char_limit: 160
   recent_trace_limit: 25

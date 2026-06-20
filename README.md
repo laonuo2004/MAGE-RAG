@@ -198,7 +198,6 @@ The original QA files and PDFs are managed with Git LFS. After cloning the repos
 ```bash
 sudo apt-get update
 sudo apt-get install -y git-lfs
-cd MAGE-RAG
 git lfs install
 git lfs pull
 ```

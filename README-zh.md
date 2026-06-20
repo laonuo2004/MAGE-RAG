@@ -200,7 +200,6 @@ env \
 ```bash
 sudo apt-get update
 sudo apt-get install -y git-lfs
-cd MAGE-RAG
 git lfs install
 git lfs pull
 ```

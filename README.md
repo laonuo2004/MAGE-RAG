@@ -439,7 +439,7 @@ Run both benchmarks:
 ```bash
 uv run python main.py --multirun \
   benchmarks=mmlongbench,longdocurl \
-  benchmarks.workers=8
+  benchmarks.workers=16
 ```
 
 The runner supports resuming interrupted experiments. Per-sample predictions are written to `results/<benchmark>/magerag/*.jsonl`, aggregate metrics are written to matching `*.metrics.json` files, and Hydra configurations and logs are stored under `outputs/`.

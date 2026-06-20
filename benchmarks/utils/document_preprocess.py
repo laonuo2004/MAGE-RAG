@@ -66,7 +66,7 @@ def load_mmlongbench_ocr_pages(sample, benchmark_cfg):
             if page_index == 0:
                 raise FileNotFoundError(
                     f'Missing preprocessed OCR cache for doc_id={sample["doc_id"]}: {page_path}. '
-                    "Run benchmarks/mmlongbench/scripts/preprocess_mmlongbench.py before evaluating OCR-based baselines."
+                    "Generate the required page cache before evaluating document baselines."
                 )
             break
         with open(page_path, "r", encoding="utf-8") as f:

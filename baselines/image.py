@@ -24,7 +24,7 @@ class ImageContextBuilder(ContextBuilder):
                 if index == 0:
                     raise FileNotFoundError(
                         f'Missing preprocessed PNG cache for doc_id={sample["doc_id"]}: {page_path}. '
-                        'Run benchmarks/mmlongbench/scripts/preprocess_mmlongbench.py before evaluating the image baseline.'
+                        'Run benchmarks/scripts/preprocess_documents.py --benchmark mmlongbench --mode image first.'
                     )
                 break
             image = Image.open(page_path)

@@ -3,6 +3,7 @@ qa_file: ${oc.env:PYTHONPATH}/benchmarks/longdocurl/data/raw/LongDocURL.jsonl
 # process_mode: serial
 process_mode: parallel
 workers: 8 # only for parallel processing
+resolution: 144
 ocr_json_dir: ${oc.env:PYTHONPATH}/benchmarks/longdocurl/data/processed/pdf_jsons/4000-4999
 image_prefix: ${oc.env:PYTHONPATH}/benchmarks/longdocurl/data/processed/pdf_pngs/4000-4999
 mineru_dir: ${oc.env:PYTHONPATH}/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999
@@ -10,7 +11,7 @@ evidence_graph_dir: ${oc.env:PYTHONPATH}/benchmarks/longdocurl/data/processed/ev
 node_embedding_dir: ${oc.env:PYTHONPATH}/benchmarks/longdocurl/data/cache/colpali/node_embeddings/4000-4999
 qa_model_name: Qwen3-VL-8B-Instruct
 extractor_model_name: Qwen3-VL-8B-Instruct
-correction_enabled: false
+correction_enabled: true
 correction_model_name: Qwen3-VL-8B-Instruct
 results_file: null
 limit: null

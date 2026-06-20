@@ -15,6 +15,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 CODE_DIR = Path(__file__).resolve().parents[2]
 MINERU_DATA_ID_MAX_LENGTH = 128
+MINERU_BATCH_SIZE = 50
+POLL_INTERVAL_SECONDS = 60
+BATCH_REQUEST_RETRY_SECONDS = 60
+BATCH_REQUEST_MAX_ATTEMPTS = 10
 SPECIAL_UPLOAD_PAGE_LIMITS = {
     "longdocurl": {
         "4134756": 74,
@@ -110,18 +114,48 @@ class MinerUAutomator:
 
     # --- 阶段 1：上传相关逻辑 ---
     def apply_batch_urls(self, files):
-        try:
-            resp = self.session.post(self.batch_url, json={"files": files, "model_version": "vlm"})
-            if resp.status_code == 200:
-                res = resp.json()
-                if res.get("code") == 0:
-                    return res["data"]["batch_id"], res["data"]["file_urls"]
-                self.logger.error(f"申请链接失败: {res.get('msg')}")
+        for attempt in range(1, BATCH_REQUEST_MAX_ATTEMPTS + 1):
+            response = None
+            try:
+                response = self.session.post(
+                    self.batch_url,
+                    json={"files": files, "model_version": "vlm"},
+                    timeout=30,
+                )
+            except requests.RequestException as error:
+                self.logger.warning(
+                    f"申请批次链接失败 ({attempt}/{BATCH_REQUEST_MAX_ATTEMPTS}): {error}"
+                )
             else:
-                self.logger.error(f"申请链接请求异常: {resp.status_code}")
-        except Exception as e:
-            self.logger.error(f"申请链接网络异常: {e}")
-        return None, None
+                if response.status_code == 200:
+                    result = response.json()
+                    if result.get("code") == 0:
+                        return result["data"]["batch_id"], result["data"]["file_urls"]
+                    raise RuntimeError(f"MinerU 申请批次失败: {result.get('msg')}")
+
+                if response.status_code != 429:
+                    raise RuntimeError(
+                        f"MinerU 申请批次请求失败: HTTP {response.status_code} {response.text}"
+                    )
+
+                retry_after = response.headers.get("Retry-After")
+                self.logger.warning(
+                    f"MinerU 批次接口限流 (HTTP 429)，将在 "
+                    f"{retry_after or BATCH_REQUEST_RETRY_SECONDS} 秒后重试"
+                )
+
+            if attempt == BATCH_REQUEST_MAX_ATTEMPTS:
+                break
+            retry_seconds = BATCH_REQUEST_RETRY_SECONDS
+            if response is not None and response.status_code == 429:
+                retry_after = response.headers.get("Retry-After")
+                if retry_after and retry_after.isdigit():
+                    retry_seconds = int(retry_after)
+            time.sleep(retry_seconds)
+
+        raise RuntimeError(
+            f"连续 {BATCH_REQUEST_MAX_ATTEMPTS} 次无法创建 MinerU 批次，请稍后重试"
+        )
 
     def upload_single_file(self, file_path, upload_url, doc_no):
         for attempt in range(3):
@@ -199,6 +233,50 @@ class MinerUAutomator:
         except Exception as e:
             self.logger.error(f"查询 Batch {batch_id} 异常: {e}")
             return False
+
+    def wait_for_batch(self, batch_id):
+        poll_count = 0
+        while True:
+            poll_count += 1
+            self.logger.info(f"--- 批次 {batch_id} 轮询检查 #{poll_count} ---")
+            if self.poll_batch_status(batch_id, poll_count):
+                self.logger.info(f"✓ 批次 {batch_id} 的解析结果已全部下载")
+                return
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+    def process_batch(self, chunk, temp_dir):
+        upload_chunk = []
+        for pdf_file, pdf_path, doc_no in chunk:
+            upload_max_pages = get_upload_max_pages(
+                self.benchmark, doc_no, self.max_pages
+            )
+            upload_path = prepare_upload_pdf(pdf_path, temp_dir, upload_max_pages)
+            if Path(upload_path) != Path(pdf_path):
+                self.logger.info(
+                    f"裁剪上传 | {pdf_file} 仅上传前 {upload_max_pages} 页"
+                )
+            upload_chunk.append((pdf_file, upload_path, doc_no))
+
+        files_payload = [
+            {"name": pdf_file, "data_id": build_mineru_data_id(doc_no)}
+            for pdf_file, _, doc_no in upload_chunk
+        ]
+        batch_id, urls = self.apply_batch_urls(files_payload)
+        self.batch_info[batch_id] = len(upload_chunk)
+        self.logger.info(f"获取 Batch ID 成功: {batch_id}，并发上传中...")
+
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            futures = [
+                pool.submit(self.upload_single_file, pdf_path, urls[index], doc_no)
+                for index, (_, pdf_path, doc_no) in enumerate(upload_chunk)
+            ]
+            upload_results = [future.result() for future in as_completed(futures)]
+
+        if not all(upload_results):
+            raise RuntimeError(f"批次 {batch_id} 中存在上传失败的 PDF，请重新运行脚本")
+
+        self.logger.info(f"批次 {batch_id} 上传完成，等待解析并下载结果")
+        self.wait_for_batch(batch_id)
         
     # --- 主流程调度 ---
     def run(self, limit=None):
@@ -219,72 +297,21 @@ class MinerUAutomator:
 
         self.logger.info(f"总计 PDF: {len(all_pdfs)} | 待上传/解析: {len(pending_uploads)}")
 
-        active_batches = []
-
-        # 2. 分批上传获取 batch_id
-        chunk_size = 50
-        with tempfile.TemporaryDirectory(prefix="mineru_upload_") as temp_dir:
-            for i in range(0, len(pending_uploads), chunk_size):
-                chunk = pending_uploads[i:i + chunk_size]
-                self.logger.info(f"=== 开始上传批次 ({(i//chunk_size)+1}/{(len(pending_uploads)//chunk_size)+1}) ===")
-
-                upload_chunk = []
-                for pdf_file, pdf_path, doc_no in chunk:
-                    upload_max_pages = get_upload_max_pages(self.benchmark, doc_no, self.max_pages)
-                    upload_path = prepare_upload_pdf(pdf_path, temp_dir, upload_max_pages)
-                    if Path(upload_path) != Path(pdf_path):
-                        self.logger.info(f"裁剪上传 | {pdf_file} 仅上传前 {upload_max_pages} 页")
-                    upload_chunk.append((pdf_file, upload_path, doc_no))
-
-                files_payload = [
-                    {"name": item[0], "data_id": build_mineru_data_id(item[2])}
-                    for item in upload_chunk
-                ]
-                batch_id, urls = self.apply_batch_urls(files_payload)
-
-                if not batch_id:
-                    continue
-
-                self.logger.info(f"获取 Batch ID 成功: {batch_id}，并发上传中...")
-                active_batches.append(batch_id)
-                self.batch_info[batch_id] = len(upload_chunk)
-
-                with ThreadPoolExecutor(max_workers=self.workers) as pool:
-                    futures = []
-                    for j, (pdf_file, pdf_path, doc_no) in enumerate(upload_chunk):
-                        futures.append(pool.submit(self.upload_single_file, pdf_path, urls[j], doc_no))
-                    for fut in as_completed(futures):
-                        fut.result()
-
-        if not active_batches:
-            self.logger.info("没有正在活跃的批次任务，程序退出。")
+        if not pending_uploads:
+            self.logger.info("所有 PDF 均已完成解析。")
             return
 
-        # 3. 轮询监控状态并下载
-        self.logger.info("========================================")
-        self.logger.info("所有上传完成，进入后台轮询下载模式 (每60秒检查一次)")
-        self.logger.info("========================================")
+        batch_count = (len(pending_uploads) + MINERU_BATCH_SIZE - 1) // MINERU_BATCH_SIZE
+        with tempfile.TemporaryDirectory(prefix="mineru_upload_") as temp_dir:
+            for offset in range(0, len(pending_uploads), MINERU_BATCH_SIZE):
+                batch_number = offset // MINERU_BATCH_SIZE + 1
+                chunk = pending_uploads[offset : offset + MINERU_BATCH_SIZE]
+                self.logger.info(
+                    f"=== 开始处理批次 ({batch_number}/{batch_count}) ==="
+                )
+                self.process_batch(chunk, temp_dir)
 
-        poll_count = 0
-        while active_batches:
-            poll_count += 1
-            self.logger.info(f"--- 轮询检查 #{poll_count} | 正在跟踪 {len(active_batches)} 个批次 ---")
-            
-            batches_to_remove = []
-            for b_id in active_batches:
-                is_completed = self.poll_batch_status(b_id, poll_count)
-                if is_completed:
-                    self.logger.info(f"★ 批次 {b_id} 的所有文件均已处理完毕并脱离追踪队列！")
-                    batches_to_remove.append(b_id)
-            
-            # 移除已全部结束的批次
-            for b_id in batches_to_remove:
-                active_batches.remove(b_id)
-                
-            if active_batches:
-                time.sleep(60) # 等待 60 秒后再次轮询
-                
-        self.logger.info("所有批次解析与下载任务全部圆满完成！(撒花🎉)")
+        self.logger.info("所有批次解析与下载完成。")
 
 
 def parse_args():

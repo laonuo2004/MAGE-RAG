@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CODE_ROOT="${CODE_ROOT:-/root/autodl-tmp/ylz/NeurIPS_2026/code}"
+CODE_ROOT="${CODE_ROOT:-${PYTHONPATH:?PYTHONPATH is required}}"
 PYTHON_BIN="${PYTHON_BIN:-/root/autodl-tmp/conda/envs/logma-rag-py12/bin/python}"
 WORKERS="${WORKERS:-16}"
 RESTART_DELAY_SECONDS="${RESTART_DELAY_SECONDS:-30}"

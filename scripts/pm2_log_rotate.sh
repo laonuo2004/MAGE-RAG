@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-CODE_ROOT="${CODE_ROOT:-/root/autodl-tmp/ylz/NeurIPS_2026/code}"
+CODE_ROOT="${CODE_ROOT:-${PYTHONPATH:?PYTHONPATH is required}}"
 LOG_DIR="${LOG_DIR:-${CODE_ROOT}/logs}"
 MAX_SIZE_MB="${MAX_SIZE_MB:-100}"
 KEEP="${KEEP:-5}"

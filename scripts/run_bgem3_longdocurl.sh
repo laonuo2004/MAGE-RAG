@@ -20,7 +20,7 @@ LOGGING_LEVEL="${LOGGING_LEVEL:-INFO}"
 MODE_NAME="${MODE_NAME:-dense}"
 TEXT_SOURCE="${TEXT_SOURCE:-ocr}"
 USE_FP16="${USE_FP16:-true}"
-MINERU_DIR="${MINERU_DIR:-/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999}"
+MINERU_DIR="${MINERU_DIR:-${PYTHONPATH:?PYTHONPATH is required}/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999}"
 
 cd "${CODE_ROOT}"
 
@@ -35,7 +35,10 @@ dst = "benchmarks/longdocurl/data/cache/bgem3/debug_inputs/longdocurl_bgem3_debu
 text_source = os.environ.get("TEXT_SOURCE", "ocr")
 mineru_dir = os.environ.get(
     "MINERU_DIR",
-    "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999",
+    os.path.join(
+        os.environ["PYTHONPATH"],
+        "benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999",
+    ),
 )
 selected = []
 with open(src, "r", encoding="utf-8") as f:

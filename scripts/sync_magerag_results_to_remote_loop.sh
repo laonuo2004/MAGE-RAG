@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-LOCAL_CODE_DIR="${LOCAL_CODE_DIR:-/root/autodl-tmp/ylz/NeurIPS_2026/code}"
+LOCAL_CODE_DIR="${LOCAL_CODE_DIR:-${PYTHONPATH:?PYTHONPATH is required}}"
 REMOTE_CODE_DEST="${REMOTE_CODE_DEST:?REMOTE_CODE_DEST is required, for example ai4s:/root/autodl-tmp/ylz/NeurIPS_2026/code}"
 REMOTE_SSH_HOST="${REMOTE_SSH_HOST:?REMOTE_SSH_HOST is required, for example ai4s or MM}"
 SYNC_INTERVAL_SECONDS="${SYNC_INTERVAL_SECONDS:-10}"

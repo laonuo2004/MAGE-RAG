@@ -1,0 +1,34 @@
+[project]
+name = "magerag"
+version = "0.1.0"
+description = "uv environment for MAGE-RAG."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "colbert-ai>=0.2.22",
+    "dotenv>=0.9.9",
+    "flagembedding>=1.4.0",
+    "httpx[socks]>=0.28.1",
+    "hydra-core>=1.3.3",
+    "matplotlib>=3.11.0",
+    "numpy==2.2.6",
+    "openai>=2.41.1",
+    "pandas>=3.0.3",
+    "plotly>=6.8.0",
+    "requests>=2.34.2",
+    "safetensors>=0.8.0",
+    "spacy>=3.8.14",
+    "streamlit>=1.58.0",
+    "torch==2.10.0",
+    "tqdm>=4.68.2",
+    "transformers>=5.12.1",
+    "vllm==0.19.1",
+]
+
+[tool.uv]
+package = false
+environments = ["sys_platform == 'linux'"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.0",
+]

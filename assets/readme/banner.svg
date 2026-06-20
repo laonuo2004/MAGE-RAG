@@ -17,6 +17,11 @@
       <stop offset="50%" stop-color="#8b5cf6"/>
       <stop offset="100%" stop-color="#f97316"/>
     </linearGradient>
+    <linearGradient id="softPanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eff6ff"/>
+      <stop offset="55%" stop-color="#f5f3ff"/>
+      <stop offset="100%" stop-color="#fff7ed"/>
+    </linearGradient>
     <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
       <feDropShadow dx="0" dy="12" stdDeviation="18" flood-color="#0f172a" flood-opacity="0.12"/>
     </filter>
@@ -32,49 +37,51 @@
     <rect x="58" y="58" width="1484" height="404" rx="28" fill="#ffffff"/>
   </g>
 
-  <path d="M 110 362 C 320 250, 470 252, 660 342 S 1040 446, 1402 236" fill="none" stroke="url(#bar)" stroke-width="7" stroke-linecap="round" stroke-dasharray="18 18" opacity="0.88">
-    <animate attributeName="stroke-dashoffset" from="0" to="-144" dur="7s" repeatCount="indefinite"/>
-  </path>
+  <g opacity="0.42">
+    <circle cx="1340" cy="128" r="72" fill="url(#softPanel)"/>
+    <circle cx="1460" cy="184" r="42" fill="#fff7ed"/>
+    <path d="M 1280 150 C 1342 106, 1420 110, 1490 158" fill="none" stroke="#bfdbfe" stroke-width="2"/>
+    <circle cx="1280" cy="150" r="7" fill="#14b8a6"/>
+    <circle cx="1360" cy="110" r="7" fill="#8b5cf6"/>
+    <circle cx="1490" cy="158" r="7" fill="#f97316"/>
+  </g>
 
-  <circle cx="110" cy="362" r="10" fill="#14b8a6">
-    <animateMotion dur="7s" repeatCount="indefinite" path="M 0 0 C 210 -112 360 -110 550 -20 S 930 84 1292 -126"/>
-    <animate attributeName="r" values="10;13;10" dur="1.8s" repeatCount="indefinite"/>
-  </circle>
+  <g opacity="0.88">
+    <path d="M 452 302 C 502 276, 558 276, 604 302" fill="none" stroke="url(#bar)" stroke-width="7" stroke-linecap="round" stroke-dasharray="16 17">
+      <animate attributeName="stroke-dashoffset" from="0" to="-132" dur="6s" repeatCount="indefinite"/>
+    </path>
+    <path d="M 1008 302 C 1056 328, 1102 328, 1142 302" fill="none" stroke="url(#bar)" stroke-width="7" stroke-linecap="round" stroke-dasharray="16 17">
+      <animate attributeName="stroke-dashoffset" from="0" to="-132" dur="6s" repeatCount="indefinite"/>
+    </path>
+  </g>
 
   <g transform="translate(100 118)">
     <text x="0" y="0" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="72" font-weight="800" fill="url(#titleGrad)" letter-spacing="0">MAGE-RAG</text>
     <text x="2" y="54" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="600" fill="#334155">Multigranular Adaptive Graph Evidence for Agentic Multimodal RAG in Long-Document QA</text>
-    <text x="2" y="92" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="18" fill="#475569">Page retrieval  →  Evidence graph control  →  Structured multimodal reading</text>
   </g>
 
-  <g transform="translate(104 238)">
-    <rect x="0" y="0" width="320" height="126" rx="22" fill="#f8fafc" stroke="#cbd5e1"/>
+  <g transform="translate(100 238)">
+    <rect x="0" y="0" width="330" height="126" rx="22" fill="#f8fafc" stroke="#cbd5e1"/>
     <circle cx="56" cy="62" r="26" fill="#14b8a6" opacity="0.14"/>
     <text x="104" y="48" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#0f766e">Retrieve</text>
     <text x="104" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" fill="#475569">ColPali page grounding</text>
     <text x="104" y="102" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#0f172a">Top-k page entry</text>
   </g>
 
-  <g transform="translate(632 238)">
-    <rect x="0" y="0" width="336" height="126" rx="22" fill="#f8fafc" stroke="#cbd5e1"/>
+  <g transform="translate(614 238)">
+    <rect x="0" y="0" width="372" height="126" rx="22" fill="#f8fafc" stroke="#cbd5e1"/>
     <circle cx="56" cy="62" r="26" fill="#8b5cf6" opacity="0.14"/>
     <text x="104" y="48" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#6d28d9">Control</text>
     <text x="104" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" fill="#475569">Activate / Open / Search / Prune</text>
     <text x="104" y="102" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#0f172a">Stateful evidence subgraph</text>
   </g>
 
-  <g transform="translate(1170 238)">
-    <rect x="0" y="0" width="320" height="126" rx="22" fill="#f8fafc" stroke="#cbd5e1"/>
+  <g transform="translate(1150 238)">
+    <rect x="0" y="0" width="360" height="126" rx="22" fill="#f8fafc" stroke="#cbd5e1"/>
     <circle cx="56" cy="62" r="26" fill="#f97316" opacity="0.14"/>
     <text x="104" y="48" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="22" font-weight="700" fill="#c2410c">Read</text>
     <text x="104" y="78" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" fill="#475569">Structured multimodal input</text>
     <text x="104" y="102" font-family="SFMono-Regular, Consolas, monospace" font-size="14" fill="#0f172a">Evidence-aware LVLM answer</text>
   </g>
 
-  <g opacity="0.76">
-    <rect x="1010" y="112" width="184" height="40" rx="20" fill="#eff6ff" stroke="#bfdbfe"/>
-    <text x="1102" y="138" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#1d4ed8">LongDocURL</text>
-    <rect x="1210" y="112" width="228" height="40" rx="20" fill="#fff7ed" stroke="#fed7aa"/>
-    <text x="1324" y="138" text-anchor="middle" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="16" font-weight="700" fill="#c2410c">MMLongBench-Doc</text>
-  </g>
 </svg>

@@ -16,7 +16,7 @@ PROCESS_MODE="${PROCESS_MODE:-parallel}"
 WORKERS="${WORKERS:-64}"
 LOGGING_LEVEL="${LOGGING_LEVEL:-INFO}"
 TEXT_SOURCE="${TEXT_SOURCE:-ocr}"
-MINERU_DIR="${MINERU_DIR:-/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999}"
+MINERU_DIR="${MINERU_DIR:-${PYTHONPATH:?PYTHONPATH is required}/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999}"
 
 cd "${CODE_ROOT}"
 
@@ -31,7 +31,10 @@ dst = "benchmarks/longdocurl/data/cache/colbertv2/debug_inputs/longdocurl_colber
 text_source = os.environ.get("TEXT_SOURCE", "ocr")
 mineru_dir = os.environ.get(
     "MINERU_DIR",
-    "/root/autodl-tmp/ylz/NeurIPS_2026/code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999",
+    os.path.join(
+        os.environ["PYTHONPATH"],
+        "benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999",
+    ),
 )
 selected = []
 with open(src, "r", encoding="utf-8") as f:

@@ -130,32 +130,25 @@ MAGE-RAG/
 | Transformers | 5.5.4 |
 | vLLM | 0.19.1 |
 | PyMuPDF | 1.27.2.2 |
-| MinerU | VLM 3.1.8 API |
+| MinerU | VLM 3.1.8 |
 | ColPali | `vidore/colpali-v1.3-hf` |
 | Reader / controller | `Qwen/Qwen3-VL-8B-Instruct` |
 
 #### 创建 Python 环境并编辑环境变量
 
+创建 Python 环境：
+
 ```bash
 uv sync --frozen
 ```
 
-编辑 `.env` 文件：
+复制 `.env` 模板文件：
 
 ```bash
 cp .env.example .env
 ```
 
-至少配置以下变量：
-
-```dotenv
-PYTHONPATH=/absolute/path/to/MAGE-RAG
-MINERU_API_KEY=<your-mineru-api-key>
-```
-
-`main.py` 会自动加载仓库根目录的 `.env`。直接运行其他 Python 脚本时，使用
-`uv run --env-file .env ...` 显式加载该文件。`.env` 包含密钥且已被 Git 忽略，
-不要将其提交到仓库。
+随后编辑 `.env` 文件。你可以在 [MinerU 官网](https://mineru.net/apiManage/token) 获取 MinerU API Key。
 
 ### 模型服务
 
@@ -170,18 +163,20 @@ MAGE-RAG 使用两个模型服务：
 
 ```bash
 # Terminal 1: Qwen3-VL reader/controller，改为监听 4000
-MODEL_NAME=/path/to/Qwen3-VL-8B-Instruct \
-VLLM_BIN="$(pwd)/.venv/bin/vllm" \
-CUDA_VISIBLE_DEVICES=0 \
-PORT=4000 \
-bash scripts/serve_qwen3_vl_vllm.sh 128k
+env \
+  MODEL_NAME=/path/to/Qwen3-VL-8B-Instruct \
+  VLLM_BIN="$PWD/.venv/bin/vllm" \
+  CUDA_VISIBLE_DEVICES=0 \
+  PORT=4000 \
+  bash scripts/serve_qwen3_vl_vllm.sh 128k
 
 # Terminal 2: ColPali pooling，默认监听 8020
-MODEL_NAME=/path/to/colpali-v1.3-hf \
-SERVED_MODEL_NAME=colpali-v1.3 \
-VLLM_BIN="$(pwd)/.venv/bin/vllm" \
-CUDA_VISIBLE_DEVICES=1 \
-bash scripts/serve_colpali_vllm.sh 8k
+env \
+  MODEL_NAME=/path/to/colpali-v1.3-hf \
+  SERVED_MODEL_NAME=colpali-v1.3 \
+  VLLM_BIN="$PWD/.venv/bin/vllm" \
+  CUDA_VISIBLE_DEVICES=1 \
+  bash scripts/serve_colpali_vllm.sh 8k
 ```
 
 对于 Qwen3-VL-8B-Instruct 128k 上下文的部署，建议至少使用 48 GB 显存；对于 Colpali 8k 上下文的部署，建议至少使用 10 GB 显存。
@@ -195,7 +190,16 @@ bash scripts/serve_colpali_vllm.sh 8k
 
 ### 数据准备
 
-当前仓库已经附带两个 Benchmark 的原始数据：
+原始 QA 文件和 PDF 使用 Git LFS 管理，因此克隆仓库后还需要额外拉取原始数据文件：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git-lfs
+cd MAGE-RAG
+git lfs pull
+```
+
+下载完成后，当前仓库应包含以下原始数据：
 
 ```text
 benchmarks/
@@ -214,7 +218,6 @@ benchmarks/
 ```bash
 uv run python benchmarks/scripts/preprocess_documents.py \
   --benchmark longdocurl \
-  --dpi 144 \
   --workers 8
 ```
 
@@ -232,7 +235,6 @@ benchmarks/longdocurl/data/processed/pdf_pngs/4000-4999/
 ```bash
 uv run python benchmarks/scripts/preprocess_documents.py \
   --benchmark mmlongbench \
-  --dpi 144 \
   --workers 8
 ```
 
@@ -245,29 +247,16 @@ benchmarks/mmlongbench/data/processed/pdf_pngs/
 
 #### 2. 使用 MinerU 解析 PDF
 
-在 [MinerU](https://mineru.net/) 获取 API Key，并将其写入仓库根目录的
-`.env`：
-
-```dotenv
-MINERU_API_KEY=<your-mineru-api-key>
-```
-
-脚本会批量上传 PDF、轮询任务状态、下载结果并解压到每篇文档的目录：
-
 ```bash
 uv run --env-file .env python benchmarks/longdocurl/scripts/mineru_extract_longdocurl.py \
   --pdf_dir benchmarks/longdocurl/data/raw/pdfs/4000-4999 \
   --output_dir benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999 \
-  --workers 5 \
-  --max_pages 0 \
-  --log_file mineru_longdocurl.log
+  --max_pages 0
 
 uv run --env-file .env python benchmarks/longdocurl/scripts/mineru_extract_longdocurl.py \
   --pdf_dir benchmarks/mmlongbench/data/raw/documents \
   --output_dir benchmarks/mmlongbench/data/processed/pdfs_mineru \
-  --workers 5 \
-  --max_pages 120 \
-  --log_file mineru_mmlongbench.log
+  --max_pages 120
 ```
 
 `--max_pages 0` 表示不对 LongDocURL 统一设置页数上限；MMLongBench-Doc 的评测
@@ -295,24 +284,11 @@ find benchmarks/mmlongbench/data/processed/pdfs_mineru \
 
 ```bash
 uv run python benchmarks/scripts/generate_colpali_embeddings.py \
-  --benchmark longdocurl \
-  --mode both \
-  --vllm-url http://127.0.0.1:8020 \
-  --model colpali-v1.3 \
-  --batch-size 4 \
-  --request-timeout 180
+  --benchmark longdocurl
 
 uv run python benchmarks/scripts/generate_colpali_embeddings.py \
-  --benchmark mmlongbench \
-  --mode both \
-  --vllm-url http://127.0.0.1:8020 \
-  --model colpali-v1.3 \
-  --batch-size 4 \
-  --request-timeout 180 \
-  --dpi 144
+  --benchmark mmlongbench
 ```
-
-`--mode both` 同时生成每篇 PDF 的页面向量和每个问题的查询向量：
 
 ```text
 benchmarks/longdocurl/data/cache/colpali/
@@ -338,30 +314,18 @@ OpenAI-compatible Qwen3-VL 服务：
 uv run python benchmarks/scripts/build_evidence_graphs.py \
   --benchmark longdocurl \
   --workers 16 \
-  --semantic-k 3 \
-  --layout-k 1 \
-  --vllm-url http://127.0.0.1:8020 \
-  --litellm-base-url http://127.0.0.1:4000/v1 \
-  --model Qwen3-VL-8B-Instruct \
   --abstract-processor-path /path/to/Qwen3-VL-8B-Instruct \
-  --abstract-context-window 131072 \
-  --abstract-output-tokens 4096 \
-  --abstract-safety-margin 2048
+  --abstract-context-window 131072
 
 uv run python benchmarks/scripts/build_evidence_graphs.py \
   --benchmark mmlongbench \
   --workers 16 \
-  --max-pages 120 \
-  --semantic-k 3 \
-  --layout-k 1 \
-  --vllm-url http://127.0.0.1:8020 \
-  --litellm-base-url http://127.0.0.1:4000/v1 \
-  --model Qwen3-VL-8B-Instruct \
   --abstract-processor-path /path/to/Qwen3-VL-8B-Instruct \
-  --abstract-context-window 131072 \
-  --abstract-output-tokens 4096 \
-  --abstract-safety-margin 2048
+  --abstract-context-window 131072
 ```
+
+`--workers` 可根据模型服务吞吐调整。`--abstract-processor-path` 指向本地
+Qwen3-VL processor，用于上下文预算检查。
 
 构图默认跳过已经存在的 `graph.json`。如需完整重建某篇文档，可添加
 `--doc-id <doc_key> --overwrite --overwrite-llm-abstracts`。每个文档最终产生：
@@ -406,22 +370,15 @@ test -f benchmarks/mmlongbench/data/processed/evidence_graphs/Independents-Repor
 ```bash
 uv run python main.py \
   benchmarks=mmlongbench \
-  baselines=magerag \
   benchmarks.limit=1 \
-  benchmarks.process_mode=serial \
-  benchmarks.workers=1
+  benchmarks.process_mode=serial
 ```
 
 确认服务和缓存均正常后，运行两个 benchmark：
 
 ```bash
 uv run python main.py --multirun \
-  benchmarks=longdocurl,mmlongbench \
-  baselines=magerag \
-  baselines.params.top_k=3 \
-  baselines.controller.watchdog_iterations=10 \
-  baselines.evaluator.max_selected_actions_per_iteration=5 \
-  benchmarks.workers=8
+  benchmarks=longdocurl,mmlongbench
 ```
 
 程序支持断点续跑。逐样本预测写入

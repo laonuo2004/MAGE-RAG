@@ -454,7 +454,8 @@ Verified longdocurl graph: 396 graphs.
 
 ```bash
 uv run python main.py --multirun \
-  benchmarks=mmlongbench,longdocurl
+  benchmarks=mmlongbench,longdocurl \
+  benchmarks.workers=8
 ```
 
 程序支持断点续跑。逐样本预测写入

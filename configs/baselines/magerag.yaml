@@ -26,7 +26,7 @@ evaluator:
 
 controller:
   mode: full
-  watchdog_iterations: 10
+  watchdog_iterations: 5
   watchdog_repeated_noop_rounds: 2
   enable_online_controller: true
   enable_search: true

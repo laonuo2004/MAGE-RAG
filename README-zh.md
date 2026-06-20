@@ -188,7 +188,7 @@ env \
 
 如果发现部署失败，可以修改启动时的相关参数，包括但不限于：
 
-- 如果显卡空闲，可以添加 `GPU_MEMORY_UTILIZATION=0.9` 参数
+- 如果显卡空闲，可以添加 `GPU_MEMORY_UTILIZATION=0.9` 参数，并根据实际情况调整参数取值
 - 如果有多张显卡，可以修改 CUDA_VISIBLE_DEVICES 并添加 `TENSOR_PARALLEL_SIZE=2` 参数 (参数应与显卡数量匹配，且必须是2的倍数)
 - 可以降低模型部署时的 `max_model_len`, `max-num-seqs`, `max-num-batched-tokens` 等参数
 - 更多部署时的参数设置，可以参考 [vLLM 官方文档](https://docs.vllm.ai/en/stable/configuration/engine_args)

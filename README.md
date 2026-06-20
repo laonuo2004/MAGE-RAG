@@ -186,7 +186,7 @@ We recommend at least 48 GB of GPU memory for Qwen3-VL-8B-Instruct with a 128k c
 
 If either service fails to start, adjust the deployment settings as needed:
 
-- If additional GPU memory is available, add `GPU_MEMORY_UTILIZATION=0.9`.
+- If additional GPU memory is available, add `GPU_MEMORY_UTILIZATION=0.9` and adjust the parameters as needed.
 - On a multi-GPU machine, change `CUDA_VISIBLE_DEVICES` and add `TENSOR_PARALLEL_SIZE=2`. The tensor-parallel size should match the number of selected GPUs and must be a multiple of 2.
 - Reduce deployment parameters such as `max_model_len`, `max-num-seqs`, or `max-num-batched-tokens`.
 - See the [vLLM engine arguments documentation](https://docs.vllm.ai/en/stable/configuration/engine_args) for additional settings.

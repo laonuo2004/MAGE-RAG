@@ -20,9 +20,9 @@
 
 <p>
   <a href="#项目概览">Overview</a> •
-  <a href="#快速开始">Quick Start</a> •
-  <a href="#数据与缓存准备">Data</a> •
-  <a href="#主要实验结果">Results</a> •
+  <a href="#方法概览">Method</a> •
+  <a href="#如何复现">Reproduction</a> •
+  <a href="#数据准备">Data</a> •
   <a href="#引用">Citation</a>
 </p>
 </div>
@@ -222,12 +222,17 @@ uv run python benchmarks/scripts/preprocess_documents.py \
   --workers 8
 ```
 
-LongDocURL 默认渲染完整 PDF，页面编号从 0 开始，预期结果为：
+LongDocURL 默认渲染完整 PDF，页面编号从 0 开始。
+
+**预期输出：**
 
 ```text
 benchmarks/longdocurl/data/processed/pdf_pngs/4000-4999/
-└── <doc_no 前四位>/<doc_no>_<0-based page index>.png
+└── <doc_no 前四位>/
+    └── <doc_no>_<0-based page index>.png
 ```
+
+共包含 396 个文档的全部页面，每个 PDF 页面对应一张 144 DPI PNG。
 
 ---
 
@@ -239,12 +244,17 @@ uv run python benchmarks/scripts/preprocess_documents.py \
   --workers 8
 ```
 
-MMLongBench-Doc 按 Benchmark 约定，默认渲染前 120 页，页面编号从 1 开始，预期结果为：
+MMLongBench-Doc 按 Benchmark 约定，默认渲染前 120 页，页面编号从 1 开始。
+
+**预期输出：**
 
 ```text
 benchmarks/mmlongbench/data/processed/pdf_pngs/
-└── <doc_key>/page_<1-based page number, 4 digits>_dpi144.png
+└── <doc_key>/
+    └── page_<1-based page number, 4 digits>_dpi144.png
 ```
+
+共包含 135 个文档；每个文档生成 `min(PDF 总页数, 120)` 张 144 DPI PNG。
 
 使用以下命令检查两个 Benchmark 的 PNG 是否完整且尺寸正确：
 
@@ -254,6 +264,13 @@ for benchmark in longdocurl mmlongbench; do
     --benchmark "$benchmark" \
     --stage png
 done
+```
+
+检查通过后，末尾应输出：
+
+```text
+Verified longdocurl png: 396 documents (33913 pages).
+Verified mmlongbench png: 135 documents (5784 pages).
 ```
 
 #### 2. 使用 MinerU 解析 PDF
@@ -266,14 +283,23 @@ uv run --env-file .env python benchmarks/scripts/extract_mineru.py \
   --benchmark mmlongbench
 ```
 
-每个文档目录应包含两个 JSON 文件；文档含提取图片时还会生成 `images/`：
+**预期输出：**
 
 ```text
-benchmarks/<benchmark>/data/processed/pdfs_mineru/[4000-4999/]<doc_key>/
+benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999/<doc_no>/
+├── layout.json
+├── *_content_list_v2.json
+└── images/                       # 文档包含提取图片时生成
+
+benchmarks/mmlongbench/data/processed/pdfs_mineru/<doc_key>/
 ├── layout.json
 ├── *_content_list_v2.json
 └── images/                       # 文档包含提取图片时生成
 ```
+
+`layout.json` 保存分页版面解析结果，`*_content_list_v2.json` 保存按页组织的文本、
+标题、表格和图片等元素。LongDocURL 和 MMLongBench-Doc 应分别生成 396 和 135 个
+文档目录；`images/` 仅在文档中提取到图片时存在。
 
 使用以下命令检查两个 Benchmark 的 MinerU 结果：
 
@@ -283,6 +309,13 @@ for benchmark in longdocurl mmlongbench; do
     --benchmark "$benchmark" \
     --stage mineru
 done
+```
+
+检查通过后，末尾应输出：
+
+```text
+Verified longdocurl mineru: 396 documents.
+Verified mmlongbench mineru: 135 documents.
 ```
 
 #### 3. 生成 ColPali 页面与问题向量
@@ -297,17 +330,32 @@ uv run python benchmarks/scripts/generate_colpali_embeddings.py \
   --benchmark mmlongbench
 ```
 
+**预期输出：**
+
 ```text
 benchmarks/longdocurl/data/cache/colpali/
-├── pdf_embeddings/4000-4999/<doc_no>.safetensors
-└── question_embeddings/<question_id>.safetensors
+├── pdf_embeddings/4000-4999/
+│   ├── <doc_no>.safetensors
+│   └── manifest.jsonl
+└── question_embeddings/
+    ├── <question_id>.safetensors
+    └── manifest.jsonl
 
 benchmarks/mmlongbench/data/cache/colpali/
-├── pdf_embeddings/<doc_key>.safetensors
-└── question_embeddings/<question_id>.safetensors
+├── pdf_embeddings/
+│   ├── <doc_key>.safetensors
+│   └── manifest.jsonl
+└── question_embeddings/
+    ├── <question_id>.safetensors
+    └── manifest.jsonl
 ```
 
-完整运行后，LongDocURL 应有 396 个 PDF 向量和 2,325 个问题向量，MMLongBench-Doc 应有 135 个 PDF 向量和 1,091 个问题向量。
+每个 PDF 文件包含键 `embeddings`，形状为
+`[页面数, page tokens, embedding dim]`；每个问题文件包含键
+`query_embedding`，形状为 `[query tokens, embedding dim]`。`manifest.jsonl`
+记录输入、输出路径、模型和处理状态。完整运行后，LongDocURL 应有 396 个 PDF
+向量和 2,325 个问题向量，MMLongBench-Doc 应有 135 个 PDF 向量和 1,091 个
+问题向量。
 
 使用以下命令检查两个 Benchmark 的 PDF 和问题向量：
 
@@ -317,6 +365,13 @@ for benchmark in longdocurl mmlongbench; do
     --benchmark "$benchmark" \
     --stage colpali
 done
+```
+
+检查通过后，末尾应输出：
+
+```text
+Verified longdocurl colpali: 2721 artifacts (396 documents, 2325 questions).
+Verified mmlongbench colpali: 1226 artifacts (135 documents, 1091 questions).
 ```
 
 #### 4. 构建证据图
@@ -340,20 +395,33 @@ uv run python benchmarks/scripts/build_evidence_graphs.py \
 ```
 
 `--workers` 可根据模型服务吞吐调整。`--abstract-processor-path` 指向本地
-Qwen3-VL processor，用于上下文预算检查。每个文档最终产生：
+Qwen3-VL processor，用于上下文预算检查。
+
+**预期输出：**
 
 ```text
-benchmarks/<benchmark>/data/processed/evidence_graphs/<doc_key>/
+benchmarks/longdocurl/data/processed/evidence_graphs/4000-4999/<doc_no>/
 ├── graph.json
 ├── nodes.jsonl
 └── edges.jsonl
 
-benchmarks/<benchmark>/data/cache/colpali/node_embeddings/<doc_key>/
+benchmarks/longdocurl/data/cache/colpali/node_embeddings/4000-4999/<doc_no>/
+└── *.safetensors
+
+benchmarks/mmlongbench/data/processed/evidence_graphs/<doc_key>/
+├── graph.json
+├── nodes.jsonl
+└── edges.jsonl
+
+benchmarks/mmlongbench/data/cache/colpali/node_embeddings/<doc_key>/
 └── *.safetensors
 ```
 
-LongDocURL 的上述两类目录在 `<doc_key>` 前还包含 `4000-4999/` shard。完整构建
-后，证据图目录数量应分别为 396 和 135。
+`graph.json` 保存文档、构图配置和节点/边数量等元数据；`nodes.jsonl` 保存页面
+节点与页内元素节点；`edges.jsonl` 保存结构、布局和语义关系。每个非页面节点
+对应一个包含 `embedding` 键的 `.safetensors` 文件，页面节点复用第 3 步生成的
+PDF 页面向量。完整构建后，LongDocURL 和 MMLongBench-Doc 应分别生成 396 和
+135 个证据图目录。
 
 使用以下命令检查两个 Benchmark 的证据图和节点向量：
 
@@ -365,25 +433,12 @@ for benchmark in longdocurl mmlongbench; do
 done
 ```
 
-#### 5. 检查在线运行所需产物
+检查通过后，末尾应输出：
 
-开始在线评测前，任取一个文档检查以下四类文件：
-
-```bash
-# LongDocURL 示例
-test -f benchmarks/longdocurl/data/processed/pdf_pngs/4000-4999/4000/4000045_0.png
-test -f benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999/4000045/layout.json
-test -f benchmarks/longdocurl/data/cache/colpali/pdf_embeddings/4000-4999/4000045.safetensors
-test -f benchmarks/longdocurl/data/processed/evidence_graphs/4000-4999/4000045/graph.json
-
-# MMLongBench-Doc 示例
-test -f benchmarks/mmlongbench/data/processed/pdf_pngs/Independents-Report/page_0001_dpi144.png
-test -f benchmarks/mmlongbench/data/processed/pdfs_mineru/Independents-Report/layout.json
-test -f benchmarks/mmlongbench/data/cache/colpali/pdf_embeddings/Independents-Report.safetensors
-test -f benchmarks/mmlongbench/data/processed/evidence_graphs/Independents-Report/graph.json
+```text
+Verified longdocurl graph: 396 graphs.
+Verified mmlongbench graph: 135 graphs.
 ```
-
-上述命令均返回 0 后，原始数据已经转换为 MAGE-RAG 在线运行所需的数据与缓存。
 
 ### 在线问答与评测
 

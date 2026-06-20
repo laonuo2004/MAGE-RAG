@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""
-MinerU API 
-
-- 自动断点续传（跳过已下载的，跳过已上传但在排队的）。
-- 上传完毕后进入轮询模式，自动下载解析完毕的 Zip。
-"""
+"""Extract benchmark PDFs with the MinerU API."""
 import os
 import time
 import argparse
@@ -18,9 +13,25 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
+CODE_DIR = Path(__file__).resolve().parents[2]
 MINERU_DATA_ID_MAX_LENGTH = 128
 SPECIAL_UPLOAD_PAGE_LIMITS = {
-    "4134756": 74,
+    "longdocurl": {
+        "4134756": 74,
+    },
+}
+
+BENCHMARK_SPECS = {
+    "longdocurl": {
+        "pdf_dir": CODE_DIR / "benchmarks/longdocurl/data/raw/pdfs/4000-4999",
+        "output_dir": CODE_DIR / "benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999",
+        "max_pages": None,
+    },
+    "mmlongbench": {
+        "pdf_dir": CODE_DIR / "benchmarks/mmlongbench/data/raw/documents",
+        "output_dir": CODE_DIR / "benchmarks/mmlongbench/data/processed/pdfs_mineru",
+        "max_pages": 120,
+    },
 }
 
 
@@ -34,8 +45,8 @@ def build_mineru_data_id(doc_no, max_length=MINERU_DATA_ID_MAX_LENGTH):
     return f"{doc_no[:prefix_length]}{suffix}"
 
 
-def get_upload_max_pages(doc_no, default_max_pages):
-    special_max_pages = SPECIAL_UPLOAD_PAGE_LIMITS.get(str(doc_no))
+def get_upload_max_pages(benchmark, doc_no, default_max_pages):
+    special_max_pages = SPECIAL_UPLOAD_PAGE_LIMITS.get(benchmark, {}).get(str(doc_no))
     if special_max_pages is None:
         return default_max_pages
     if default_max_pages is None or default_max_pages <= 0:
@@ -79,7 +90,8 @@ def setup_logger(log_file):
 
 # ========== 核心处理类 ==========
 class MinerUAutomator:
-    def __init__(self, api_key, pdf_dir, output_dir, workers, logger, max_pages=200):
+    def __init__(self, benchmark, api_key, pdf_dir, output_dir, workers, logger, max_pages):
+        self.benchmark = benchmark
         self.api_key = api_key
         self.pdf_dir = pdf_dir
         self.output_dir = output_dir
@@ -218,7 +230,7 @@ class MinerUAutomator:
 
                 upload_chunk = []
                 for pdf_file, pdf_path, doc_no in chunk:
-                    upload_max_pages = get_upload_max_pages(doc_no, self.max_pages)
+                    upload_max_pages = get_upload_max_pages(self.benchmark, doc_no, self.max_pages)
                     upload_path = prepare_upload_pdf(pdf_path, temp_dir, upload_max_pages)
                     if Path(upload_path) != Path(pdf_path):
                         self.logger.info(f"裁剪上传 | {pdf_file} 仅上传前 {upload_max_pages} 页")
@@ -275,21 +287,42 @@ class MinerUAutomator:
         self.logger.info("所有批次解析与下载任务全部圆满完成！(撒花🎉)")
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='MinerU 自动化批量解析与下载')
-    parser.add_argument('--api_key', type=str, default=os.environ.get('MINERU_API_KEY'), help='API Key')
-    parser.add_argument('--pdf_dir', type=str, default='code/benchmarks/longdocurl/data/pdfs/4000-4999')
-    parser.add_argument('--output_dir', type=str, default='code/benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999')
-    parser.add_argument('--workers', type=int, default=5, help='并发上传线程数')
-    parser.add_argument('--log_file', type=str, default='mineru_auto.log', help='日志文件')
-    parser.add_argument('--limit', type=int, default=None, help='仅处理前N个PDF用于测试')
-    parser.add_argument('--max_pages', type=int, default=200, help='上传前保留的最大页数；小于等于0表示不截断')
-    args = parser.parse_args()
+def parse_args():
+    parser = argparse.ArgumentParser(description="Extract benchmark PDFs with MinerU.")
+    parser.add_argument("--benchmark", choices=sorted(BENCHMARK_SPECS), required=True)
+    parser.add_argument("--api-key", default=os.environ.get("MINERU_API_KEY"))
+    parser.add_argument("--pdf-dir", default=None, help="Override the benchmark PDF directory.")
+    parser.add_argument("--output-dir", default=None, help="Override the MinerU output directory.")
+    parser.add_argument("--workers", type=int, default=5)
+    parser.add_argument("--log-file", default=None)
+    parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--max-pages", type=int, default=None)
+    return parser.parse_args()
 
+
+def main():
+    args = parse_args()
     if not args.api_key:
-        print('错误：请提供 --api_key')
-        exit(1)
+        raise ValueError("MINERU_API_KEY is required. Set it in .env or pass --api-key.")
 
-    logger = setup_logger(args.log_file)
-    automator = MinerUAutomator(args.api_key, args.pdf_dir, args.output_dir, args.workers, logger, args.max_pages)
+    spec = BENCHMARK_SPECS[args.benchmark]
+    pdf_dir = Path(args.pdf_dir or spec["pdf_dir"])
+    output_dir = Path(args.output_dir or spec["output_dir"])
+    max_pages = spec["max_pages"] if args.max_pages is None else args.max_pages
+    log_file = args.log_file or f"mineru_{args.benchmark}.log"
+
+    logger = setup_logger(log_file)
+    automator = MinerUAutomator(
+        args.benchmark,
+        args.api_key,
+        pdf_dir,
+        output_dir,
+        args.workers,
+        logger,
+        max_pages,
+    )
     automator.run(limit=args.limit)
+
+
+if __name__ == "__main__":
+    main()

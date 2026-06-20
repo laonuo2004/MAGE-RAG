@@ -18,7 +18,6 @@
 !/scripts/generate_bgem3_embeddings.py
 !/scripts/generate_colbertv2_embeddings.py
 !/scripts/generate_colpali_embeddings.py
-!/scripts/mineru_extract_longdocurl.py
 
 !/.gitignore
 !/README.md

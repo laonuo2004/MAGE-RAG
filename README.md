@@ -248,19 +248,14 @@ benchmarks/mmlongbench/data/processed/pdf_pngs/
 #### 2. 使用 MinerU 解析 PDF
 
 ```bash
-uv run --env-file .env python benchmarks/longdocurl/scripts/mineru_extract_longdocurl.py \
-  --pdf_dir benchmarks/longdocurl/data/raw/pdfs/4000-4999 \
-  --output_dir benchmarks/longdocurl/data/processed/pdfs_mineru/4000-4999 \
-  --max_pages 0
+uv run --env-file .env python benchmarks/scripts/extract_mineru.py \
+  --benchmark longdocurl
 
-uv run --env-file .env python benchmarks/longdocurl/scripts/mineru_extract_longdocurl.py \
-  --pdf_dir benchmarks/mmlongbench/data/raw/documents \
-  --output_dir benchmarks/mmlongbench/data/processed/pdfs_mineru \
-  --max_pages 120
+uv run --env-file .env python benchmarks/scripts/extract_mineru.py \
+  --benchmark mmlongbench
 ```
 
-`--max_pages 0` 表示不对 LongDocURL 统一设置页数上限；MMLongBench-Doc 的评测
-协议使用前 120 页，因此其解析和 PNG 渲染均设置为 120。每个文档目录至少应包含：
+每个文档目录至少应包含：
 
 ```text
 benchmarks/<benchmark>/data/processed/pdfs_mineru/[4000-4999/]<doc_key>/

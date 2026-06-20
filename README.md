@@ -1,5 +1,5 @@
 <p align="right">
-  <a href="README-zh.md">中文</a> | <strong>English</strong>
+  <a href="README-zh.md">Chinese</a> | <strong>English</strong>
 </p>
 
 <div align="center">
@@ -214,6 +214,9 @@ benchmarks/
     ├── LongDocURL.jsonl                 # 2,325 QA pairs over 396 documents
     └── pdfs/4000-4999/<doc_no>.pdf      # Original PDFs
 ```
+
+> [!WARNING]
+> Processing LongDocURL can be time-consuming. If you only need to validate the pipeline, you can process MMLongBench-Doc alone.
 
 ### 1. Render PDF Pages as PNG Images
 

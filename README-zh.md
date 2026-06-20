@@ -217,6 +217,9 @@ benchmarks/
     └── pdfs/4000-4999/<doc_no>.pdf      # 原始 PDF
 ```
 
+> [!WARNING]
+> LongDocURL 的数据处理较为耗时，如果只是为了验证，可以只处理 MMLongBench-Doc 这一个 Benchmark
+
 ### 1. 将 PDF 渲染为页面 PNG
 
 运行以下命令渲染 MMLongBench-Doc 的 PDF 文档：
